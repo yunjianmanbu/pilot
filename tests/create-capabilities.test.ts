@@ -333,6 +333,136 @@ describe('run loop tool refresh', () => {
     expect(namesPerStep[1]).toContain('mcp__late__echo')
   })
 
+  it('notices a tool swap that keeps the count identical', async () => {
+    const base = [tool('read_file', 'read'), tool('update_plan', 'control')]
+    const before = [...base, tool('mcp__a__old', 'exec')]
+    const after = [...base, tool('mcp__b__new', 'exec')]
+    let pulled = 0
+    const model = scripted([
+      response('', [call('c1', 'read_file', { path: 'a' })]),
+      response('done'),
+    ])
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: before,
+      maxSteps: 5,
+      verificationGate: false,
+      policy: () => 'auto',
+      pullTools: () => {
+        pulled += 1
+        return pulled >= 2 ? after : before
+      },
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+
+    expect(result.status).toBe('completed')
+    const namesPerStep = model.requests.map((request: ModelRequest) =>
+      request.tools.map((definition: AgentToolDefinition) => definition.name),
+    )
+    expect(namesPerStep[0]).toContain('mcp__a__old')
+    expect(namesPerStep[1]).toContain('mcp__b__new')
+    expect(namesPerStep[1]).not.toContain('mcp__a__old')
+  })
+
+  it('appends new tools behind the ones already offered', async () => {
+    const base = [tool('read_file', 'read'), tool('update_plan', 'control')]
+    // The pulled list is reordered on purpose: a wholesale replacement would
+    // move `update_plan` in front of `read_file` and lose the cached prefix.
+    const gained = [
+      tool('update_plan', 'control'),
+      tool('read_file', 'read'),
+      tool('mcp__late__echo', 'exec'),
+      tool('mcp__late__ping', 'exec'),
+    ]
+    let pulled = 0
+    const model = scripted([
+      response('', [call('c1', 'read_file', { path: 'a' })]),
+      response('done'),
+    ])
+    await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: base,
+      maxSteps: 5,
+      verificationGate: false,
+      policy: () => 'auto',
+      pullTools: () => {
+        pulled += 1
+        return pulled >= 2 ? gained : base
+      },
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+
+    const first = model.requests[0]!.tools
+    const second = model.requests[1]!.tools
+    expect(second.map((definition: AgentToolDefinition) => definition.name)).toEqual([
+      'read_file',
+      'update_plan',
+      'mcp__late__echo',
+      'mcp__late__ping',
+    ])
+    // The already-sent definitions keep their index and identity, so only the
+    // appended tail is a cache miss.
+    expect(second.slice(0, first.length)).toEqual(first)
+    expect(second[0]!).toBe(first[0]!)
+    expect(second[1]!).toBe(first[1]!)
+  })
+
+  it('keeps the same tool array when the name set did not change', async () => {
+    const base = [tool('read_file', 'read'), tool('update_plan', 'control')]
+    let pulled = 0
+    const model = scripted([
+      response('', [call('c1', 'read_file', { path: 'a' })]),
+      response('done'),
+    ])
+    await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: base,
+      maxSteps: 5,
+      verificationGate: false,
+      policy: () => 'auto',
+      // A fresh array of equivalent definitions each step, the shape an MCP
+      // server list takes when nothing actually changed.
+      pullTools: () => {
+        pulled += 1
+        return pulled >= 2 ? base.map((definition) => ({ ...definition })) : base
+      },
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+
+    expect(model.requests[1]!.tools).toBe(model.requests[0]!.tools)
+  })
+
+  it('takes the new array when a tool disappears', async () => {
+    const base = [tool('read_file', 'read'), tool('update_plan', 'control')]
+    const withMcp = [...base, tool('mcp__gone__echo', 'exec')]
+    let pulled = 0
+    const model = scripted([
+      response('', [call('c1', 'read_file', { path: 'a' })]),
+      response('done'),
+    ])
+    await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: withMcp,
+      maxSteps: 5,
+      verificationGate: false,
+      policy: () => 'auto',
+      pullTools: () => {
+        pulled += 1
+        return pulled >= 2 ? base : withMcp
+      },
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+
+    const names = model.requests[1]!.tools.map(
+      (definition: AgentToolDefinition) => definition.name,
+    )
+    expect(names).toEqual(['read_file', 'update_plan'])
+  })
+
   it('does not arm the verification gate for tools marked noVerification', async () => {
     const docs: AgentToolDefinition[] = [
       { ...tool('create_skill', 'write'), noVerification: true },
@@ -358,5 +488,179 @@ describe('run loop tool refresh', () => {
         request.messages.some((message) => message.content.includes('[验证检查]')),
       )
     expect(prompted).toBe(false)
+  })
+})
+
+describe('run loop entry point hint', () => {
+  function tool(name: string): AgentToolDefinition {
+    return { name, description: name, inputSchema: { type: 'object', properties: {} }, risk: 'exec' }
+  }
+  function response(content: string, toolCalls: ToolCall[] = []): ModelResponse {
+    return { content, toolCalls, usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } }
+  }
+  function scripted(responses: ModelResponse[]): ModelClient & { requests: ModelRequest[] } {
+    let index = 0
+    const client = {
+      requests: [] as ModelRequest[],
+      async complete(request: ModelRequest): Promise<ModelResponse> {
+        // The loop mutates one live `messages` array, so keep a per-step copy:
+        // otherwise every recorded request shows the transcript as it is at the
+        // end of the run and the assertions below would compare against it.
+        client.requests.push({
+          ...request,
+          messages: request.messages.map((message) => ({ ...message })),
+        })
+        const next = responses[index]
+        index += 1
+        return next ?? response('done')
+      },
+    }
+    return client
+  }
+  /** A workspace that ships both a run-tests.sh and package.json scripts. */
+  async function project(): Promise<string> {
+    const root = await workspace()
+    await writeFile(join(root, 'run-tests.sh'), '#!/bin/sh\nexit 0\n')
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({ scripts: { test: 'vitest run', lint: 'eslint .', build: 'vite build' } }),
+    )
+    return root
+  }
+  function toolMessage(model: ModelClient & { requests: ModelRequest[] }, step: number) {
+    const messages = model.requests[step]?.messages ?? []
+    return messages.filter((message) => message.role === 'tool').at(-1)?.content ?? ''
+  }
+
+  it('names the project entry points when a command is not found', async () => {
+    const root = await project()
+    const model = scripted([
+      response('', [{ id: 'c1', name: 'run_command', arguments: { command: 'python' } }]),
+      response('done'),
+    ])
+    await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'run the tests' }],
+      tools: [tool('run_command')],
+      maxSteps: 5,
+      verificationGate: false,
+      workspaceRoot: root,
+      policy: () => 'auto',
+      executeTool: async () => ({
+        ok: false,
+        output: '',
+        error: 'Command failed with exit code 127 (command not found; check that it is installed and on PATH)',
+        metadata: { exitCode: 127 },
+      }),
+    })
+
+    const message = toolMessage(model, 1)
+    // The failure itself is untouched: the hint is appended, nothing replaced.
+    expect(message).toContain('ERROR: Command failed with exit code 127')
+    expect(message).toContain('本项目可用入口：')
+    expect(message).toContain('./run-tests.sh')
+    expect(message).toContain('npm run test')
+    expect(message).not.toContain('工具链不在 PATH')
+  })
+
+  it('adds the PATH line on the second not-found failure', async () => {
+    const root = await project()
+    const model = scripted([
+      response('', [{ id: 'c1', name: 'run_command', arguments: { command: 'python', args: ['a'] } }]),
+      response('', [{ id: 'c2', name: 'run_command', arguments: { command: 'python', args: ['b'] } }]),
+      response('done'),
+    ])
+    await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'run the tests' }],
+      tools: [tool('run_command')],
+      maxSteps: 6,
+      verificationGate: false,
+      workspaceRoot: root,
+      policy: () => 'auto',
+      executeTool: async () => ({
+        ok: false,
+        output: '',
+        error: 'Command failed with exit code 9009 (command not found (Windows cmd))',
+        metadata: { exitCode: 9009 },
+      }),
+    })
+
+    const first = toolMessage(model, 1)
+    const second = toolMessage(model, 2)
+    expect(first).toContain('本项目可用入口：')
+    expect(first).not.toContain('工具链不在 PATH')
+    expect(second).toContain('本项目可用入口：')
+    expect(second).toContain('工具链不在 PATH')
+  })
+
+  it('stays silent for ordinary failures and unknown workspaces', async () => {
+    const root = await project()
+    const model = scripted([
+      response('', [{ id: 'c1', name: 'run_command', arguments: { command: 'npm', args: ['test'] } }]),
+      response('done'),
+    ])
+    await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'run the tests' }],
+      tools: [tool('run_command')],
+      maxSteps: 5,
+      verificationGate: false,
+      workspaceRoot: root,
+      policy: () => 'auto',
+      // Exit code 1 is a real test failure, not a missing toolchain: the hint
+      // would be noise and would bury the actual error.
+      executeTool: async () => ({
+        ok: false,
+        output: 'AssertionError: expected 2 to be 3',
+        error: 'Command failed with exit code 1',
+        metadata: { exitCode: 1 },
+      }),
+    })
+    expect(toolMessage(model, 1)).not.toContain('本项目可用入口：')
+
+    const noRoot = scripted([
+      response('', [{ id: 'c2', name: 'run_command', arguments: { command: 'python' } }]),
+      response('done'),
+    ])
+    await runAgentLoop({
+      model: noRoot,
+      messages: [{ role: 'user', content: 'run the tests' }],
+      tools: [tool('run_command')],
+      maxSteps: 5,
+      verificationGate: false,
+      policy: () => 'auto',
+      executeTool: async () => ({
+        ok: false,
+        output: '',
+        error: 'Command failed with exit code 127',
+        metadata: { exitCode: 127 },
+      }),
+    })
+    expect(toolMessage(noRoot, 1)).not.toContain('本项目可用入口：')
+  })
+
+  it('detects spawn ENOENT, which reports no exit code', async () => {
+    const root = await project()
+    const model = scripted([
+      response('', [{ id: 'c1', name: 'run_command', arguments: { command: 'pytest' } }]),
+      response('done'),
+    ])
+    await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'run the tests' }],
+      tools: [tool('run_command')],
+      maxSteps: 5,
+      verificationGate: false,
+      workspaceRoot: root,
+      policy: () => 'auto',
+      executeTool: async () => ({
+        ok: false,
+        output: '',
+        error: 'Failed to start "pytest" (working directory: /tmp/x): spawn pytest ENOENT',
+        metadata: { exitCode: null },
+      }),
+    })
+    expect(toolMessage(model, 1)).toContain('本项目可用入口：')
   })
 })

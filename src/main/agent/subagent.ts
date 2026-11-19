@@ -284,6 +284,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentRes
     ...(options.maxContextTokens ? { maxContextTokens: options.maxContextTokens } : {}),
     maxToolOutputChars: mode === 'general' || mode === 'toolsmith' ? 24_000 : 16_000,
     temperature: 0.1,
+    workspaceRoot: options.workspacePath,
     // General mode can prove its own edit with run_check, so the same one-shot
     // gate as the parent applies: if it wrote files and never ran a check, it
     // gets asked once. Toolsmith writes only tool files whose test runs through

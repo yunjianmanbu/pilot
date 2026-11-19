@@ -111,6 +111,7 @@ export async function runExploreSubagent(options: ExploreOptions): Promise<Explo
     ...(options.maxContextTokens ? { maxContextTokens: options.maxContextTokens } : {}),
     maxToolOutputChars: 16_000,
     temperature: 0.1,
+    workspaceRoot: options.workspacePath,
     ...(options.signal ? { signal: options.signal } : {}),
     policy: (tool) => {
       if (tool.risk === 'read' && ALLOWED.has(tool.name)) return 'auto'
