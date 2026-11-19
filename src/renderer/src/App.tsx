@@ -4,7 +4,6 @@ import type {
   ApprovalRequest,
   BootstrapData,
   CompanionPairRequest,
-  ContextStats,
   MessageDelivery,
   MessageOptions,
   MessageSearchHit,
@@ -70,6 +69,7 @@ import {
   XIcon,
 } from './icons'
 import { knowledgeScopeLabel, type KnowledgeScope } from './knowledge'
+import { transcriptUsage } from './tokens'
 import {
   createToolView,
   emptyLiveRun,
@@ -376,8 +376,6 @@ export function App() {
   const [version, setVersion] = useState('')
   const [platform, setPlatform] = useState('')
   const [update, setUpdate] = useState<UpdateState>(INITIAL_UPDATE)
-  const [contextStats, setContextStats] = useState<ContextStats | null>(null)
-  const [compacting, setCompacting] = useState(false)
   const [projectInstructions, setProjectInstructions] = useState<ProjectInstructionFile[]>([])
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null)
   const [changesOpen, setChangesOpen] = useState(false)
@@ -640,7 +638,6 @@ export function App() {
       setApprovals([])
       setRunErrors({})
       setSessionLoading(Boolean(data.activeSession))
-      setContextStats(null)
       setFocusMessageId(null)
       setChangesOpen(false)
       setVersion(data.version)
@@ -1724,27 +1721,6 @@ export function App() {
     }
   }, [loadSession, pushToast])
 
-  const compactContext = useCallback(async () => {
-    const sessionId = activeSessionRef.current
-    if (!sessionId || compacting) return
-    setCompacting(true)
-    try {
-      const stats = await window.pilot.compactContext(sessionId)
-      setContextStats(stats)
-      pushToast(
-        stats.savedChars > 0
-          ? t("已压缩旧工具输出，释放约 {v1} 字符。", { v1: stats.savedChars.toLocaleString() })
-          : t("当前没有可压缩的旧工具输出。"),
-        'info',
-      )
-      await loadSession(sessionId)
-    } catch (error) {
-      pushToast(errorMessage(error), 'error')
-    } finally {
-      setCompacting(false)
-    }
-  }, [compacting, loadSession, pushToast])
-
   const revealSession = useCallback(
     async (target: Session, messageId?: string): Promise<void> => {
       setView('chat')
@@ -2578,31 +2554,16 @@ export function App() {
   const activeRunError = activeSessionId ? runErrors[activeSessionId] : undefined
   const draftProfileCount = detail?.profiles.filter((profile) => profile.status === 'draft').length ?? 0
 
-  useEffect(() => {
-    const sessionId = session?.id
-    if (!sessionId) {
-      setContextStats(null)
-      return
-    }
-    let cancelled = false
-    // Streaming updates change the message count often; throttle while a run
-    // is active, then refresh once it settles.
-    const timer = window.setTimeout(
-      () => {
-        void window.pilot
-          .getContextStats(sessionId)
-          .then((stats) => {
-            if (!cancelled) setContextStats(stats)
-          })
-          .catch(() => undefined)
-      },
-      running ? 1500 : 180,
-    )
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [session?.id, session?.messages.length, running])
+  // Context usage is estimated locally from the transcript (and the answer
+  // currently streaming), so the readout never costs a model request and never
+  // waits on an IPC round trip.
+  const contextUsage = useMemo(
+    () =>
+      session
+        ? transcriptUsage(session.messages, live?.content ?? '')
+        : null,
+    [session, live?.content],
+  )
 
   if (!booted) {
     return (
@@ -2938,8 +2899,7 @@ export function App() {
                 running={running}
                 hasEarlier={sessionHasMore}
                 loadingEarlier={loadingEarlier}
-                contextStats={contextStats}
-                compacting={compacting}
+                contextUsage={contextUsage}
                 projectInstructions={projectInstructions}
                 focusMessageId={focusMessageId}
                 composerSeed={composerSeed}
@@ -2952,7 +2912,6 @@ export function App() {
                 onDeleteMessage={deleteMessage}
                 onRegenerate={regenerate}
                 onRetry={() => void retryRun()}
-                onCompactContext={() => void compactContext()}
                 continuing={continuing}
                 onDecideApproval={(callId, approved, remember) =>
                   void decideApproval(callId, approved, remember)

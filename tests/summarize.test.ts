@@ -39,6 +39,30 @@ describe('summarizeConversation', () => {
     expect(requests[0]?.tools).toEqual([])
   })
 
+  it('merges the previous summary instead of dropping it', async () => {
+    const requests: ModelRequest[] = []
+    const client: ModelClient = {
+      async complete(request: ModelRequest): Promise<ModelResponse> {
+        requests.push(request)
+        return { content: 'Goal: fix login\nFacts: src/login.ts uses bcrypt', toolCalls: [] }
+      },
+    }
+    const summary = await summarizeConversation(
+      client,
+      [
+        { role: 'user', content: "Keep going" },
+        { role: 'assistant', content: 'Reading the router' },
+      ],
+      undefined,
+      'Goal: fix login\nFacts: src/login.ts uses bcrypt',
+    )
+    const prompt = requests[0]?.messages.at(-1)?.content ?? ''
+    expect(prompt).toContain('<earlier-summary>')
+    expect(prompt).toContain('src/login.ts uses bcrypt')
+    expect(prompt).toContain('one consolidated summary')
+    expect(summary).toContain('bcrypt')
+  })
+
   it('returns null when the model call fails', async () => {
     const client: ModelClient = {
       async complete(): Promise<ModelResponse> {

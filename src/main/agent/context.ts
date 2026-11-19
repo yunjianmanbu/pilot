@@ -203,31 +203,6 @@ function toolSources(messages: AgentMessage[]): Map<string, string> {
   return sources
 }
 
-export interface ContextUsage {
-  estimatedTokens: number
-  messageCount: number
-  toolResultTokens: number
-  compactedResults: number
-  savedChars: number
-}
-
-/**
- * Snapshot of the current prompt footprint. `compactedResults`/`savedChars`
- * estimate what a manual compaction would reclaim right now.
- */
-export function contextUsage(messages: AgentMessage[], keepRecentToolResults = 8): ContextUsage {
-  const compacted = compactToolResults(messages, { keepRecentToolResults })
-  return {
-    estimatedTokens: messagesTokens(messages),
-    messageCount: messages.length,
-    toolResultTokens: messages
-      .filter((message) => message.role === 'tool')
-      .reduce((total, message) => total + messageTokens(message), 0),
-    compactedResults: compacted.compacted,
-    savedChars: compacted.savedChars,
-  }
-}
-
 export interface FitOptions extends CompactOptions {
   keepRecent?: number
   /**

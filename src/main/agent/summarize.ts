@@ -53,17 +53,22 @@ export async function summarizeConversation(
   client: ModelClient,
   messages: AgentMessage[],
   signal?: AbortSignal,
+  previousSummary?: string,
 ): Promise<string | null> {
   const excerpt = transcriptExcerpt(messages)
   if (!excerpt) return null
+  // Second and later compactions of the same run: hand the model the summary it
+  // wrote before, so durable facts from turns that are already gone survive
+  // instead of being summarised away layer by layer.
+  const carry = previousSummary?.trim()
+  const instruction = carry
+    ? `Summarize the earlier part of this conversation. The newest turns are kept verbatim by the caller, so focus on durable state.\nA summary from an earlier compaction of this same conversation is provided first: merge it into your answer, keep everything that is still true, correct anything the newer transcript contradicts, and return one consolidated summary — never two.\n\n<earlier-summary>\n${truncateMiddle(carry, MAX_SUMMARY_CHARS)}\n</earlier-summary>\n\n<transcript>\n${excerpt}\n</transcript>`
+    : `Summarize the earlier part of this conversation. The newest turns are kept verbatim by the caller, so focus on durable state.\n\n<transcript>\n${excerpt}\n</transcript>`
   try {
     const response = await client.complete({
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: `Summarize the earlier part of this conversation. The newest turns are kept verbatim by the caller, so focus on durable state.\n\n<transcript>\n${excerpt}\n</transcript>`,
-        },
+        { role: 'user', content: instruction },
       ],
       tools: [],
       temperature: 0,
