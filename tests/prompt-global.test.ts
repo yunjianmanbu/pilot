@@ -49,6 +49,23 @@ describe('buildSystemPrompt global layers', () => {
   })
 })
 
+describe('buildSystemPrompt turn boundary', () => {
+  it('closes earlier turns so only the newest user message is worked on', () => {
+    const text = buildSystemPrompt({
+      root: 'E:\\work\\acme',
+      topLevel: 'src',
+      memory: [],
+      profile: null,
+      plan: null,
+      selfUpdate: false,
+    })
+    expect(text).toContain('Only the newest user message is the task for this turn')
+    expect(text).toContain('Earlier turns are closed')
+    expect(text).toContain('never resume them, repeat their findings')
+    expect(text).toContain('ask before continuing it')
+  })
+})
+
 describe('buildSystemPrompt learning mode', () => {
   const base = {
     root: 'E:\\work\\acme',
