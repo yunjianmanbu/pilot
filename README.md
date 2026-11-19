@@ -6,6 +6,8 @@
 [![Release](https://img.shields.io/github/v/release/yunjianmanbu/pilot?color=blue)](https://github.com/yunjianmanbu/pilot/releases)
 [![Discussions](https://img.shields.io/badge/discussions-open-2ea44f.svg)](https://github.com/yunjianmanbu/pilot/discussions)
 
+**Website & installers:** <https://pilot.medpilot.cc/#download> — screenshots, demo video and every download.
+
 Pilot is a **local-first, self-improving coding agent** for your desktop. It treats a folder on your
 machine as its execution environment: it reads files, searches code, runs commands, edits files,
 keeps a plan, then reviews what actually happened and turns the lesson into project memory and a
