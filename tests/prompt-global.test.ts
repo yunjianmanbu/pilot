@@ -1,0 +1,163 @@
+import { describe, expect, it } from 'vitest'
+import { buildSystemPrompt } from '../src/main/agent/prompt'
+import { summarizeLearning } from '../src/main/agent/learning'
+import type { ProfileVersion } from '../src/shared/types'
+
+function profile(version: number, addendum: string): ProfileVersion {
+  return {
+    id: `profile-${version}`,
+    version,
+    status: 'active',
+    promptAddendum: addendum,
+    strategy: {},
+    rationale: 'test',
+    source: 'promoted',
+    scope: 'global',
+    evidence: {
+      runs: 4,
+      failures: 0,
+      avgSteps: 3,
+      avgTokens: 100,
+      positive: 1,
+      negative: 0,
+    },
+    createdAt: new Date().toISOString(),
+  }
+}
+
+describe('buildSystemPrompt global layers', () => {
+  it('injects user-level instructions and the global profile before the workspace profile', () => {
+    const prompt = buildSystemPrompt({
+      root: 'E:\\work\\acme',
+      topLevel: 'src',
+      memory: [],
+      profile: profile(2, 'Workspace rule: use pnpm in this repository.'),
+      globalProfile: profile(1, 'Global rule: verify the narrowest check after edits.'),
+      globalInstructions: [{ name: 'PILOT.md (global)', content: 'Answer in Chinese.' }],
+      plan: null,
+      selfUpdate: false,
+    })
+
+    const globalInstructionsAt = prompt.indexOf('Answer in Chinese.')
+    const globalProfileAt = prompt.indexOf('Global rule: verify the narrowest check')
+    const workspaceProfileAt = prompt.indexOf('Workspace rule: use pnpm')
+    expect(globalInstructionsAt).toBeGreaterThan(0)
+    expect(globalProfileAt).toBeGreaterThan(globalInstructionsAt)
+    expect(workspaceProfileAt).toBeGreaterThan(globalProfileAt)
+    expect(prompt).toContain('Global operating profile v1')
+    expect(prompt).toContain('Workspace operating profile v2')
+  })
+})
+
+describe('buildSystemPrompt learning mode', () => {
+  const base = {
+    root: 'E:\\work\\acme',
+    topLevel: 'src',
+    memory: [],
+    profile: null,
+    plan: null,
+    selfUpdate: false,
+  }
+
+  it('tells the model it may only read allowlisted hosts and nothing may leave', () => {
+    const summary = summarizeLearning([
+      { at: '2026-01-01T00:00:00.000Z', kind: 'source', id: 's1', host: 'nodejs.org' },
+      { at: '2026-01-01T00:01:00.000Z', kind: 'task', id: 't1', title: 'A' },
+    ])
+    const text = buildSystemPrompt({ ...base, learning: { hosts: ['nodejs.org'], summary } })
+    expect(text).toContain('Autonomous learning mode is ON')
+    expect(text).toContain('read-only GET/HEAD')
+    expect(text).toContain('Nothing leaves the workspace')
+    expect(text).toContain('never mark your own work approved')
+    expect(text).toContain('sources 1, tasks 1')
+    expect(text).toContain('Focus for this iteration')
+    expect(text).not.toContain('Autonomous learning exploration is OFF')
+  })
+
+  it('keeps task-session networking out of the learning rules', () => {
+    const summary = summarizeLearning([])
+    const text = buildSystemPrompt({ ...base, learning: { hosts: ['nodejs.org'], summary } })
+    expect(text).toContain('constrains learning_research only')
+    expect(text).toContain('keeps normal networking')
+    expect(text).toContain('as part of learning exploration')
+    expect(text).not.toContain('shell sandbox has no network')
+  })
+
+  it('names the shell cut only when the user isolated it', () => {
+    const summary = summarizeLearning([])
+    const text = buildSystemPrompt({
+      ...base,
+      learning: { hosts: ['nodejs.org'], summary, shellNetwork: false },
+    })
+    expect(text).toContain('run_shell has no network')
+  })
+
+  it('says the mode is off without forbidding task networking', () => {
+    const text = buildSystemPrompt(base)
+    expect(text).toContain('Autonomous learning exploration is OFF')
+    expect(text).toContain('This does not restrict networking')
+    expect(text).not.toContain('Autonomous learning mode is ON')
+  })
+})
+
+describe('buildSystemPrompt delegation', () => {
+  function prompt(): string {
+    return buildSystemPrompt({
+      root: 'E:\\work\\acme',
+      topLevel: 'src',
+      memory: [],
+      profile: null,
+      plan: null,
+      selfUpdate: false,
+    })
+  }
+
+  it('delegates wide discovery and keeps known-file lookups local', () => {
+    const text = prompt()
+    expect(text).toContain('Use the explore tool when')
+    expect(text).toContain('isolated context')
+    expect(text).toContain('Do not delegate a lookup whose file you already know')
+    expect(text).toContain('hand one narrow scope to explore')
+    expect(text).toContain('once you know the module, read it directly')
+  })
+
+  it('treats a subagent summary as a lead and keeps unproven work in the parent', () => {
+    const text = prompt()
+    expect(text).toContain('Treat a subagent summary as a lead, not as verified truth')
+    expect(text).toContain('may run whitelisted checks itself (run_check)')
+    expect(text).toContain('still unproven until you run a check')
+  })
+})
+
+describe('buildSystemPrompt completion contract', () => {
+  function prompt(): string {
+    return buildSystemPrompt({
+      root: 'E:\\work\\acme',
+      topLevel: 'src',
+      memory: [],
+      profile: null,
+      plan: null,
+      selfUpdate: false,
+    })
+  }
+
+  it('separates questions from change requests and specifies the final shape', () => {
+    const text = prompt()
+    expect(text).toContain('Completion contract:')
+    expect(text).toContain('A question needs a direct answer')
+    expect(text).toContain('A change request needs the change, not a proposal')
+    expect(text).toContain('Result (what changed and which files)')
+    expect(text).toContain('Verification (the commands actually run and their outcome)')
+    expect(text).toContain('How to use')
+    expect(text).toContain('Unverified or risks')
+    expect(text).toContain('No preamble, progress narration')
+  })
+
+  it('keeps safety rules as invariants instead of a long rule list', () => {
+    const text = prompt()
+    expect(text).toContain('Operating invariants')
+    expect(text).not.toContain('Operating rules:')
+    expect(text).toContain('Never try to work around a denial')
+    expect(text).toContain('name the exact step, the boundary')
+  })
+})

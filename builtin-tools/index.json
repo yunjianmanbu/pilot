@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "generator": "scripts/pack-builtin-tools.mjs",
+  "tools": []
+}

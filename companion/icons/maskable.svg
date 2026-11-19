@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Pilot">
+  <defs>
+    <radialGradient id="pilot-mask-mint" cx="0" cy="0" r="1" gradientTransform="translate(16 12) rotate(45) scale(46)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1d4d52" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#101c2d" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="pilot-mask-cyan" cx="0" cy="0" r="1" gradientTransform="translate(50 54) rotate(45) scale(44)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1b3d5c" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#101c2d" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" fill="#101c2d"/>
+  <rect width="64" height="64" fill="url(#pilot-mask-mint)"/>
+  <rect width="64" height="64" fill="url(#pilot-mask-cyan)"/>
+  <g transform="translate(32 32) scale(0.68) translate(-32 -32)">
+    <path fill="#ffffff" d="M22.5 15H23.5A3.5 3.5 0 0 1 27 18.5V45.5A3.5 3.5 0 0 1 23.5 49H22.5A3.5 3.5 0 0 1 19 45.5V18.5A3.5 3.5 0 0 1 22.5 15ZM22.5 15H33V23H22.5A3.5 3.5 0 0 1 19 19.5V18.5A3.5 3.5 0 0 1 22.5 15ZM22.5 31H33V39H22.5A3.5 3.5 0 0 1 19 35.5V34.5A3.5 3.5 0 0 1 22.5 31ZM33 15A12 12 0 0 1 33 39L33 31A4 4 0 0 0 33 23Z"/>
+  </g>
+  <circle cx="45" cy="45" r="5" fill="#4ade80"/>
+</svg>

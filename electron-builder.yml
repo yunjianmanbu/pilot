@@ -1,0 +1,106 @@
+appId: com.pilot.agent
+productName: Pilot
+copyright: Copyright © 2026 Pilot
+
+directories:
+  output: ../release
+  buildResources: build
+
+files:
+  - out/**/*
+  - companion/**/*
+  - package.json
+
+asar: true
+
+# Ship a buildable copy of this client so Pilot can edit, test and rebuild
+# itself. The files are copied to userData before use; the installed copy
+# stays untouched. Listed explicitly so node_modules and build output never
+# end up inside the payload.
+extraResources:
+  # Vendor-approved generic tools (see scripts/pack-builtin-tools.mjs). The
+  # first launch adopts each one through the registry approval path, so they
+  # arrive as system-default tools instead of unapproved code.
+  - from: builtin-tools
+    to: builtin-tools
+  - from: src
+    to: source/src
+  - from: tests
+    to: source/tests
+  - from: companion
+    to: source/companion
+  - from: scripts
+    to: source/scripts
+  - from: SELF.md
+    to: source/SELF.md
+  # package.json itself stays an app file; ship the generated copy instead.
+  - from: build/self-source-package.json
+    to: source/package.json
+  # Official remote of the checkout this installer was built from, so installed
+  # builds can pin their evolution baseline to a real commit without asking the
+  # user to type a URL. Written by scripts/prepare-self-source.mjs.
+  - from: build/self-source-git.json
+    to: self-source-git.json
+  - from: pnpm-lock.yaml
+    to: source/pnpm-lock.yaml
+  - from: electron.vite.config.ts
+    to: source/electron.vite.config.ts
+  - from: electron-builder.yml
+    to: source/electron-builder.yml
+  - from: builtin-tools
+    to: source/builtin-tools
+  # Window and tray icon for the installed build: the taskbar reads the window
+  # icon (WM_GETICON), which needs a real file inside resources. build/ is the
+  # electron-builder resources dir and is not packed into the asar.
+  - from: build/icon.ico
+    to: build/icon.ico
+  - from: build/icon.png
+    to: build/icon.png
+  - from: pnpm-workspace.yaml
+    to: source/pnpm-workspace.yaml
+  - from: tsconfig.node.json
+    to: source/tsconfig.node.json
+  - from: tsconfig.web.json
+    to: source/tsconfig.web.json
+  - from: build/icon.ico
+    to: source/build/icon.ico
+  - from: build/icon.png
+    to: source/build/icon.png
+  - from: build/installer.nsh
+    to: source/build/installer.nsh
+
+win:
+  executableName: Pilot
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: Pilot-${version}-${arch}-setup.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Pilot
+  include: build/installer.nsh
+
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  artifactName: Pilot-${version}-${arch}.${ext}
+
+linux:
+  category: Development
+  icon: build/icon.png
+  target:
+    - target: AppImage
+      arch: [x64]
+  artifactName: Pilot-${version}-${arch}.${ext}
+
+publish: null

@@ -1,0 +1,9 @@
+packages:
+  - '.'
+allowBuilds:
+  electron-winstaller: true
+
+# electron-builder 26.18 asks for `@electron/get@^3` but uses the cacheMode API
+# added in 3.1. Pin it so packaging can resolve the Electron artifact cache.
+overrides:
+  app-builder-lib>@electron/get: 3.1.0

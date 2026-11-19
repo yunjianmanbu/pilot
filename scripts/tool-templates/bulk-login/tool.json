@@ -1,0 +1,39 @@
+{
+  "name": "bulk-login",
+  "description": "Log in a list of dedicated test accounts against an authorized test environment with bounded concurrency and rate, and report per-account status.",
+  "version": 1,
+  "runtime": "node",
+  "entry": "main.js",
+  "test": "test.js",
+  "timeoutMs": 120000,
+  "risk": "exec",
+  "targets": [],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "baseUrl": { "type": "string", "description": "Authorized test origin." },
+      "loginPath": { "type": "string", "description": "Login endpoint path, default /login." },
+      "accounts": {
+        "type": "array",
+        "description": "Dedicated test accounts; never real user credentials.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "username": { "type": "string" },
+            "password": { "type": "string" }
+          },
+          "required": ["username", "password"]
+        }
+      },
+      "concurrency": { "type": "number", "description": "Parallel requests, 1-8. Default 2." },
+      "requestsPerSecond": { "type": "number", "description": "Global rate cap, 0.2-20. Default 2." },
+      "captcha": {
+        "type": "boolean",
+        "description": "Use the authorized test captcha fixture/header, default false."
+      }
+    },
+    "required": ["baseUrl", "accounts"],
+    "additionalProperties": true
+  },
+  "verification": true
+}

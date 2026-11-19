@@ -1,0 +1,618 @@
+/*
+ * Desktop shell for the browser console.
+ *
+ * `pilot serve` reuses the phone PWA assets in this folder, so one stylesheet
+ * cannot look like both surfaces. This layer is loaded only by server mode
+ * (index.html gets `data-surface="desktop"`, see `src/main/companion/server.ts`)
+ * and repaints the panel with the PC client's tokens instead of the PWA ones.
+ *
+ * The numbers below are copied from `src/renderer/src/styles.css` (`:root` and
+ * `:root[data-theme='light']`), so the console keeps tracking the desktop app:
+ *  - three-step background ladder (page < panel-2 < panel-3) and --surface for
+ *    anything floating, no colored wash on the canvas;
+ *  - graphite accent in the default theme, --accent-ink keeps button text
+ *    readable when a different accent preset lands here later;
+ *  - radii 12 / 9, buttons 13px/600 with 8px × 14px padding, 900px reading
+ *    column, floating surfaces using --shadow instead of the PWA's glow.
+ *
+ * Everything is scoped to `html[data-surface='desktop']`, so the phone PWA
+ * (which never sets the attribute) keeps its own look untouched.
+ */
+
+html[data-surface='desktop'] {
+  color-scheme: dark;
+
+  /* Canvas and layers — renderer `:root`. */
+  --bg: #000000;
+  --page: #000000;
+  --bg-glow: transparent;
+  --panel: #1a1a1a;
+  --panel-2: #242424;
+  --panel-3: #2f2f2f;
+  --panel-hover: #373737;
+  --surface: #2a2a2a;
+  --surface-border: #4a4a4a;
+  --line: #383838;
+  --line-strong: #4a4a4a;
+  --hover: rgba(255, 255, 255, 0.06);
+  --hover-strong: rgba(255, 255, 255, 0.1);
+
+  /* Text. */
+  --text: #ffffff;
+  --text-soft: #d4d4d4;
+  --muted: #c0c0c0;
+  --faint: #adadad;
+
+  /* Accent: graphite primary, muted secondaries (renderer presets start here). */
+  --accent: #ffffff;
+  --accent-strong: #ffffff;
+  --accent-ink: #000000;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-faint: color-mix(in srgb, var(--accent) 6%, transparent);
+  --mint: var(--accent);
+  --mint-ink: var(--accent-ink);
+  --mint-soft: var(--accent-soft);
+  --cyan: #8fa8c0;
+  --cyan-soft: rgba(143, 168, 192, 0.13);
+  --green: #98b79e;
+  --green-soft: rgba(152, 183, 158, 0.13);
+  --amber: #c9ab7c;
+  --amber-soft: rgba(201, 171, 124, 0.13);
+  --red: #c9928d;
+  --red-soft: rgba(201, 146, 141, 0.13);
+  --violet: #b0a5c0;
+  --violet-soft: rgba(176, 165, 192, 0.13);
+
+  /* Code and chrome. */
+  --code-bg: #080808;
+  --code-text: #e6e6e6;
+  --code-line: #383838;
+  --sidebar-bg: #050505;
+  --sidebar-line: rgba(255, 255, 255, 0.06);
+  --sidebar-line-strong: rgba(255, 255, 255, 0.11);
+
+  --shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --float-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  --scrim: rgba(5, 5, 6, 0.46);
+
+  --radius: 12px;
+  --radius-sm: 9px;
+  --mono: 'Cascadia Code', 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono',
+    monospace;
+}
+
+html[data-surface='desktop'][data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #ffffff;
+  --page: #f2f2f2;
+  --bg-glow: transparent;
+  --panel: #ffffff;
+  --panel-2: #f5f5f5;
+  --panel-3: #ebebeb;
+  --panel-hover: #ededed;
+  --surface: #ffffff;
+  --surface-border: #d9d9d9;
+  --line: #e0e0e0;
+  --line-strong: #c2c2c2;
+  --hover: rgba(0, 0, 0, 0.05);
+  --hover-strong: rgba(0, 0, 0, 0.085);
+
+  --text: #000000;
+  --text-soft: #303030;
+  --muted: #5a5a5a;
+  --faint: #686868;
+
+  --accent: #000000;
+  --accent-strong: #000000;
+  --accent-ink: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+  --accent-faint: color-mix(in srgb, var(--accent) 5%, transparent);
+  --cyan: #4f6b85;
+  --cyan-soft: rgba(79, 107, 133, 0.1);
+  --green: #4f7257;
+  --green-soft: rgba(79, 114, 87, 0.1);
+  --amber: #8a6a35;
+  --amber-soft: rgba(138, 106, 53, 0.1);
+  --red: #a15a55;
+  --red-soft: rgba(161, 90, 85, 0.09);
+  --violet: #6f6382;
+  --violet-soft: rgba(111, 99, 130, 0.1);
+
+  --code-bg: #f7f7f7;
+  --code-text: #111111;
+  --code-line: #e0e0e0;
+  --sidebar-bg: #f5f5f5;
+  --sidebar-line: #e0e0e0;
+  --sidebar-line-strong: #c2c2c2;
+
+  --shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.07);
+  --float-shadow: 0 22px 54px rgba(0, 0, 0, 0.14);
+  --scrim: rgba(26, 26, 28, 0.22);
+}
+
+/* ── Canvas ─────────────────────────────────────────────────────────────── */
+
+html[data-surface='desktop'] body {
+  /* The desktop window is a flat canvas; the PWA leans on a colored glow. */
+  background: var(--page);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+html[data-surface='desktop'] ::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+html[data-surface='desktop'] a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+html[data-surface='desktop'] a:hover {
+  text-decoration: underline;
+}
+
+html[data-surface='desktop'] ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html[data-surface='desktop'] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html[data-surface='desktop'] ::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: content-box;
+}
+
+html[data-surface='desktop'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  background-clip: content-box;
+}
+
+html[data-surface='desktop'] :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Header: the PC client's sidebar top bar ───────────────────────────── */
+
+html[data-surface='desktop'] .app-header {
+  padding: 12px 20px;
+  background: var(--sidebar-bg);
+  backdrop-filter: none;
+  border-bottom: 1px solid var(--sidebar-line);
+}
+
+html[data-surface='desktop'] .brand-mark {
+  /* Desktop draws the mark itself, without the PWA's teal→blue plate. */
+  width: 34px;
+  height: 34px;
+  background: transparent;
+  color: var(--accent);
+  box-shadow: none;
+  filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--accent) 14%, transparent));
+}
+
+html[data-surface='desktop'] .brand-mark svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* Pairing page: the desktop client has no glowing logo plate either. */
+html[data-surface='desktop'] .pair-logo {
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--accent);
+  box-shadow: none;
+}
+
+html[data-surface='desktop'] .plan-progress {
+  border-radius: 2px;
+  background: var(--panel-3);
+}
+
+html[data-surface='desktop'] .plan-progress i {
+  /* One hue: gradients belong to the phone skin, not the console. */
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+html[data-surface='desktop'] .brand-text h1 {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+html[data-surface='desktop'] .brand-text p {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+html[data-surface='desktop'] .chat-title strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+html[data-surface='desktop'] .icon-button {
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+
+html[data-surface='desktop'] .icon-button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+html[data-surface='desktop'] .icon-button:active {
+  background: var(--hover-strong);
+}
+
+html[data-surface='desktop'] .icon-button.primary {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+html[data-surface='desktop'] .chat-menu {
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--float-shadow);
+}
+
+html[data-surface='desktop'] .chat-menu button:hover {
+  background: var(--hover);
+}
+
+/* Desktop reports connectivity as a plain dot in the chrome, not a colored
+   capsule, so the console keeps one accent instead of four status hues. */
+html[data-surface='desktop'] .conn-pill {
+  height: 24px;
+  padding: 0 9px;
+  border-color: var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+html[data-surface='desktop'] .conn-pill.connected {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--text-soft);
+}
+
+html[data-surface='desktop'] .conn-pill.connected .dot {
+  background: var(--green);
+  box-shadow: none;
+}
+
+html[data-surface='desktop'] .conn-pill.connecting,
+html[data-surface='desktop'] .conn-pill.reconnecting {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--text-soft);
+}
+
+/* ── Content column ────────────────────────────────────────────────────── */
+
+html[data-surface='desktop'] .page {
+  max-width: 900px;
+  padding: 22px 24px 96px;
+}
+
+html[data-surface='desktop'] .page-heading h2 {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+html[data-surface='desktop'] .section-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+/* ── Buttons: renderer `.button` spec ─────────────────────────────────── */
+
+html[data-surface='desktop'] .button {
+  min-height: 34px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+html[data-surface='desktop'] .button.primary,
+html[data-surface='desktop'] .send-button {
+  /* Flat accent instead of the PWA's mint→blue gradient. */
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+html[data-surface='desktop'] .button.primary:hover:not(:disabled),
+html[data-surface='desktop'] .send-button:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+html[data-surface='desktop'] .button:active:not(:disabled),
+html[data-surface='desktop'] .send-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+html[data-surface='desktop'] .button.ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--text-soft);
+}
+
+html[data-surface='desktop'] .button.ghost:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+html[data-surface='desktop'] .button.small {
+  min-height: 30px;
+  padding: 5px 11px;
+  font-size: 12px;
+}
+
+html[data-surface='desktop'] .button.tiny {
+  min-height: 26px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  border-radius: 6px;
+}
+
+html[data-surface='desktop'] .fab {
+  /* No floating glow button on a desktop canvas: flat primary, smaller. */
+  width: 46px;
+  height: 46px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--shadow-soft);
+}
+
+/* ── Cards and lists ──────────────────────────────────────────────────── */
+
+html[data-surface='desktop'] .session-card {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  box-shadow: none;
+}
+
+html[data-surface='desktop'] .session-card:hover {
+  background: var(--panel-2);
+  border-color: var(--line-strong);
+}
+
+html[data-surface='desktop'] .session-card:active {
+  background: var(--panel-3);
+}
+
+html[data-surface='desktop'] .session-avatar {
+  border-radius: var(--radius-sm);
+}
+
+html[data-surface='desktop'] .session-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+html[data-surface='desktop'] .badge,
+html[data-surface='desktop'] .filter-chip {
+  border-radius: 6px;
+}
+
+html[data-surface='desktop'] .search-box,
+html[data-surface='desktop'] .workspace-root-field select,
+html[data-surface='desktop'] input,
+html[data-surface='desktop'] textarea {
+  border-radius: var(--radius-sm);
+}
+
+html[data-surface='desktop'] .search-box {
+  background: var(--panel-2);
+  border-color: var(--line);
+}
+
+html[data-surface='desktop'] .search-box:focus-within {
+  border-color: var(--surface-border);
+  box-shadow: 0 0 0 2px var(--accent-faint);
+}
+
+/* ── Chat surfaces ────────────────────────────────────────────────────── */
+
+html[data-surface='desktop'] .chat-page {
+  background: var(--page);
+}
+
+html[data-surface='desktop'] .chat-inner,
+html[data-surface='desktop'] .messages-inner,
+html[data-surface='desktop'] .composer-inner {
+  max-width: 900px;
+}
+
+html[data-surface='desktop'] .message .bubble {
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text-soft);
+  box-shadow: none;
+}
+
+html[data-surface='desktop'] .message.user .bubble {
+  /* Renderer `.user-bubble`: the same raised gradient, not a colored plate. */
+  background: linear-gradient(150deg, var(--panel-3), var(--panel-2));
+  border-color: var(--line);
+  color: var(--text);
+  box-shadow: var(--shadow-soft);
+  border-radius: 14px 14px 3px 14px;
+}
+
+html[data-surface='desktop'] .message.assistant .bubble {
+  border-top-left-radius: 3px;
+  border-radius: 14px 14px 14px 3px;
+}
+
+html[data-surface='desktop'] .composer-dock {
+  background: var(--page);
+  border-top: 1px solid var(--line);
+  backdrop-filter: none;
+}
+
+html[data-surface='desktop'] .composer {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: none;
+}
+
+html[data-surface='desktop'] .composer:focus-within {
+  border-color: var(--surface-border);
+}
+
+html[data-surface='desktop'] .composer textarea {
+  font-size: 13.8px;
+}
+
+html[data-surface='desktop'] .send-button {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+}
+
+html[data-surface='desktop'] .send-button:disabled {
+  background: var(--panel-3);
+  color: var(--faint);
+}
+
+html[data-surface='desktop'] .stop-button {
+  height: 30px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+html[data-surface='desktop'] .continue-bar,
+html[data-surface='desktop'] .disconnected-bar,
+html[data-surface='desktop'] .control-message {
+  border-radius: var(--radius-sm);
+}
+
+html[data-surface='desktop'] .plan-card,
+html[data-surface='desktop'] .todo-card,
+html[data-surface='desktop'] .approval-card,
+html[data-surface='desktop'] .process-panel {
+  border-radius: var(--radius);
+  border-color: var(--line);
+  background: var(--panel);
+  box-shadow: none;
+}
+
+html[data-surface='desktop'] .approval-actions button {
+  border-radius: var(--radius-sm);
+}
+
+html[data-surface='desktop'] .approval-actions button.allow {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* ── Floating surfaces: bottom sheets become centered dialogs ─────────── */
+
+html[data-surface='desktop'] .sheet-backdrop {
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+}
+
+html[data-surface='desktop'] .sheet {
+  border-top: none;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--float-shadow);
+}
+
+html[data-surface='desktop'] .sheet-grip {
+  display: none;
+}
+
+html[data-surface='desktop'] .toast-layer {
+  /* Desktop stacks toasts in the bottom-right corner instead of centering a
+     sheet-width column over the composer. */
+  left: auto;
+  right: 18px;
+  bottom: 18px;
+  width: min(380px, calc(100vw - 36px));
+  transform: none;
+}
+
+html[data-surface='desktop'] .toast {
+  border: 1px solid var(--surface-border);
+  /* Renderer marks severity with a 2px left edge, not a colored outline. */
+  border-left: 2px solid var(--accent);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text-soft);
+  box-shadow: var(--float-shadow);
+  backdrop-filter: none;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+html[data-surface='desktop'] .toast.warn {
+  border-color: var(--surface-border);
+  border-left-color: var(--amber);
+  color: var(--text-soft);
+}
+
+html[data-surface='desktop'] .toast.error {
+  border-color: var(--surface-border);
+  border-left-color: var(--red);
+  color: var(--text-soft);
+}
+
+/* ── Wide windows get the desktop dialog placement and margins ────────── */
+
+@media (min-width: 720px) {
+  html[data-surface='desktop'] .sheet-backdrop {
+    display: grid;
+    place-items: center;
+    padding: 32px;
+  }
+
+  html[data-surface='desktop'] .sheet {
+    position: relative;
+    inset: auto;
+    width: min(560px, 100%);
+    max-height: min(76vh, 720px);
+    padding: 16px 20px 20px;
+    animation: fade-in 0.16s ease;
+  }
+
+  html[data-surface='desktop'] .page {
+    padding-left: 32px;
+    padding-right: 32px;
+  }
+
+  html[data-surface='desktop'] .chat-inner,
+  html[data-surface='desktop'] .composer-inner {
+    padding-left: 32px;
+    padding-right: 32px;
+  }
+}

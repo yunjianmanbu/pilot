@@ -1,0 +1,14 @@
+node_modules/
+out/
+release/
+tmp/
+.pilot-update/
+dist/
+coverage/
+*.tsbuildinfo
+*.log
+.DS_Store
+build/self-source-package.json
+build/self-source-git.json
+.selfdev-build/
+release-selfdev/
