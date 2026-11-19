@@ -343,7 +343,11 @@ export async function loadSelfSourceDefaults(ctx: {
       return { gitUrl: '', gitRef: 'main', gitPath: '' }
     }
   }
-  const top = runGit(['rev-parse', '--show-toplevel'], ctx.appPath)
+  // One `rev-parse` for both values: every git invocation costs ~250 ms on
+  // Windows, and this runs before the evolution panel can show anything.
+  const discovered = runGit(['rev-parse', '--show-toplevel', '--abbrev-ref', 'HEAD'], ctx.appPath)
+  const [toplevel = '', headBranch = ''] = discovered.ok ? discovered.stdout.split(/\r?\n/) : []
+  const top = { ok: discovered.ok && Boolean(toplevel), stdout: toplevel }
   const remote = top.ok ? runGit(['remote', 'get-url', 'origin'], top.stdout) : { ok: false, stdout: '' }
   const gitPath = top.ok
     ? relative(top.stdout, ctx.appPath).split(sep).join('/')
@@ -351,9 +355,7 @@ export async function loadSelfSourceDefaults(ctx: {
   // The checked-out branch instead of a hardcoded `main`: a repository whose
   // `main` predates this client directory would default to a ref that cannot
   // produce a baseline.
-  const branch = top.ok
-    ? runGit(['rev-parse', '--abbrev-ref', 'HEAD'], top.stdout)
-    : { ok: false, stdout: '' }
+  const branch = { ok: discovered.ok && Boolean(headBranch), stdout: headBranch }
   return {
     gitUrl: normalizeGitUrl(remote.ok ? remote.stdout : ''),
     gitRef: normalizeGitRef(branch.ok ? branch.stdout : ''),

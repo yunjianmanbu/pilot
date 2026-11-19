@@ -89,6 +89,8 @@ interface TreeEntry {
   path: string
   absolute: string
   size: number
+  /** 用于指纹缓存的重算判据：任一文件被改写都会推高新 mtime。 */
+  mtimeMs: number
 }
 
 interface ForkRecord {
@@ -337,7 +339,12 @@ async function walk(
     if (limits && info.size > MAX_FILE_BYTES) {
       throw new Error(`文件过大，无法放入个人版本：${path}（${(info.size / 1024).toFixed(0)} KiB）`)
     }
-    output.push({ path, absolute: join(root, ...path.split('/')), size: info.size })
+    output.push({
+      path,
+      absolute: join(root, ...path.split('/')),
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+    })
     if (limits && output.length > MAX_FILES) {
       throw new Error(`改动文件过多（超过 ${MAX_FILES} 个），请拆分成更小的版本。`)
     }
@@ -345,9 +352,9 @@ async function walk(
   return output
 }
 
-/** Fingerprint of the whole source tree, used to match a build to its source. */
-export async function sourceFingerprint(root: string): Promise<string> {
-  const entries = (await walk(root, '', [], false)).sort((left, right) =>
+/** 整棵树的指纹：路径 + 每个文件的 sha256，顺序稳定。 */
+async function hashTree(input: TreeEntry[]): Promise<string> {
+  const entries = [...input].sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
   )
   const hash = createHash('sha256')
@@ -358,6 +365,123 @@ export async function sourceFingerprint(root: string): Promise<string> {
     hash.update('\n')
   }
   return hash.digest('hex')
+}
+
+/** Fingerprint of the whole source tree, used to match a build to its source. */
+export async function sourceFingerprint(root: string): Promise<string> {
+  return hashTree(await walk(root, '', [], false))
+}
+
+/**
+ * 只 stat 的树签名：文件数、总字节、最新 mtime。
+ *
+ * 进化页每次打开都会问一次「基线有没有变」，而真正算指纹要把 8 MiB 全部读一遍
+ * 再算 sha256（实测约 1.6 s）。签名只多花约 0.25 s，未变时直接复用上次结果。
+ */
+function treeSignature(entries: TreeEntry[]): string {
+  let bytes = 0
+  let newest = 0
+  for (const entry of entries) {
+    bytes += entry.size
+    if (entry.mtimeMs > newest) newest = entry.mtimeMs
+  }
+  return `${entries.length}:${bytes}:${newest}`
+}
+
+interface FingerprintMemo {
+  hash: string
+  signature: string
+  /** 上次「确认未变」的时间。在 TTL 内直接复用，不再扫目录。 */
+  checkedAt?: number
+}
+
+/**
+ * 官方基线树只由本进程写（快照/合并/升级/回滚），那几处都会显式失效；
+ * 所以短时间内无需每次重新 stat 整棵树（Windows 上 610 个文件约 0.3-1.5 s）。
+ * 窗口刻意留短：安装包升级会替换官方基线，那是本进程看不到的外部变化。
+ */
+const FINGERPRINT_TRUST_MS = 30_000
+
+const fingerprintMemos = new Map<string, FingerprintMemo>()
+
+/**
+ * 指纹缓存文件（userData 下）。重新启动后第一张进化页仍要把整棵树读一遍，
+ * 落盘后签名命中就能直接复用，省掉约 1.5 s 的读盘与 sha256。
+ */
+let fingerprintCachePath: string | null = null
+let diskMemos: Record<string, FingerprintMemo> | null = null
+
+export function configureFingerprintCache(path: string | null): void {
+  fingerprintCachePath = path
+  diskMemos = null
+}
+
+async function readDiskMemos(): Promise<Record<string, FingerprintMemo>> {
+  if (diskMemos) return diskMemos
+  if (!fingerprintCachePath) return {}
+  try {
+    const parsed = JSON.parse(await readFile(fingerprintCachePath, 'utf8')) as Record<
+      string,
+      FingerprintMemo
+    >
+    diskMemos = parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    diskMemos = {}
+  }
+  return diskMemos
+}
+
+async function writeDiskMemo(root: string, memo: FingerprintMemo): Promise<void> {
+  if (!fingerprintCachePath) return
+  const memos = await readDiskMemos()
+  memos[root] = memo
+  try {
+    await mkdir(dirname(fingerprintCachePath), { recursive: true })
+    await writeFile(fingerprintCachePath, JSON.stringify(memos), 'utf8')
+  } catch {
+    // A cache write failure only costs the next process a recompute.
+  }
+}
+
+/**
+ * `sourceFingerprint` 的记忆版：签名未变就不重复读整棵树。
+ *
+ * `trustMs` > 0 时，在窗口内直接采信已确认的结果、不再扫目录。只适用于
+ * 由应用自己维护的树（官方基线）；用户可写的目录必须传 0 保持逐次校验。
+ * 落盘结果只用来省掉“重新读整棵树 + sha256”，签名对不上就重算。
+ */
+export async function cachedSourceFingerprint(root: string, trustMs = 0): Promise<string> {
+  const memo = fingerprintMemos.get(root)
+  if (trustMs > 0 && memo?.checkedAt && Date.now() - memo.checkedAt < trustMs) return memo.hash
+  const entries = await walk(root, '', [], false)
+  const signature = treeSignature(entries)
+  if (memo && memo.signature === signature) {
+    memo.checkedAt = Date.now()
+    return memo.hash
+  }
+  const stored = (await readDiskMemos())[root]
+  if (stored && stored.signature === signature) {
+    const hit = { ...stored, checkedAt: Date.now() }
+    fingerprintMemos.set(root, hit)
+    return hit.hash
+  }
+  const hash = await hashTree(entries)
+  const fresh = { hash, signature, checkedAt: Date.now() }
+  fingerprintMemos.set(root, fresh)
+  await writeDiskMemo(root, { hash, signature })
+  return hash
+}
+
+/** 树刚被本进程改过（快照/合并/升级），丢掉对应指纹。 */
+export function forgetSourceFingerprint(root: string): void {
+  fingerprintMemos.delete(root)
+  if (diskMemos) delete diskMemos[root]
+}
+
+/** Test seam: forget every memoised fingerprint. */
+export function resetFingerprintMemo(): void {
+  fingerprintMemos.clear()
+  diskMemos = null
 }
 
 async function tree(root: string): Promise<Map<string, TreeEntry>> {
@@ -916,7 +1040,7 @@ export class PersonalEvolutionService {
   private async currentBaseHash(): Promise<string | null> {
     if (!(await exists(join(this.options.basePath, 'package.json')))) return null
     try {
-      return await sourceFingerprint(this.options.basePath)
+      return await cachedSourceFingerprint(this.options.basePath, FINGERPRINT_TRUST_MS)
     } catch {
       return null
     }
@@ -946,41 +1070,56 @@ export class PersonalEvolutionService {
     }
   }
 
-  async state(): Promise<PersonalEvolutionState> {
-    const fork = await this.ensureFork()
-    const currentHash = await this.currentBaseHash()
-    const upgrade = await this.upgradeStatus(fork, currentHash)
-    const available = await exists(join(this.options.sourcePath, 'package.json'))
+  /** 已保存的个人版本，最新在前。 */
+  private async savedVersions(): Promise<PersonalVersion[]> {
     const versions: PersonalVersion[] = []
     try {
       const entries = await readdir(this.versionsDir, { withFileTypes: true })
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue
-        const manifest = await this.versionManifest(entry.name)
-        if (manifest) versions.push(manifest)
-      }
+      const manifests = await Promise.all(
+        entries.filter((entry) => entry.isDirectory()).map((entry) => this.versionManifest(entry.name)),
+      )
+      for (const manifest of manifests) if (manifest) versions.push(manifest)
     } catch {
       // No versions yet.
     }
-    versions.sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    return versions.sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  }
+
+  /** 已提交的贡献记录，最新在前。 */
+  private async storedContributions(): Promise<PersonalContribution[]> {
     const contributions: PersonalContribution[] = []
     try {
       const entries = await readdir(this.contributionsDir, { withFileTypes: true })
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue
-        const record = await this.contributionRecord(entry.name)
-        if (record) contributions.push(record)
-      }
+      const records = await Promise.all(
+        entries
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => this.contributionRecord(entry.name)),
+      )
+      for (const record of records) if (record) contributions.push(record)
     } catch {
       // No contributions yet.
     }
-    contributions.sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-    const lastUpgrade = await this.latestUpgrade()
+    return contributions.sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  }
+
+  async state(): Promise<PersonalEvolutionState> {
+    // 进化页一打开就要这几个，彼此无依赖，串行等于把三倍等待叠在一起。
+    const [fork, currentHash, available] = await Promise.all([
+      this.ensureFork(),
+      this.currentBaseHash(),
+      exists(join(this.options.sourcePath, 'package.json')),
+    ])
+    const [upgrade, versions, contributions, lastUpgrade] = await Promise.all([
+      this.upgradeStatus(fork, currentHash),
+      this.savedVersions(),
+      this.storedContributions(),
+      this.latestUpgrade(),
+    ])
     if (lastUpgrade && lastUpgrade.validation !== 'passed' && available) {
       // A successful self-build runs the test suite before packaging, so a
       // matching build made after the merge is equivalent to the gate passing.
       try {
-        const fingerprint = await sourceFingerprint(this.options.sourcePath)
+        const fingerprint = await cachedSourceFingerprint(this.options.sourcePath)
         const build = await latestBuild(this.options.sourcePath, fingerprint)
         if (
           build.buildPath &&
@@ -1106,6 +1245,7 @@ export class PersonalEvolutionService {
       await mkdir(dirname(target), { recursive: true })
       await writeFile(target, content)
     }
+    forgetSourceFingerprint(this.options.sourcePath)
   }
 
   /**
@@ -1354,6 +1494,9 @@ export class PersonalEvolutionService {
     }).catch(() => undefined)
 
     const snapshot = await this.captureBaseSnapshot()
+    // 合并改过自己的源码，基线快照也重建了，两份指纹都要重算。
+    forgetSourceFingerprint(this.options.sourcePath)
+    forgetSourceFingerprint(this.options.basePath)
     const updated: ForkRecord = {
       ...fork,
       baseVersion: this.options.appVersion,
@@ -1497,6 +1640,7 @@ export class PersonalEvolutionService {
     }
     if (!record.fromHash) delete restored.baseHash
     await writeJson(join(this.dataDir, 'fork.json'), restored)
+    forgetSourceFingerprint(this.options.sourcePath)
     record.rolledBackAt = now()
     await writeJson(join(backupDir, 'backup.json'), record)
   }
