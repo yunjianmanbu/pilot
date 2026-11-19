@@ -2,11 +2,9 @@
 
 **English** | [中文](README.zh-CN.md)
 
-
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/yunjianmanbu/pilot?color=blue)](https://github.com/yunjianmanbu/pilot/releases)
 [![Discussions](https://img.shields.io/badge/discussions-open-2ea44f.svg)](https://github.com/yunjianmanbu/pilot/discussions)
-
 
 Pilot is a **local-first, self-improving coding agent** for your desktop. It treats a folder on your
 machine as its execution environment: it reads files, searches code, runs commands, edits files,
