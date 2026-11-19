@@ -227,6 +227,78 @@ describe('checkpoint watcher self-heal', () => {
   })
 })
 
+describe('shell snapshot reuse', () => {
+  /**
+   * `beforeShell` fires before every command. On a workspace with no changes
+   * that used to mean a walk per command; the snapshot can simply be relabelled,
+   * because the tree it captured is still exactly what is on disk.
+   */
+  it('relabels the previous shell snapshot when nothing changed', async () => {
+    const { service, session, workspacePath } = await setup()
+    const create = (label: string, trigger: 'prompt' | 'shell') =>
+      service.create({
+        sessionId: session.id,
+        workspacePath,
+        label,
+        messageCount: 0,
+        trigger,
+        retention: 20,
+      })
+    try {
+      // The first snapshot establishes the index; reuse needs a fresh index.
+      await create('run start', 'prompt')
+      const first = await create('Shell 前：npm test', 'shell')
+      const second = await create('Shell 前：npm run build', 'shell')
+      expect(second.id).toBe(first.id)
+      expect(second.label).toBe('Shell 前：npm run build')
+      expect(watchers).toHaveLength(1)
+
+      // A reported change makes the cached tree stale, so a new snapshot appears.
+      await writeFile(join(workspacePath, 'c.txt'), 'third\n', 'utf8')
+      watchers[0]!.fire('change', 'c.txt')
+      const third = await create('Shell 前：npm run lint', 'shell')
+      expect(third.id).not.toBe(first.id)
+      expect(third.files).toBe(3)
+
+      // `prompt` snapshots are never collapsed: they mark a boundary the user
+      // asked for.
+      const prompt = await create('after review', 'prompt')
+      expect(prompt.id).not.toBe(third.id)
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('does not reuse a shell snapshot whose meta file is gone', async () => {
+    const { service, session, workspacePath } = await setup()
+    const create = (label: string) =>
+      service.create({
+        sessionId: session.id,
+        workspacePath,
+        label,
+        messageCount: 0,
+        trigger: 'shell',
+        retention: 6,
+      })
+    try {
+      const first = await create('Shell 前：one')
+      // Retention and work-budget eviction both delete a checkpoint directory
+      // without telling the running session. Reusing its id would hand the user
+      // a rollback point that no longer exists.
+      await rm(join(userDataDir, 'checkpoints', session.id, first.id), {
+        recursive: true,
+        force: true,
+      })
+      const next = await create('Shell 前：two')
+      expect(next.id).not.toBe(first.id)
+      expect(next.complete).toBe(true)
+      expect(next.files).toBe(2)
+    } finally {
+      service.dispose()
+    }
+  })
+})
+
 describe('checkpoint fast-path threshold', () => {
   /**
    * The threshold decides whether a snapshot may trust the watcher instead of

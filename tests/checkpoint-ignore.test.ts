@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CHECKPOINT_IGNORE_LIMIT,
+  ephemeralDirSegment,
+  looksEphemeralDirPath,
   matchesCheckpointIgnore,
   normalizeCheckpointIgnore,
 } from '../src/shared/checkpoint-ignore'
@@ -88,6 +90,29 @@ describe('checkpoint ignore patterns', () => {
 
   it('is a no-op for an empty pattern list', () => {
     expect(matchesCheckpointIgnore('tmp/a.log', [])).toBe(false)
+  })
+})
+
+describe('ephemeral directory defaults', () => {
+  it('matches scratch and generated names at any depth, case-insensitively', () => {
+    expect(ephemeralDirSegment('tmp/a.js')).toBe('tmp')
+    expect(ephemeralDirSegment('.build/out/x.js')).toBe('.build')
+    expect(ephemeralDirSegment('pilot/client/Tmp/notes.md')).toBe('Tmp')
+    expect(ephemeralDirSegment('src/unpackage/app.js')).toBe('unpackage')
+    expect(ephemeralDirSegment('src/a.ts')).toBeNull()
+    expect(ephemeralDirSegment('template/a.ts')).toBeNull()
+    expect(ephemeralDirSegment('src/tmpl/a.ts')).toBeNull()
+  })
+
+  it('flags a directory a write is about to create only when it looks generated', () => {
+    expect(looksEphemeralDirPath('build-output')).toBe(true)
+    expect(looksEphemeralDirPath('src/run-tmp')).toBe(true)
+    expect(looksEphemeralDirPath('docs-cache')).toBe(true)
+    expect(looksEphemeralDirPath('src/components')).toBe(false)
+    expect(looksEphemeralDirPath('pilot/client/tests')).toBe(false)
+    // A false positive here would leave real source out of every rollback.
+    expect(looksEphemeralDirPath('src/outbox')).toBe(false)
+    expect(looksEphemeralDirPath('src/builders')).toBe(false)
   })
 })
 

@@ -10,6 +10,7 @@ import type {
   WorkspaceSummary,
 } from '../../shared/types'
 import { compareVersions, summarizeComparison, versionMetrics } from '../../shared/version-stats'
+import { EPHEMERAL_DIR_NAMES } from '../../shared/checkpoint-ignore'
 import { redactSecrets } from './redact'
 
 export const REQUEST_SYSTEM_ACCESS = 'request_system_access'
@@ -514,6 +515,7 @@ export function buildSystemStrategyReport(
       '[Checkpoints]',
       `retention=${settings.checkpointRetention}; maxBytes=${settings.checkpointMaxBytes}; beforeShell=${settings.checkpointShell}`,
       `snapshotIgnore=${settings.checkpointIgnore.length > 0 ? settings.checkpointIgnore.join(',') : '(none)'} (snapshots only; the file tree still shows these paths)`,
+      `alwaysIgnoredDirs=${EPHEMERAL_DIR_NAMES.join(',')} (scratch/generated names, never snapshotted)`,
     )
   }
   if (sections.has('profiles')) {

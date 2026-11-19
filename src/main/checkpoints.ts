@@ -21,7 +21,13 @@ import type {
   CheckpointRestoreResult,
   CheckpointTrigger,
 } from '../shared/types'
-import { matchesCheckpointIgnore, normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
+import {
+  ephemeralDirSegment,
+  isEphemeralDirName,
+  looksEphemeralDirPath,
+  matchesCheckpointIgnore,
+  normalizeCheckpointIgnore,
+} from '../shared/checkpoint-ignore'
 import { resolveForWrite, SKIP_DIRS } from './workspace'
 import type { Store } from './store'
 
@@ -164,6 +170,12 @@ interface WorkspaceState {
   watchAttachedAt: number
   /** The last full walk hit the size budget or failed to read a file. */
   lastIncomplete: boolean
+  /**
+   * Directories a tool created that look generated (`build-output`, `run-tmp`)
+   * and are therefore kept out of snapshots for this session. Built-in names
+   * do not land here: they are ignored unconditionally.
+   */
+  autoIgnore: string[]
 }
 
 export interface CheckpointServiceOptions {
@@ -201,11 +213,19 @@ function hasSkippedExtension(rel: string): boolean {
 
 function isIgnoredPath(rel: string, ignore?: readonly string[]): boolean {
   const segments = rel.split('/')
+  // Scratch and generated names are excluded whether or not the user
+  // configured anything: a build tree must never join the walk.
+  if (ephemeralDirSegment(rel) !== null) return true
   if (segments.includes('.pilot-checkpoints')) return true
   for (const segment of segments) {
     if (SKIP_DIRS.has(segment)) return true
   }
   return ignore !== undefined && matchesCheckpointIgnore(rel, ignore)
+}
+
+/** Normalized label for a snapshot; shared by the reuse fast path. */
+function checkpointLabel(raw: string): string {
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 120) || '快照'
 }
 
 function workspaceIndexKey(workspacePath: string): string {
@@ -320,8 +340,26 @@ async function moveFile(source: string, target: string): Promise<void> {
 
 export class CheckpointService {
   private readonly root: string
-  private queue: Promise<unknown> = Promise.resolve()
-  // Tracks the async context of the task currently holding the lock, so a nested
+  /**
+   * Serialization is per workspace, not global.
+   *
+   * Its original form was one promise chain for the whole service, so three
+   * concurrent runs put every snapshot of every workspace behind each other:
+   * the third run's `beforeShell` snapshot waited for two unrelated trees to be
+   * walked, and that wait landed in its checkpoint timing. Snapshots of two
+   * workspaces share nothing but the blob store, whose writes are
+   * content-addressed (`<hash>.tmp` + rename) and therefore safe to interleave.
+   *
+   * `undefined` means store-wide work (maintenance, blob sweeps): it is gated
+   * on the global chain and additionally waits for whatever is already
+   * executing, because a sweep must never delete a blob another workspace is
+   * about to reference.
+   */
+  private storeChain: Promise<unknown> = Promise.resolve()
+  private readonly chains = new Map<string, Promise<unknown>>()
+  /** Tokens of tasks that passed the gate and are executing right now. */
+  private readonly running = new Set<Promise<void>>()
+  // Tracks the async context of the task currently holding a lock, so a nested
   // call (a restore creating its safety snapshot) runs inline instead of
   // queueing behind itself, while an unrelated concurrent caller still waits.
   private readonly lockContext = new AsyncLocalStorage<true>()
@@ -357,18 +395,79 @@ export class CheckpointService {
   }
 
   /**
-   * Serialize store mutations. A task that is already running may call
-   * `exclusive` again (a restore creates a safety snapshot), in which case the
-   * nested work runs inline instead of queueing behind itself.
+   * Serialize store mutations for one `key` (a workspace path), or for the
+   * whole store when `key` is omitted. A task that already holds a lock may
+   * call `exclusive` again (a restore creates a safety snapshot), in which case
+   * the nested work runs inline instead of queueing behind itself.
    */
-  private exclusive<T>(task: () => Promise<T>): Promise<T> {
+  private exclusive<T>(task: () => Promise<T>, key?: string): Promise<T> {
     if (this.lockContext.getStore()) return task()
-    const run = this.queue.then(
-      () => this.lockContext.run(true, task),
-      () => this.lockContext.run(true, task),
-    )
-    this.queue = run.catch(() => undefined)
+    const gate = this.storeChain
+    const chainKey = key ?? ''
+    const previous = this.chains.get(chainKey)
+    let release: () => void = () => undefined
+    // Resolves when this task finishes, so a store-wide task can wait for it.
+    const token = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const run = (async () => {
+      if (previous) await previous.catch(() => undefined)
+      await gate.catch(() => undefined)
+      // A sweep must not overlap a snapshot that is already writing blobs.
+      if (key === undefined) await this.drainRunning()
+      this.running.add(token)
+      try {
+        return await this.lockContext.run(true, task)
+      } finally {
+        this.running.delete(token)
+        release()
+      }
+    })()
+    const tail = run.catch(() => undefined)
+    this.chains.set(chainKey, tail)
+    void tail.finally(() => {
+      if (this.chains.get(chainKey) === tail) this.chains.delete(chainKey)
+    })
+    if (key === undefined) this.storeChain = tail
     return run
+  }
+
+  /** Wait for every task that is already executing to settle. */
+  private async drainRunning(): Promise<void> {
+    for (;;) {
+      const tokens = [...this.running]
+      if (tokens.length === 0) return
+      await Promise.allSettled(tokens)
+    }
+  }
+
+  /**
+   * Keep a directory a tool just created out of the next snapshot.
+   *
+   * Without this a `write_file` into `build-output/` adds that whole tree to
+   * every later walk. Registering the path at creation time costs one string;
+   * discovering it on the next snapshot costs a walk over the new files.
+   *
+   * Returns the workspace-relative directory when it was newly excluded.
+   */
+  noteEphemeralDir(workspacePath: string, relDir: string): string | null {
+    const rel = normalizeRel(relDir).replace(/^\/+|\/+$/g, '')
+    if (!rel || !safeRelative(rel)) return null
+    if (!looksEphemeralDirPath(rel)) return null
+    const state = this.stateFor(workspacePath)
+    // A built-in name or a settings pattern already covers it: that decision
+    // belongs to the setting, and the next snapshot drops the entry by itself.
+    if (isIgnoredPath(rel, state.ignore)) return null
+    if (state.autoIgnore.includes(rel)) return null
+    state.autoIgnore.push(rel)
+    // The cached index still lists that tree; one walk is what removes it, and
+    // it runs on the next snapshot instead of on every snapshot after.
+    state.lastFullScanAt = 0
+    state.snapshotsSinceFullScan = 0
+    // Persist the decision with the index when it is already loaded; otherwise
+    // the snapshot that follows this write saves it.
+    if (state.loaded) void this.saveIndex(workspacePath, state)
+    return rel
   }
 
   /** Root of the revert/restore trash; independent from the snapshot tree. */
@@ -602,6 +701,7 @@ export class CheckpointService {
         watchWindowStart: 0,
         watchAttachedAt: 0,
         lastIncomplete: false,
+        autoIgnore: [],
       }
       this.workspaces.set(key, state)
     }
@@ -619,8 +719,18 @@ export class CheckpointService {
       const parsed = JSON.parse(await readFile(this.indexFile(workspacePath), 'utf8')) as {
         version?: unknown
         files?: Record<string, { size?: unknown; mtimeMs?: unknown; sha256?: unknown }>
+        autoIgnore?: unknown
       }
-      if (parsed.version !== INDEX_VERSION || !parsed.files) return
+      if (parsed.version !== INDEX_VERSION) return
+      // Directories a tool excluded survive a restart with the index that knows
+      // about them, so the tree does not rejoin a walk after an app upgrade.
+      // Anything registered before the index was read stays: a write can land
+      // in the same run before the first snapshot loads the index.
+      state.autoIgnore = normalizeCheckpointIgnore([...state.autoIgnore, ...(Array.isArray(parsed.autoIgnore) ? parsed.autoIgnore : [])])
+      if (!parsed.files) {
+        indexDirty.value = true
+        return
+      }
       for (const [rel, entry] of Object.entries(parsed.files)) {
         if (!entry || typeof entry !== 'object') continue
         if (
@@ -653,10 +763,14 @@ export class CheckpointService {
     await mkdir(dirname(path), { recursive: true })
     const temp = `${path}.${randomUUID()}.tmp`
     try {
-      await writeFile(temp, JSON.stringify({ version: INDEX_VERSION, files }), {
-        encoding: 'utf8',
-        mode: 0o600,
-      })
+      await writeFile(
+        temp,
+        JSON.stringify({ version: INDEX_VERSION, files, autoIgnore: state.autoIgnore }),
+        {
+          encoding: 'utf8',
+          mode: 0o600,
+        },
+      )
       await moveFile(temp, path)
     } catch {
       await rm(temp, { force: true }).catch(() => undefined)
@@ -967,6 +1081,7 @@ export class CheckpointService {
     paths: string[],
   ): Promise<{ restored: number; removed: number }> {
     return this.exclusive(async () => {
+      this.recentShellSnapshot.delete(sessionId)
       const meta = await this.readMeta(sessionId, checkpointId)
       if (!meta) throw new Error('Checkpoint not found')
       const session = this.store.session(sessionId)
@@ -1045,7 +1160,13 @@ export class CheckpointService {
         removed += 1
       }
       return { restored, removed }
-    })
+    }, this.workspaceLockKey(sessionId))
+  }
+
+  /** Lock key for a session's workspace; store-wide work uses `undefined`. */
+  private workspaceLockKey(sessionId: string): string {
+    const session = this.store.session(sessionId)
+    return session ? comparePath(resolve(session.workspacePath)) : `session:${sessionId}`
   }
 
   private async prune(
@@ -1133,16 +1254,70 @@ export class CheckpointService {
     const meta = await this.exclusive(async () => {
       const state = this.stateFor(input.workspacePath)
       const indexDirty = { value: false }
-      const ignore = normalizeCheckpointIgnore(input.ignore)
+      // Directories the tools excluded at creation time travel with the settings
+      // list, so one comparison covers both and a change forces one full walk.
+      const ignore = normalizeCheckpointIgnore([...(input.ignore ?? []), ...state.autoIgnore])
+      let ignoreChanged = false
       if (state.ignore.join('\n') !== ignore.join('\n')) {
         state.ignore = ignore
         // A narrower ignore list leaves stale entries behind; a full walk is
         // the cheapest way to drop them, and it happens exactly once per edit.
         state.lastFullScanAt = 0
         state.dirty.clear()
+        ignoreChanged = true
       }
       await this.loadIndexIfNeeded(input.workspacePath, state, indexDirty)
       this.ensureWatcher(input.workspacePath, state)
+
+      // Nothing changed since this session's last snapshot: the watcher reported
+      // no event, the ignore list is the one that walk used, and the cached
+      // index is trusted. Rolling back to that tree restores exactly the same
+      // bytes, so relabel it instead of walking and hashing the workspace again.
+      // `beforeShell` fires before every command, and this is what keeps the
+      // hundredth command of a long run as cheap as the first.
+      if (
+        input.trigger === 'shell' &&
+        state.watchHealthy &&
+        !ignoreChanged &&
+        !indexDirty.value &&
+        state.dirty.size === 0
+      ) {
+        // A tool's write completes before this snapshot but its watcher event is
+        // delivered on the event loop. One turn lets a pending event land, so the
+        // reuse decision is never made against an event still in flight.
+        await yieldEventLoop()
+        const previous = this.recentShellSnapshot.get(input.sessionId)
+        const previousMeta = previous
+          ? join(this.checkpointRoot(input.sessionId, previous.id), META_FILE)
+          : null
+        if (
+          previous &&
+          previousMeta &&
+          state.dirty.size === 0 &&
+          Date.now() - Date.parse(previous.createdAt) < CHECKPOINT_SHELL_REUSE_MS &&
+          (await stat(previousMeta).catch(() => null))
+        ) {
+          // Keep `createdAt`: the reuse window stays bounded by the tree the user
+          // could actually roll back to, not by the last command that ran.
+          const refreshed: CheckpointMeta = {
+            ...previous,
+            label: checkpointLabel(input.label),
+            messageCount: Math.max(0, Math.round(input.messageCount)),
+          }
+          if (
+            refreshed.label !== previous.label ||
+            refreshed.messageCount !== previous.messageCount
+          ) {
+            await writeFile(previousMeta, JSON.stringify(refreshed), {
+              encoding: 'utf8',
+              mode: 0o600,
+            }).catch(() => undefined)
+          }
+          this.recentShellSnapshot.set(input.sessionId, refreshed)
+          reusedSnapshot = refreshed
+          return refreshed
+        }
+      }
 
       // The fast path exists to avoid a walk that costs seconds. That is a
       // question about the size of the snapshot, not the size of the workspace:
@@ -1299,7 +1474,7 @@ export class CheckpointService {
       // byte-identical directories. Reuse the previous snapshot only when the
       // label and the tree both match exactly and it is still fresh: rolling
       // back to it restores precisely the same bytes.
-      const label = input.label.replace(/\s+/g, ' ').trim().slice(0, 120) || '快照'
+      const label = checkpointLabel(input.label)
       const manifestDigest = createHash('sha256')
         .update(manifest.map((entry) => `${entry.path}\u0000${entry.sha256}`).join('\n'))
         .digest('hex')
@@ -1371,7 +1546,7 @@ export class CheckpointService {
       }
       this.recentShellSnapshot.set(input.sessionId, meta)
       return meta
-    })
+    }, comparePath(resolve(input.workspacePath)))
 
     // Persist the incremental byte count even when the maintenance gate below
     // decides no scan is needed (the common case). Otherwise a crash would lose
@@ -1394,6 +1569,9 @@ export class CheckpointService {
     mode: CheckpointRestoreMode,
   ): Promise<CheckpointRestoreResult> {
     return this.exclusive(async () => {
+      // The restore rewrites the tree, so a snapshot cached a moment ago no
+      // longer describes what is on disk.
+      this.recentShellSnapshot.delete(sessionId)
       const meta = await this.readMeta(sessionId, checkpointId)
       if (!meta) throw new Error('Checkpoint not found')
       const session = this.store.session(sessionId)
@@ -1495,7 +1673,16 @@ export class CheckpointService {
                 relativePath ? join(relativePath, entry.name) : entry.name,
               )
               if (entry.isDirectory()) {
-                if (SKIP_DIRS.has(entry.name) || entry.name === '.pilot-checkpoints') continue
+                // Directories a snapshot never captured (build output, scratch,
+                // checkpoints) are not in the manifest by design. Deleting their
+                // files here would destroy data no rollback point could restore.
+                if (
+                  SKIP_DIRS.has(entry.name) ||
+                  isEphemeralDirName(entry.name) ||
+                  entry.name === '.pilot-checkpoints'
+                ) {
+                  continue
+                }
                 await removeExtras(rel)
                 continue
               }
@@ -1530,7 +1717,7 @@ export class CheckpointService {
         truncatedMessages,
         safetyCheckpointId: safety?.id,
       }
-    })
+    }, this.workspaceLockKey(sessionId))
   }
 
   async removeSession(sessionId: string): Promise<void> {

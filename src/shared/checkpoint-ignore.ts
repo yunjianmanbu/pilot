@@ -14,6 +14,83 @@
  */
 export const CHECKPOINT_IGNORE_LIMIT = 200
 
+/**
+ * Scratch and generated directories a snapshot never captures.
+ *
+ * This is the third list, next to `SKIP_DIRS` and the user's patterns:
+ *
+ *   `SKIP_DIRS`        the file tree, search and project map never look here
+ *   settings patterns  snapshots skip it, the file tree still shows it
+ *   these names        same as a settings pattern, but always on
+ *
+ * A scratch tree is the case the settings list cannot cover for everyone: this
+ * workspace holds 79 746 snapshottable files under `tmp/` and `.build/` against
+ * ~2 700 source files, so a snapshot walk, a hash pass and a per-file blob
+ * check ran over 30× more files than the code being protected. Rolling bad
+ * build output back has no value, so the names below are excluded by default;
+ * the agent can still read and edit them.
+ *
+ * Comparison is case-insensitive on every platform: `Temp` and `temp` are the
+ * same scratch directory to the person who created it.
+ */
+export const EPHEMERAL_DIR_NAMES: readonly string[] = [
+  'tmp',
+  '.tmp',
+  'temp',
+  '.temp',
+  '.build',
+  'unpackage',
+  '.pilot-checkpoints',
+  'checkpoints',
+  '.pnpm-store',
+  '.parcel-cache',
+  '.svelte-kit',
+  '.dart_tool',
+  '.gradle',
+  '.mypy_cache',
+  '.pytest_cache',
+  '.ruff_cache',
+  '.tox',
+  '.eggs',
+  '.webpack',
+  'logs',
+]
+
+const ephemeralNames = new Set(EPHEMERAL_DIR_NAMES.map((name) => name.toLowerCase()))
+
+/** True when one path segment names a scratch or generated directory. */
+export function isEphemeralDirName(name: string): boolean {
+  return ephemeralNames.has(name.toLowerCase())
+}
+
+/** The scratch/generated segment of a workspace-relative path, or null. */
+export function ephemeralDirSegment(rel: string): string | null {
+  for (const segment of rel.split(/[\\/]+/)) {
+    if (segment && isEphemeralDirName(segment)) return segment
+  }
+  return null
+}
+
+// Names that look generated without being on the list above: `build-output`,
+// `docs-cache`, `run-tmp`. Deliberately narrow — it only decides what happens
+// to a directory a write is about to create, and a false positive would leave a
+// real source tree out of every rollback point.
+const EPHEMERAL_HINT = /(^|[._\- ])(tmp|temp|cache|build|dist|out|output|logs?|coverage|generated|scratch)([._\- ]|$)/i
+
+/**
+ * True when a newly created directory is probably scratch or generated, so the
+ * caller can keep it out of snapshots before it ever enters a walk.
+ */
+export function looksEphemeralDirPath(rel: string): boolean {
+  return rel
+    .split(/[\\/]+/)
+    .some(
+      (segment) =>
+        segment.length > 0 &&
+        (isEphemeralDirName(segment) || EPHEMERAL_HINT.test(segment)),
+    )
+}
+
 export function normalizeCheckpointIgnore(input: unknown): string[] {
   if (!Array.isArray(input)) return []
   const out: string[] = []

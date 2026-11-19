@@ -81,6 +81,23 @@ async function measure(label: string, patterns: string[]): Promise<number[]> {
       )
       expect(checkpoint.files).toBeGreaterThan(0)
     }
+    // What a `beforeShell` snapshot costs when nothing changed since the last
+    // one: the repeat of a long run, which is the case this bench exists for.
+    for (let index = 0; index < 3; index += 1) {
+      const started = Date.now()
+      const checkpoint = await service.create({
+        sessionId: session.id,
+        workspacePath: added.path,
+        label: `shell ${index}`,
+        messageCount: index,
+        trigger: 'shell',
+        retention: 20,
+        ignore: patterns,
+      })
+      const elapsed = Date.now() - started
+      console.log(`[bench] ${label} (shell ${index}): reused=${checkpoint.id} in ${elapsed}ms`)
+      timings.push(elapsed)
+    }
     return timings
   } finally {
     service.dispose()
@@ -95,5 +112,7 @@ it.skipIf(!workspace)('snapshots a real workspace with an ignore list', async ()
   const ratio = (a: number, b: number): string => `${(a / b).toFixed(1)}x`
   const first = `${before[0]}ms -> ${after[0]}ms (${ratio(before[0] ?? 1, after[0] ?? 1)})`
   const second = `${before[1]}ms -> ${after[1]}ms (${ratio(before[1] ?? 1, after[1] ?? 1)})`
+  const shell = `${before[2]}ms -> ${after[2]}ms (${ratio(before[2] ?? 1, after[2] ?? 1)})`
   console.log(`[bench] first snapshot ${first}, second snapshot ${second}`)
+  console.log(`[bench] unchanged shell snapshot ${shell}`)
 }, 600_000)
