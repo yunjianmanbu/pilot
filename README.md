@@ -178,13 +178,13 @@ pnpm package:win     # also package:mac / package:linux / package:dir
 
 ## Security
 
-Please report vulnerabilities privately — see [SECURITY.md](../SECURITY.md). Do not open a public issue
+Please report vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not open a public issue
 for a security problem.
 
 ## License
 
-[Apache License 2.0](../LICENSE), copyright 2026 rigongyizu. Keep the copyright notice and the
-[`NOTICE`](../NOTICE) file, and state the changes in files you modified.
+[Apache License 2.0](LICENSE), copyright 2026 rigongyizu. Keep the copyright notice and the
+[`NOTICE`](NOTICE) file, and state the changes in files you modified.
 
 - Use, modify and deploy it personally or inside a company, including a self-hosted relay.
 - Integrate it into your own product or build closed-source derivatives; Apache-2.0 does not require
@@ -192,5 +192,5 @@ for a security problem.
 - Section 3 grants an explicit patent licence (and terminates it if you sue over patents), and
   Section 6 keeps the "Pilot" name and logo outside the licence — forks must not imply endorsement.
 
-Third-party components (Electron, Chromium, React, @noble, …) are listed in [`NOTICE`](../NOTICE);
+Third-party components (Electron, Chromium, React, @noble, …) are listed in [`NOTICE`](NOTICE);
 release installers ship the full licence texts.

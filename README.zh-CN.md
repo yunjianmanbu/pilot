@@ -154,11 +154,11 @@ pnpm package:win     # 另有 package:mac / package:linux / package:dir
 
 ## 安全
 
-漏洞请私下报告，见 [`SECURITY.md`](../SECURITY.md)；安全问题不要开公开 issue。
+漏洞请私下报告，见 [`SECURITY.md`](SECURITY.md)；安全问题不要开公开 issue。
 
 ## 许可
 
-[Apache License 2.0](../LICENSE)，版权归 2026 rigongyizu。你需要保留版权声明与 [`NOTICE`](../NOTICE)
+[Apache License 2.0](LICENSE)，版权归 2026 rigongyizu。你需要保留版权声明与 [`NOTICE`](NOTICE)
 文件，并在修改过的文件里注明改动。
 
 - 个人或公司内部自由使用、修改、部署（含自建中继）；
@@ -166,5 +166,5 @@ pnpm package:win     # 另有 package:mac / package:linux / package:dir
 - 第 3 条给出明确的专利授权（就本项目发起专利诉讼则授权终止），第 6 条把「Pilot」名称与 Logo
   排除在授权之外，修改版不得暗示官方背书。
 
-第三方组件（Electron、Chromium、React、@noble 等）的许可见 [`NOTICE`](../NOTICE)，
+第三方组件（Electron、Chromium、React、@noble 等）的许可见 [`NOTICE`](NOTICE)，
 安装包内随包分发完整许可文本。
