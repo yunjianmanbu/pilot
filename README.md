@@ -14,7 +14,7 @@ refined behaviour profile.
 The UI is Electron + React. **No sign-up, no login, no cloud database** — point it at a DeepSeek API
 key (or any OpenAI-compatible endpoint) and it works.
 
-![Pilot main window](docs/screenshot.png)
+![Pilot main window](docs/screenshot-en.png)
 
 ## Features
 
