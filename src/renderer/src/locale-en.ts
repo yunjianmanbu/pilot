@@ -1318,7 +1318,7 @@ export const en: Record<string, string> = {
   "还没有运行过系统进化": "No system-evolution cycle has run yet",
   "完成至少 {v1} 次任务后，可以点“立即进化”，或开启自动运行让 Pilot 自己开始。":
     "After at least {v1} tasks, click “Evolve now”, or turn on auto-run and let Pilot start on its own.",
-  "默认": "Default",
+  "内置默认": "Built-in default",
   "进化机制": "Evolution mechanism",
   "每 {v1} 次运行 · 评审 ≥ {v2} 分 · 观察 {v3} 次":
     "Every {v1} runs · review ≥ {v2} · watch {v3} runs",
