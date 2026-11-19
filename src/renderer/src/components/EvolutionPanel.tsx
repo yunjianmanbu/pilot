@@ -1512,7 +1512,7 @@ export function EvolutionPanel({
             <span>{t("平均步数")}</span>
           </div>
           <div className="stat">
-            <strong>{active ? `v${active.version}` : '—'}</strong>
+            <strong>{active ? `v${active.version}` : t("内置默认")}</strong>
             <span>{t("当前版本")}</span>
           </div>
         </div>
@@ -1591,7 +1591,7 @@ export function EvolutionPanel({
         <div className="policy-card">
           <div className="policy-card-head">
             <span className="profile-version small">
-              {activePolicyVersion ? `v${activePolicyVersion.version}` : t("默认")}
+              {activePolicyVersion ? `v${activePolicyVersion.version}` : t("内置默认")}
             </span>
             <span className="profile-source">{t("进化机制")}</span>
             <span className="muted">

@@ -190,6 +190,28 @@ describe('pruneProfiles', () => {
     expect(pruned.map((entry) => entry.id)).toContain('p3')
   })
 
+  it('keeps the incumbent when newer drafts alone fill the limit', () => {
+    // Newest first, as the store keeps them: the active profile is the oldest
+    // entry, so selecting pinned entries by position would cut exactly it.
+    const drafts = Array.from({ length: 40 }, (_, index) =>
+      profile({ id: `d${40 - index}`, version: 40 - index }),
+    )
+    const history = [...drafts, active]
+    const pruned = pruneProfiles(history)
+    expect(pruned).toHaveLength(40)
+    expect(pruned.map((entry) => entry.id)).toContain('p5')
+    // The oldest draft gives way, not the profile in force.
+    expect(pruned.map((entry) => entry.id)).not.toContain('d1')
+  })
+
+  it('keeps measured winners when drafts alone fill the limit', () => {
+    const drafts = Array.from({ length: 40 }, (_, index) =>
+      profile({ id: `d${40 - index}`, version: 40 - index }),
+    )
+    const pruned = pruneProfiles([...drafts, proven])
+    expect(pruned.map((entry) => entry.id)).toContain('p3')
+  })
+
   it('is a no-op below the limit', () => {
     const small = [active, proven]
     expect(pruneProfiles(small, 40)).toBe(small)

@@ -116,21 +116,38 @@ export function describeParent(profile: ProfileVersion | null): string {
   return `${label}; measured ${comparison.wins}W/${comparison.losses}L/${comparison.ties}T over ${comparison.tasks} tasks (${comparison.verdict})`
 }
 
-const MAX_PROFILES = 40
+export const MAX_PROFILES = 40
+
+/**
+ * Which profiles may never be dropped, lower wins: the profile in force, then
+ * measured winners, then drafts still awaiting a verdict.
+ */
+function keepPriority(profile: ProfileVersion): number {
+  if (profile.status === 'active') return 0
+  if (isProvenVariant(profile)) return 1
+  if (profile.status === 'draft') return 2
+  return 3
+}
 
 /**
  * Keep the profile history bounded without throwing away the only good ancestors:
  * the incumbent, drafts still awaiting a decision, and every variant that proved
  * a measured improvement survive; the rest are dropped oldest first.
+ *
+ * Selection is by priority, not by list position. The list is newest-first, so a
+ * plain `filter(pinned).slice(0, limit)` drops the *oldest* pinned entry once
+ * drafts alone fill the quota — that entry is the active profile, whose rules
+ * then silently stop reaching the prompt and the page shows no current version.
+ * `sort` is stable, so within one priority the newest entries still win.
  */
 export function pruneProfiles(profiles: ProfileVersion[], limit = MAX_PROFILES): ProfileVersion[] {
   if (profiles.length <= limit) return profiles
-  const pinned = (profile: ProfileVersion): boolean =>
-    profile.status === 'active' || profile.status === 'draft' || isProvenVariant(profile)
-  const keep = new Set(profiles.filter(pinned).slice(0, limit).map((profile) => profile.id))
-  for (const profile of profiles) {
-    if (keep.size >= limit) break
-    if (!pinned(profile)) keep.add(profile.id)
-  }
+  const keep = new Set(
+    [...profiles]
+      .sort((left, right) => keepPriority(left) - keepPriority(right))
+      .slice(0, limit)
+      .map((profile) => profile.id),
+  )
+  // Order is preserved: prune removes entries, it does not re-sort history.
   return profiles.filter((profile) => keep.has(profile.id))
 }
