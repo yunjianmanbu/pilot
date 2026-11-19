@@ -5,12 +5,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent,
 } from 'react'
 import type {
   ApprovalMode,
   ApprovalRequest,
-  ContextStats,
   MessageDelivery,
   Plan,
   ProjectInstructionFile,
@@ -29,6 +30,7 @@ import {
   ClockIcon,
   CopyIcon,
   FileIcon,
+  FilesIcon,
   FolderIcon,
   ImageIcon,
   InfoIcon,
@@ -52,15 +54,24 @@ import {
   formatTime,
   liveProcess,
   riskLabel,
+  stripIpcWrapper,
   summarizeTool,
   type LiveRun,
   type UIMessage,
 } from '../ui'
 import { Markdown } from './Markdown'
+import type { TranscriptUsage } from '../tokens'
 import { ProcessBox } from './ProcessBox'
 import { QuickCommandsDialog } from './QuickCommandsDialog'
 import { ReferencePicker } from './ReferencePicker'
 import { t } from '../i18n'
+import {
+  isImageUpload,
+  MAX_UPLOAD_FILES,
+  MAX_UPLOAD_IMAGES,
+  mergeReferences,
+  planUpload,
+} from '../../../shared/uploads'
 
 const INPUT_HISTORY_KEY = 'pilot.input-history.v1'
 const INPUT_HISTORY_LIMIT = 40
@@ -1187,15 +1198,13 @@ function Composer({
   running,
   planSettled,
   hasKey,
-  contextStats,
-  compacting,
+  contextUsage,
   projectInstructions,
   composerSeed,
   onSend,
   onStop,
   onPause,
   onOpenSettings,
-  onCompactContext,
   onAddTodo,
   onUpdateTodo,
   onRemoveTodo,
@@ -1209,8 +1218,8 @@ function Composer({
   running: boolean
   planSettled: boolean
   hasKey: boolean
-  contextStats: ContextStats | null
-  compacting: boolean
+  /** Estimated prompt footprint shown above the composer; null hides the readout. */
+  contextUsage: TranscriptUsage | null
   projectInstructions: ProjectInstructionFile[]
   composerSeed: { key: number; text: string } | null
   onSend: (
@@ -1221,7 +1230,6 @@ function Composer({
   onStop: () => void
   onPause: () => void
   onOpenSettings: () => void
-  onCompactContext: () => void
   onAddTodo: (text: string) => Promise<void>
   onUpdateTodo: (todoId: string, text: string) => Promise<void>
   onRemoveTodo: (todoId: string) => Promise<void>
@@ -1239,6 +1247,10 @@ function Composer({
   )
   const [refOpen, setRefOpen] = useState(false)
   const [picking, setPicking] = useState(false)
+  const [filing, setFiling] = useState(false)
+  // 拖拽计数：光标从子元素进出会重复触发 enter/leave，只靠布尔值会闪。
+  const [dragging, setDragging] = useState(false)
+  const dragDepth = useRef(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sessionIdRef = useRef<string | null>(session?.id ?? null)
   const historyIndex = useRef(-1)
@@ -1294,6 +1306,11 @@ function Composer({
     if (!running) setDelivery('queue')
   }, [running])
 
+  // 主进程的拒绝理由（体积超限、工作区外、同名太多）要原样说清楚，
+  // 但要先剥掉 Electron 的「Error invoking remote method '/pilot:xxx': Error:」外壳。
+  const errorText = (error: unknown): string =>
+    stripIpcWrapper(error instanceof Error ? error.message : String(error))
+
   const pickImages = async () => {
     if (picking || running) return
     setPicking(true)
@@ -1304,10 +1321,139 @@ function Composer({
       }
     } catch (error) {
       // Surfacing the reason matters when an image is too large.
-      window.alert(error instanceof Error ? error.message : String(error))
+      window.alert(errorText(error))
     } finally {
       setPicking(false)
     }
+  }
+
+  const pickFiles = async () => {
+    if (filing || running) return
+    const workspacePath = session?.workspacePath || ''
+    if (!workspacePath) {
+      window.alert(t("当前会话没有工作区，无法上传文件"))
+      return
+    }
+    setFiling(true)
+    try {
+      const uploaded = await window.pilot.pickFiles(workspacePath)
+      if (uploaded.length > 0) {
+        const merged = mergeReferences(
+          references,
+          uploaded.map((file) => file.path).filter(Boolean),
+        )
+        if (merged.dropped > 0) window.alert(t("最多参照 8 个项目"))
+        changeReferences(merged.references)
+      }
+    } catch (error) {
+      // A rejected file (too large, outside the workspace) has to say why.
+      window.alert(errorText(error))
+    } finally {
+      setFiling(false)
+    }
+  }
+
+  const attachFiles = async (files: File[]) => {
+    if (files.length === 0) return
+    if (running) {
+      window.alert(t("任务结束后可添加文件"))
+      return
+    }
+    const notices: string[] = []
+    const imageFiles = files.filter((file) => isImageUpload(file))
+    const otherFiles = files.filter((file) => !isImageUpload(file))
+    setFiling(true)
+    try {
+      if (imageFiles.length > 0) {
+        const room = Math.max(0, MAX_UPLOAD_IMAGES - images.length)
+        if (room === 0) {
+          notices.push(t("最多附图 {v1} 张", { v1: MAX_UPLOAD_IMAGES }))
+        } else {
+          // 图片要变成 data URL，所以即使能拿到磁盘路径也直接读字节。
+          const plan = await planUpload(imageFiles, () => '', { limit: room, readBytes: true })
+          const added: string[] = []
+          for (const blob of plan.blobs) {
+            added.push(await window.pilot.pasteImage({ name: blob.name, data: blob.data }))
+          }
+          if (added.length > 0) changeImages([...images, ...added].slice(0, MAX_UPLOAD_IMAGES))
+          if (plan.overflow > 0) {
+            notices.push(t("最多附图 {v1} 张", { v1: MAX_UPLOAD_IMAGES }))
+          }
+        }
+      }
+      if (otherFiles.length > 0) {
+        const workspacePath = session?.workspacePath || ''
+        if (!workspacePath) {
+          notices.push(t("当前会话没有工作区，无法上传文件"))
+        } else {
+          const plan = await planUpload(otherFiles, (file) =>
+            window.pilot.pathForFile(file as unknown),
+          )
+          if (plan.paths.length + plan.blobs.length > 0) {
+            const uploaded = await window.pilot.uploadFiles(workspacePath, {
+              paths: plan.paths,
+              blobs: plan.blobs,
+            })
+            const merged = mergeReferences(
+              references,
+              uploaded.map((file) => file.path).filter(Boolean),
+            )
+            changeReferences(merged.references)
+            if (merged.dropped > 0) {
+              notices.push(t("最多参照 8 个项目"))
+            }
+          }
+          if (plan.overflow > 0) {
+            notices.push(t("一次最多上传 {v1} 个文件", { v1: MAX_UPLOAD_FILES }))
+          }
+        }
+      }
+    } catch (error) {
+      // 体积超限、工作区外、同名太多等理由必须说清楚。
+      notices.push(errorText(error))
+    } finally {
+      setFiling(false)
+    }
+    if (notices.length > 0) window.alert(notices.join('\n'))
+  }
+
+  const draggedFiles = (event: ReactDragEvent<HTMLElement>): boolean =>
+    Array.from(event.dataTransfer?.types ?? []).includes('Files')
+
+  const onDragEnter = (event: ReactDragEvent<HTMLElement>) => {
+    if (!draggedFiles(event)) return
+    event.preventDefault()
+    dragDepth.current += 1
+    setDragging(true)
+  }
+
+  const onDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    if (!draggedFiles(event)) return
+    // 不阻止默认行为的话，Electron 会把整个窗口导航到被拖入的文件。
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const onDragLeave = (event: ReactDragEvent<HTMLElement>) => {
+    if (!draggedFiles(event)) return
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragging(false)
+  }
+
+  const onDrop = (event: ReactDragEvent<HTMLElement>) => {
+    if (!draggedFiles(event)) return
+    event.preventDefault()
+    dragDepth.current = 0
+    setDragging(false)
+    void attachFiles(Array.from(event.dataTransfer.files))
+  }
+
+  const onPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData?.files ?? [])
+    // 普通文本粘贴必须照常进入 textarea，只有带文件时才接管。
+    if (files.length === 0) return
+    event.preventDefault()
+    void attachFiles(files)
   }
 
   const toggleReference = (path: string) => {
@@ -1324,7 +1470,7 @@ function Composer({
 
   const submit = async () => {
     const text = draft.trim()
-    if ((!text && images.length === 0) || submitting) return
+    if ((!text && images.length === 0 && references.length === 0) || submitting) return
     if (!hasKey) {
       onOpenSettings()
       return
@@ -1384,7 +1530,19 @@ function Composer({
   }
 
   return (
-    <div className="composer-wrap">
+    <div
+      className={`composer-wrap${dragging ? ' is-dragging' : ''}`}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {dragging ? (
+        <div className="composer-drop-hint">
+          <FilesIcon width={18} height={18} />
+          <span>{t("松开即可附件：图片随消息发送，其它文件上传到工作区")}</span>
+        </div>
+      ) : null}
       {!hasKey ? (
         <button type="button" className="composer-warning" onClick={onOpenSettings}>
           <InfoIcon width={14} height={14} />
@@ -1449,6 +1607,7 @@ function Composer({
                 : t("描述任务，Pilot 会读取工作区并自主执行…")
             }
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             spellCheck={false}
           />
         </div>
@@ -1464,6 +1623,19 @@ function Composer({
             >
               {picking ? <i className="spinner tiny" /> : <ImageIcon width={14} height={14} />}
               {t("图片")}</button>
+            <button
+              type="button"
+              className="composer-attach"
+              onClick={() => void pickFiles()}
+              disabled={running || filing || !session?.workspacePath}
+              title={
+                running
+                  ? t("任务结束后可添加文件")
+                  : t("上传文件到工作区，作为参照发送；也可以直接拖进来或粘贴")
+              }
+            >
+              {filing ? <i className="spinner tiny" /> : <FilesIcon width={14} height={14} />}
+              {t("文件")}</button>
             <button
               type="button"
               className="composer-attach"
@@ -1512,33 +1684,12 @@ function Composer({
                 {t("项目指令 ·")}{projectInstructions.map((file) => file.name).join(' / ')}
               </span>
             ) : null}
-            {contextStats && session ? (
+            {contextUsage && contextUsage.tokens > 0 ? (
               <span
-                className={`context-meter${contextStats.percent >= 85 ? ' is-high' : ''}`}
-                title={t("约 {v1} / {v2} tokens · {v3} 条消息", { v1: formatNumber(contextStats.estimatedTokens), v2: formatNumber(contextStats.maxContextTokens), v3: contextStats.messageCount })}
+                className="context-tokens"
+                title={t("按对话内容估算的上下文用量 · {v1} 条消息", { v1: formatNumber(contextUsage.messages) })}
               >
-                <span className="context-meter-track">
-                  <i
-                    className="context-meter-fill"
-                    style={{ width: `${Math.min(100, Math.max(2, contextStats.percent))}%` }}
-                  />
-                </span>
-                <span>{contextStats.percent}%</span>
-                <button
-                  type="button"
-                  className="context-compact"
-                  onClick={onCompactContext}
-                  disabled={compacting || contextStats.compactableChars === 0 || running}
-                  title={
-                    running
-                      ? t("任务执行中，结束后可手动压缩")
-                      : contextStats.compactableChars > 0
-                        ? t("压缩旧工具输出，可释放约 {v1} 字符", { v1: formatNumber(contextStats.compactableChars) })
-                        : t("当前没有可压缩的旧工具输出")
-                  }
-                >
-                  {compacting ? <i className="spinner tiny" /> : t("压缩")}
-                </button>
+                {t("上下文 ≈ {v1} tokens", { v1: formatNumber(contextUsage.tokens) })}
               </span>
             ) : null}
           </div>
@@ -1569,7 +1720,7 @@ function Composer({
               type="button"
               className="composer-send"
               onClick={() => void submit()}
-              disabled={(!draft.trim() && images.length === 0) || submitting}
+              disabled={(!draft.trim() && images.length === 0 && references.length === 0) || submitting}
               title={hasKey ? t("发送") : t("先配置 API Key")}
             >
               {submitting ? <i className="spinner" /> : <SendIcon width={16} height={16} />}
@@ -1602,8 +1753,7 @@ export interface ChatViewProps {
   running: boolean
   hasEarlier: boolean
   loadingEarlier: boolean
-  contextStats: ContextStats | null
-  compacting: boolean
+  contextUsage: TranscriptUsage | null
   projectInstructions: ProjectInstructionFile[]
   focusMessageId: string | null
   /** A prompt inserted by another panel; `key` makes repeated seeds distinct. */
@@ -1621,7 +1771,6 @@ export interface ChatViewProps {
   onDeleteMessage: (messageId: string) => Promise<void>
   onRegenerate: () => void
   onRetry: () => void
-  onCompactContext: () => void
   continuing: boolean
   onDecideApproval: (callId: string, approved: boolean, remember: boolean) => void
   /** Switch the active session's execution mode (not available in review sessions). */
@@ -1656,8 +1805,7 @@ export function ChatView({
   running,
   hasEarlier,
   loadingEarlier,
-  contextStats,
-  compacting,
+  contextUsage,
   projectInstructions,
   focusMessageId,
   composerSeed,
@@ -1670,7 +1818,6 @@ export function ChatView({
   onDeleteMessage,
   onRegenerate,
   onRetry,
-  onCompactContext,
   continuing,
   onDecideApproval,
   onChangeApprovalMode,
@@ -1994,15 +2141,13 @@ export function ChatView({
           running={running}
           planSettled={planSettled}
           hasKey={hasKey}
-          contextStats={contextStats}
-          compacting={compacting}
+          contextUsage={contextUsage}
           projectInstructions={projectInstructions}
           composerSeed={composerSeed}
           onSend={onSend}
           onStop={onStop}
           onPause={onPause}
           onOpenSettings={onOpenSettings}
-          onCompactContext={onCompactContext}
           onAddTodo={onAddTodo}
           onUpdateTodo={onUpdateTodo}
           onRemoveTodo={onRemoveTodo}

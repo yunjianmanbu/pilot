@@ -186,7 +186,10 @@ describe('runDrive on cdp', () => {
     const root = await workspace()
     const result = await runDrive({
       root,
-      hints: { url: http.url },
+      // The fake DevTools server listens on an ephemeral port, so the cdp
+      // surface is only reachable when that port is handed in: the probe scan
+      // (9222-9232) can never find it.
+      hints: { url: http.url, port: cdp.port },
       surfaceOrder: ['http', 'cdp'],
       steps: [
         { do: 'http', expectStatus: 200 },

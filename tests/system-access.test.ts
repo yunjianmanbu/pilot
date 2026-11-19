@@ -80,6 +80,7 @@ const settings: SettingsView = {
   baseUrl: 'https://api.example.test/v1',
   model: 'deepseek-chat',
   maxSteps: 36,
+  maxTokens: 0,
   maxContextTokens: 128_000,
   maxOutputTokens: 8_192,
   temperature: 0.2,

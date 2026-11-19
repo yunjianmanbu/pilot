@@ -6,6 +6,7 @@ import {
   ensureGlobalInstructions,
   loadGlobalInstructions,
   loadProjectInstructions,
+  loadProjectInstructionsDetailed,
 } from '../src/main/instructions'
 
 const roots: string[] = []
@@ -21,6 +22,37 @@ afterEach(async () => {
 })
 
 describe('loadProjectInstructions', () => {
+  it('reports a truncated or unreadable file instead of dropping it silently', async () => {
+    const root = await makeRoot()
+    // One byte over the 24 KB cap: the model would otherwise get a silently
+    // shortened rule file and never know a rule was cut off.
+    await writeFile(join(root, 'AGENTS.md'), `# Rules\n${'x'.repeat(24 * 1024)}\n`, 'utf8')
+    const { files, issues } = await loadProjectInstructionsDetailed(root)
+    expect(files).toHaveLength(1)
+    expect(files[0]?.truncated).toBe(true)
+    expect(issues.truncated.map((entry) => entry.name)).toEqual(['AGENTS.md'])
+    expect(issues.unreadable).toEqual([])
+  })
+
+  it('stays quiet when the instruction files are simply absent', async () => {
+    const root = await makeRoot()
+    const { files, issues } = await loadProjectInstructionsDetailed(root)
+    expect(files).toEqual([])
+    expect(issues.truncated).toEqual([])
+    expect(issues.unreadable).toEqual([])
+  })
+
+  it('names a file that exists but cannot be read', async () => {
+    const root = await makeRoot()
+    const outside = await makeRoot()
+    await writeFile(join(outside, 'AGENTS.md'), '# outside\n', 'utf8')
+    // A symlink leaving the workspace is refused by the jail; the run must say
+    // so rather than behave as if the repo had no rules at all.
+    await symlink(join(outside, 'AGENTS.md'), join(root, 'AGENTS.md'))
+    const { files, issues } = await loadProjectInstructionsDetailed(root)
+    expect(files).toEqual([])
+    expect(issues.unreadable.map((entry) => entry.name)).toEqual(['AGENTS.md'])
+  })
   it('loads PILOT.md and AGENTS.md in order', async () => {
     const root = await makeRoot()
     await writeFile(join(root, 'PILOT.md'), 'Use pnpm. Run pnpm test first.\n', 'utf8')

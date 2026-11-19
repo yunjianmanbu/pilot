@@ -26,6 +26,16 @@ const USED = [...CSS.matchAll(/var\(\s*(--[a-z0-9-]+)/gi)].map((match) => match[
 type Variables = Record<string, string>
 
 function block(selector: string): Variables {
+  const body = ruleBody(selector)
+  const vars: Variables = {}
+  for (const match of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
+    vars[match[1] as string] = (match[2] as string).trim()
+  }
+  return vars
+}
+
+/** Raw declaration body of one rule, for assertions that are not about tokens. */
+function ruleBody(selector: string): string {
   const start = CSS.indexOf(`${selector} {`)
   if (start < 0) throw new Error(`styles.css 里找不到选择器 ${selector}`)
   const open = CSS.indexOf('{', start)
@@ -34,14 +44,7 @@ function block(selector: string): Variables {
     if (CSS[index] === '{') depth += 1
     else if (CSS[index] === '}') {
       depth -= 1
-      if (depth === 0) {
-        const body = CSS.slice(open + 1, index)
-        const vars: Variables = {}
-        for (const match of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
-          vars[match[1] as string] = (match[2] as string).trim()
-        }
-        return vars
-      }
+      if (depth === 0) return CSS.slice(open + 1, index)
     }
   }
   throw new Error(`选择器 ${selector} 的样式块没有闭合`)
@@ -261,6 +264,35 @@ function resolveValue(vars: Variables, name: string, depth = 0): string {
   if (depth > 5) throw new Error(`${name} 的 var 链太深`)
   return resolveValue(vars, alias[1] as string, depth + 1)
 }
+
+describe('user message action buttons', () => {
+  /**
+   * 「编辑」「复制」曾经是 opacity: 0 + `.user-message:hover` 才显示，等于不悬停
+   * 就找不到这两个按钮。这里守住两件事：默认不靠 hover 就可见，且基准色
+   * 在气泡底色（--panel-3 → --panel-2 渐变）上仍达到 4.5:1。
+   */
+  it('stay visible without hovering the message', () => {
+    const body = ruleBody('.user-copy')
+    expect(/opacity\s*:\s*0\s*;/.test(body), '.user-copy 默认不透明度不能是 0').toBe(false)
+    expect(body, '.user-copy 需要一个不依赖 hover 的前景色').toMatch(
+      /color\s*:\s*var\(\s*--(?:muted|text-soft|text)\s*\)/,
+    )
+  })
+
+  for (const mode of ['dark', 'light'] as const) {
+    it(`${mode}: the resting colour is readable on the user bubble`, () => {
+      const vars = { ...block(':root') }
+      if (mode === 'light') Object.assign(vars, block(":root[data-theme='light']"))
+      const foreground = resolveValue(vars, '--muted')
+      const failures: string[] = []
+      for (const surface of ['--panel-3', '--panel-2']) {
+        const value = ratio(foreground, resolveValue(vars, surface))
+        if (value < 4.5) failures.push(`--muted ${foreground} on ${surface} = ${value.toFixed(2)}:1`)
+      }
+      expect(failures, `\n${failures.join('\n')}\n`).toEqual([])
+    })
+  }
+})
 
 describe('syntax colours inside code blocks', () => {
   // 代码块底色是 --code-bg，不是在 --panel 上。五档语法色都必须能在那上面读。

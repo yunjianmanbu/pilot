@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   ApprovalMode,
   CheckpointRestoreMode,
@@ -106,6 +106,13 @@ const bridge: PilotBridge = {
     options?: MessageOptions,
   ) => ipcRenderer.invoke('pilot:message-send', sessionId, content, delivery, options),
   pickImages: () => ipcRenderer.invoke('pilot:pick-images'),
+  pickFiles: (workspacePath: string) => ipcRenderer.invoke('pilot:pick-files', workspacePath),
+  uploadFiles: (workspacePath: string, input) =>
+    ipcRenderer.invoke('pilot:upload-files', workspacePath, input),
+  pasteImage: (input) => ipcRenderer.invoke('pilot:paste-image', input),
+  // 拖拽/粘贴来的 File 在渲染进程里拿不到真实路径，只能由 preload 问 Chromium
+  // 要；没有磁盘来源的（剪贴板虚拟文件）会返回空串。
+  pathForFile: (file: unknown) => webUtils.getPathForFile(file as never),
   cancelRun: (sessionId: string) => ipcRenderer.invoke('pilot:run-cancel', sessionId),
   pauseRun: (sessionId: string) => ipcRenderer.invoke('pilot:run-pause', sessionId),
   continueRun: (sessionId: string) => ipcRenderer.invoke('pilot:run-continue', sessionId),
@@ -115,8 +122,6 @@ const bridge: PilotBridge = {
     ipcRenderer.invoke('pilot:message-delete', sessionId, messageId),
   regenerate: (sessionId: string) => ipcRenderer.invoke('pilot:run-regenerate', sessionId),
   retryRun: (sessionId: string) => ipcRenderer.invoke('pilot:run-retry', sessionId),
-  getContextStats: (sessionId: string) => ipcRenderer.invoke('pilot:context-stats', sessionId),
-  compactContext: (sessionId: string) => ipcRenderer.invoke('pilot:context-compact', sessionId),
   projectInstructions: (workspacePath: string) =>
     ipcRenderer.invoke('pilot:project-instructions', workspacePath),
   removeQueueItem: (sessionId: string, taskId: string) =>
@@ -265,6 +270,10 @@ const bridge: PilotBridge = {
     ipcRenderer.invoke('pilot:files-list', path, directory),
   previewFile: (path: string, file: string) => ipcRenderer.invoke('pilot:file-preview', path, file),
   revealFile: (path: string, file: string) => ipcRenderer.invoke('pilot:file-reveal', path, file),
+  openDocument: (workspace: string, file: string) =>
+    ipcRenderer.invoke('pilot:doc-open', workspace, file),
+  documentState: () => ipcRenderer.invoke('pilot:doc-state'),
+  closeDocument: () => ipcRenderer.invoke('pilot:doc-close'),
   openLink: (url: string, external?: boolean) => ipcRenderer.invoke('pilot:open-link', url, external),
 
   updates: {

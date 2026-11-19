@@ -11,7 +11,6 @@ import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, SETTING_CONTEXT_MAX, SET
 import { normalizeRelayUrl } from '../shared/relay'
 import { evolutionPolicyKey } from '../shared/evolution'
 import { normalizeQualityPublishTarget, sanitizeCandidate, sanitizeQualityState } from '../shared/quality'
-import { compactToolResults } from './agent/context'
 import { pruneProfiles } from '../core/profile-archive'
 import { MEMORY_ENTRY_MAX_CHARS, MEMORY_STORE_LIMIT, inferMemoryCategory } from '../shared/memory'
 import { shellInterpreterStatus } from './shell'
@@ -886,6 +885,7 @@ export class Store {
       baseUrl: this.state.settings.baseUrl,
       model: this.state.settings.model,
       maxSteps: this.state.settings.maxSteps,
+      maxTokens: this.state.settings.maxTokens,
       maxContextTokens: this.state.settings.maxContextTokens,
       maxOutputTokens: this.state.settings.maxOutputTokens,
       temperature: this.state.settings.temperature,
@@ -983,6 +983,11 @@ export class Store {
     }
     if (input.maxSteps !== undefined) {
       this.state.settings.maxSteps = clampNumber(input.maxSteps, 200, 4, 1_000)
+    }
+    if (input.maxTokens !== undefined) {
+      // 0 keeps the budget off; anything else is rounded so the UI cannot send
+      // a fractional cap.
+      this.state.settings.maxTokens = Math.round(clampNumber(input.maxTokens, 0, 0, 20_000_000))
     }
     if (input.maxContextTokens !== undefined) {
       this.state.settings.maxContextTokens = clampNumber(
@@ -1599,21 +1604,6 @@ export class Store {
     this.markMessagesRewrite(session)
     session.updatedAt = now()
     await this.save()
-  }
-
-  /** Persist compaction of old tool output. Returns what was reclaimed. */
-  async compactSessionMessages(
-    sessionId: string,
-  ): Promise<{ compacted: number; savedChars: number }> {
-    const session = this.state.sessions.find((entry) => entry.id === sessionId)
-    if (!session) throw new Error('Session not found')
-    const result = compactToolResults(session.messages, { keepRecentToolResults: 8 })
-    if (result.compacted === 0) return { compacted: 0, savedChars: 0 }
-    session.messages = result.messages as StoredMessage[]
-    this.markMessagesRewrite(session)
-    session.updatedAt = now()
-    await this.save()
-    return { compacted: result.compacted, savedChars: result.savedChars }
   }
 
   /** Rewind the transcript to a checkpoint boundary. */

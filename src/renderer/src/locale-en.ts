@@ -103,6 +103,13 @@ export const en: Record<string, string> = {
   "一次性": "one-time",
   "三级知识库": "Three-level knowledge base",
   "上下文预算": "Context budget",
+  "token 总量上限": "Token budget per task",
+  "单次任务累计；不限制则跑满步数为止": "Counted across one task; unlimited runs to the step cap",
+  "不限制": "No limit",
+  "20 万": "200K",
+  "60 万": "600K",
+  "200 万": "2M",
+  "token 总量上限需要是 0 或正整数（0 = 不限制）。": "The token budget must be 0 or a positive whole number (0 = no limit).",
   "上次任务没有正常结束": "The previous task did not finish cleanly",
   "上次失败": "Last failure",
   "下载中": "Downloading",
@@ -154,12 +161,12 @@ export const en: Record<string, string> = {
   "任务已暂停，可继续": "Task paused; can resume",
   "任务已暂停，可随时从断点继续。": "Task paused; resume anytime from the checkpoint.",
   "任务执行中，完成后才能重启安装": "A task is running; install after it finishes",
-  "任务执行中，结束后可手动压缩": "A task is running; compact manually after it finishes",
   "任务执行中，结束后可编辑": "A task is running; edit after it finishes",
   "任务未完成时，自动从中断处继续，直到完成或达到上面的次数上限。手动暂停的会话不会自动继续。":
     "When a task stops before finishing, continue automatically from the interruption until it completes or reaches the limit above. Manually paused sessions are never resumed automatically.",
   "任务结束后可参照其他项目": "References can be added after the task finishes",
   "任务结束后可添加图片": "Images can be added after the task finishes",
+  "任务结束后可添加文件": "Files can be added after the task finishes",
   "份全局候选": " global candidates",
   "份草稿": " drafts",
   "优先级最高，不能被允许规则覆盖": "Highest priority; allow rules cannot override it",
@@ -264,7 +271,6 @@ export const en: Record<string, string> = {
   "即将开始": "Starting soon",
   "即将自动拒绝": "Auto-rejecting soon",
   "历史版本 ·": "History ·",
-  "压缩": "Compact",
   "参数": "Parameters",
   "参照": "Reference",
   "参照其他项目": "Reference other projects",
@@ -342,8 +348,8 @@ export const en: Record<string, string> = {
   "回退点总空间上限需要在 512 MB 到 20,480 MB 之间。":
     "The total checkpoint budget must be between 512 MB and 20,480 MB.",
   "快照跳过的路径": "Paths snapshots skip",
-  "每行一条，只影响回退点：这些路径不会被扫描或保存，但仍可在文件树里查看和修改。构建缓存、临时目录、日志等生成物应写在这里。支持 * 通配（如 build-*），带 / 的路径从工作区根算起。":
-    "One per line, snapshots only: these paths are neither walked nor saved, but stay visible and editable in the file tree. Put generated output here (build caches, scratch directories, logs). * is a glob within one segment (build-*), and a path containing / starts at the workspace root.",
+  "每行一条，只影响回退点：这些路径不会被扫描或保存，但仍可在文件树里查看和修改。构建缓存、临时目录、日志等生成物应写在这里。支持 * 通配（如 build-*），带 / 的路径从工作区根算起。tmp、.build、unpackage、logs、checkpoints 等常见生成目录已默认跳过；助手新建的目录若看起来是生成物，也会自动加进来。":
+    "One per line, snapshots only: these paths are neither walked nor saved, but stay visible and editable in the file tree. Put generated output here (build caches, scratch directories, logs). * is a glob within one segment (build-*), and a path containing / starts at the workspace root. Common generated directories (tmp, .build, unpackage, logs, checkpoints) are skipped by default, and a directory the agent creates that looks generated is added automatically.",
   "回退点：恢复文件或对话": "Checkpoints: restore files or conversation",
   "图片": "Images",
   "在下一步将消息插入当前任务": "Insert the message into the current task on its next step",
@@ -503,8 +509,6 @@ export const en: Record<string, string> = {
   "当前工作区尚未启用画像": "No profile enabled for this workspace",
   "当前工作区画像": "Current workspace profile",
   "当前有": "Currently",
-  "当前没有可压缩的旧工具输出": "No old tool output to compact",
-  "当前没有可压缩的旧工具输出。": "No old tool output to compact.",
   "当前版本": "Current version",
   "当前运行画像": "Current run profile",
   "当前通过自建中继器跨网络配对。":
@@ -650,6 +654,10 @@ export const en: Record<string, string> = {
   "更新已下载，点击查看安装": "Update downloaded; click to install",
   "更早的 {v1} 项执行过程 · 展开": "{v1} earlier execution steps · expand",
   "最多参照 8 个项目": "Up to 8 projects",
+  "最多附图 {v1} 张": "Up to {v1} images",
+  "一次最多上传 {v1} 个文件": "Up to {v1} files per upload",
+  "松开即可附件：图片随消息发送，其它文件上传到工作区":
+    "Drop to attach: images travel with the message, other files go into the workspace",
   "最大步数": "Max steps",
   "最大步数需要在 1 到 1,000 之间。": "Max steps must be between 1 and 1,000.",
   "最近 30 天": "Last 30 days",
@@ -1191,6 +1199,9 @@ export const en: Record<string, string> = {
   "删除会话「{v1}」？\n\n聊天记录会从本机删除，项目记忆和进化版本不受影响。":
     "Delete session “{v1}”?\n\nThe chat is removed from this machine; project memory and evolution versions stay.",
   "删除全局候选版本 v{v1}？": "Delete global candidate v{v1}?",
+  "按对话内容估算的上下文用量 · {v1} 条消息":
+    "Context estimated from this conversation · {v1} messages",
+  "上下文 ≈ {v1} tokens": "Context ≈ {v1} tokens",
   "上下文已压缩：整理 {v1} 条旧工具输出，移除 {v2} 条早期消息（约 {v3} tokens）。":
     "Context compacted: {v1} old tool outputs reorganized, {v2} early messages removed (~{v3} tokens).",
   "上下文预算需要在 8,000 到 {v1} 之间。":
@@ -1202,8 +1213,6 @@ export const en: Record<string, string> = {
   "温度 {v1}": "Temperature {v1}",
   "下次 {v1}": "Next {v1}",
   "下载更新失败：{v1}": "Download failed: {v1}",
-  "压缩旧工具输出，可释放约 {v1} 字符":
-    "Compact old tool output to free about {v1} characters",
   "移除 {v1} 的授权": "Remove authorization for {v1}",
   "移除工作区「{v1}」？\n\n会话、项目记忆和自我进化版本将一并从此设备删除，不会删除磁盘上的文件夹。":
     "Remove workspace “{v1}”?\n\nSessions, project memory and evolution versions are deleted from this device; the folder on disk is kept.",
@@ -1223,8 +1232,6 @@ export const en: Record<string, string> = {
   "已生成中文版本 v{v1}（草稿）。它不会自动启用。":
     "Chinese version v{v1} generated (draft). It will not auto-enable.",
   "已选择 {v1} 个项目": "{v1} projects selected",
-  "已压缩旧工具输出，释放约 {v1} 字符。":
-    "Old tool output compacted; about {v1} characters freed.",
   "已运行 {v1}": "Running for {v1}",
   "已验证交付": "Verified",
   "以风险自担方式启用 v{v1}？\n\n独立评审未通过或尚未通过时，强制启用可能让后续运行退化。你随时可以回滚。":
@@ -1233,8 +1240,6 @@ export const en: Record<string, string> = {
     "Enable global profile v{v1} at your own risk?\n\nIt applies to every workspace; a failed review may degrade several projects at once. You can roll back anytime.",
   "用会话最早的快照覆盖 {v1}？当前内容会被替换。":
     "Overwrite {v1} with the session's earliest snapshot? The current content is replaced.",
-  "约 {v1} / {v2} tokens · {v3} 条消息":
-    "~{v1} / {v2} tokens · {v3} messages",
   "在「{v1}」新建任务": "New task in “{v1}”",
   "这些内容会在每次运行「{v1}」时注入系统提示，帮助 Pilot 记住你的偏好和踩过的坑。":
     "This is injected into the system prompt on every run in “{v1}” so Pilot remembers your preferences and past pitfalls.",
@@ -1338,6 +1343,10 @@ export const en: Record<string, string> = {
     "{v1} added · {v2} modified · {v3} deleted",
   "已提交": "Submitted",
   "上传失败": "Upload failed",
+  "上传文件到工作区，作为参照发送；也可以直接拖进来或粘贴":
+    "Upload files into the workspace and send them as references, or just drag and paste them in",
+  "当前会话没有工作区，无法上传文件":
+    "This conversation has no workspace, so files cannot be uploaded.",
   "待发送": "Ready to send",
   "给这个个人版本起个名字": "Name this personal version",
   "我的版本 {v1}": "My version {v1}",
@@ -1706,9 +1715,20 @@ export const en: Record<string, string> = {
   "联系方式请控制在 {v1} 个字符以内": "Keep the contact within {v1} characters",
   "音频文件，可在应用内直接播放和拖动进度。":
     "Audio file: play and seek right here in the app.",
-  "预览网页": "Preview page",
-  "网页在独立预览窗口打开，与主界面隔离，拿不到本机文件。":
-    "Opens in a separate preview window, isolated from the main UI and with no access to local files.",
+
+  // 文件预览：缩放与独立窗口
+  "缩小（Ctrl + -）": "Zoom out (Ctrl + -)",
+  "缩小": "Zoom out",
+  "放大（Ctrl + =）": "Zoom in (Ctrl + =)",
+  "放大": "Zoom in",
+  "重置为 100%（Ctrl + 0）": "Reset to 100% (Ctrl + 0)",
+  "在独立窗口打开，不影响正在执行的任务":
+    "Open in its own window, leaving the running task alone",
+  "新窗口": "New window",
+  "关闭窗口": "Close window",
+  "重新读取文件": "Reload the file",
+  "缺少文件参数，请从主界面重新打开。":
+    "No file was given; open it again from the main window.",
 
   // 产出质量闸门与小铃铛
   "已记录（未超过基线）": "Recorded (did not beat the baseline)",

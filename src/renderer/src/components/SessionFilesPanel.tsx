@@ -164,7 +164,16 @@ export function SessionFilesPanel({
                     {t("在文件夹中显示")}</button>
                 ) : null}
               </div>
-              <FilePreviewBody preview={preview} />
+              <FilePreviewBody
+                preview={preview}
+                {...(workspace
+                  ? {
+                      onOpenWindow: () => {
+                        void window.pilot.openDocument(workspace.path, preview.path)
+                      },
+                    }
+                  : {})}
+              />
             </div>
           ) : loading ? (
             <div className="drawer-loading">

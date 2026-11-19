@@ -198,7 +198,12 @@ export function FilesPanel({
                 >
                   {t("在文件夹中显示")}</button>
               </div>
-              <FilePreviewBody preview={preview} />
+              <FilePreviewBody
+                preview={preview}
+                onOpenWindow={() => {
+                  void window.pilot.openDocument(workspace.path, preview.path)
+                }}
+              />
             </div>
           ) : loading ? (
             <div className="drawer-loading">

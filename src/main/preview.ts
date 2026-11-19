@@ -16,6 +16,26 @@ import { BrowserWindow, session, shell, protocol } from 'electron'
 import { contentTypeFor, MEDIA_SCHEME, linkLabel, parseByteRange, parseOpenLink } from '../shared/media'
 import { resolveMediaTarget, mediaPathFromUrl } from './workspace'
 
+/**
+ * A local HTML page is untrusted content: inline script is allowed (charts and
+ * reports need it) but every network channel is closed. Without this a file the
+ * agent wrote — or one it downloaded — could read other workspace files through
+ * `pilot-media:` URLs and post them somewhere, because a sandboxed frame still
+ * resolves its own origin's URLs.
+ */
+export const HTML_PREVIEW_CSP = [
+  `default-src 'self' ${MEDIA_SCHEME}: data:`,
+  `script-src 'unsafe-inline' 'unsafe-eval' ${MEDIA_SCHEME}: data:`,
+  `style-src 'unsafe-inline' ${MEDIA_SCHEME}: data:`,
+  `img-src ${MEDIA_SCHEME}: data: blob:`,
+  `media-src ${MEDIA_SCHEME}: data: blob:`,
+  `font-src ${MEDIA_SCHEME}: data:`,
+  `connect-src ${MEDIA_SCHEME}: data:`,
+  `frame-src ${MEDIA_SCHEME}:`,
+  "form-action 'none'",
+  "base-uri 'none'",
+].join('; ')
+
 /** Preview windows get their own memory-only session: no cookies, no storage. */
 const PREVIEW_PARTITION = 'pilot-preview'
 const MAX_PREVIEW_TITLE = 120
@@ -57,12 +77,16 @@ export async function serveMediaRequest(
     return new Response('Not found', { status: 404 })
   }
 
+  const contentType = contentTypeFor(target)
   const headers = new Headers({
-    'content-type': contentTypeFor(target),
+    'content-type': contentType,
     'accept-ranges': 'bytes',
     'cache-control': 'no-store',
     'access-control-allow-origin': '*',
   })
+  // HTML is rendered in a sandboxed frame; the header is what keeps that frame
+  // from talking to the network at all.
+  if (contentType.startsWith('text/html')) headers.set('content-security-policy', HTML_PREVIEW_CSP)
   const range = parseByteRange(request.headers.get('range'), size)
   const nodeStream = range
     ? createReadStream(target, { start: range.start, end: range.end })

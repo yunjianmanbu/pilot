@@ -1,4 +1,4 @@
-import { mkdir, open, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AppLocale } from '../shared/i18n'
 import type { ProjectInstructionFile } from '../shared/types'
@@ -33,6 +33,26 @@ async function readLimited(target: string, maxBytes: number): Promise<{ content:
 }
 
 /**
+ * Why an instruction file did not reach the model in full. Missing files are
+ * normal and stay silent; a present but unreadable or oversized file is a real
+ * loss of project rules, so the run has to say so instead of quietly dropping
+ * the conventions the repository asked for.
+ */
+export interface InstructionIssues {
+  truncated: { name: string; bytes: number }[]
+  unreadable: { name: string; reason: string }[]
+}
+
+async function existsUnsafe(target: string): Promise<boolean> {
+  try {
+    await lstat(target)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Load project instructions from the workspace root. The files are read
  * through the workspace jail, capped in size, and never resolved outside the
  * selected folder (a symlinked PILOT.md is rejected by resolveExisting).
@@ -40,7 +60,14 @@ async function readLimited(target: string, maxBytes: number): Promise<{ content:
 export async function loadProjectInstructions(
   workspacePath: string,
 ): Promise<LoadedProjectInstruction[]> {
+  return (await loadProjectInstructionsDetailed(workspacePath)).files
+}
+
+export async function loadProjectInstructionsDetailed(
+  workspacePath: string,
+): Promise<{ files: LoadedProjectInstruction[]; issues: InstructionIssues }> {
   const loaded: LoadedProjectInstruction[] = []
+  const issues: InstructionIssues = { truncated: [], unreadable: [] }
   let remaining = MAX_TOTAL_CHARS
   for (const name of INSTRUCTION_FILES) {
     if (remaining <= 0) break
@@ -49,18 +76,22 @@ export async function loadProjectInstructions(
       const file = await readLimited(target, MAX_FILE_BYTES)
       if (!file.content.trim()) continue
       const content = file.content.slice(0, remaining)
-      loaded.push({
-        name,
-        bytes: file.bytes,
-        truncated: file.truncated || content.length < file.content.length,
-        content,
-      })
+      const truncated = file.truncated || content.length < file.content.length
+      if (truncated) issues.truncated.push({ name, bytes: file.bytes })
+      loaded.push({ name, bytes: file.bytes, truncated, content })
       remaining -= content.length
-    } catch {
-      // A missing or unsafe instruction file is simply not loaded.
+    } catch (error) {
+      // A missing instruction file is simply not loaded; one that exists but
+      // cannot be read (symlink leaving the workspace, locked file) is reported.
+      if (await existsUnsafe(join(workspacePath, name))) {
+        issues.unreadable.push({
+          name,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
   }
-  return loaded
+  return { files: loaded, issues }
 }
 
 const GLOBAL_INSTRUCTION_FILE = 'PILOT.md'

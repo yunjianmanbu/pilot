@@ -1,7 +1,7 @@
 /** Types shared by the main process, preload bridge and renderer. */
 
 import type { FeedbackDraft, FeedbackRecord } from './feedback'
-import type { LocaleSetting } from './i18n'
+import type { AppLocale, LocaleSetting } from './i18n'
 import type { MemoryCategory } from './memory'
 import type { PreviewKind } from './media'
 import type {
@@ -11,6 +11,7 @@ import type {
   ModuleTarget,
 } from './module-check'
 import type { QualityComparison, QualityMetricSet, QualityScore } from './quality'
+import type { UploadBatch } from './uploads'
 
 export type { ModuleCheckReport, ModuleCheckSettings, ModuleCheckState, ModuleTarget }
 
@@ -444,6 +445,15 @@ export interface MessageOptions {
   references?: string[]
 }
 
+/** One file copied from this computer into the session workspace. */
+export interface WorkspaceUploadFile {
+  /** Path relative to the workspace root, POSIX separators. */
+  path: string
+  /** Final file name, already de-duplicated against existing files. */
+  name: string
+  size: number
+}
+
 /**
  * Spend of the evaluation models (judges), kept apart from `AgentUsage` because
  * a judge request never enters the agent loop and was previously not counted
@@ -544,19 +554,6 @@ export interface MessageSearchFilter {
   role?: 'user' | 'assistant'
   /** ISO timestamp; matches only messages created at or after it. */
   since?: string
-}
-
-/** Estimated prompt size for the context meter above the composer. */
-export interface ContextStats {
-  estimatedTokens: number
-  maxContextTokens: number
-  percent: number
-  messageCount: number
-  toolResultTokens: number
-  /** Characters that a manual compaction would save in old tool output. */
-  compactableChars: number
-  compactedResults: number
-  savedChars: number
 }
 
 /** A project instruction file loaded from the workspace root. */
@@ -1462,6 +1459,8 @@ export interface SettingsView {
   baseUrl: string
   model: string
   maxSteps: number
+  /** Hard per-run token cap; 0 means no cap. */
+  maxTokens: number
   maxContextTokens: number
   maxOutputTokens: number
   temperature: number
@@ -1591,6 +1590,8 @@ export interface SettingsUpdate {
   baseUrl?: string
   model?: string
   maxSteps?: number
+  /** Hard per-run token cap; 0 means no cap. */
+  maxTokens?: number
   maxContextTokens?: number
   maxOutputTokens?: number
   temperature?: number
@@ -1837,6 +1838,24 @@ export interface FilePreview {
   kind: PreviewKind
   /** `pilot-media://` address for media and web pages; absent for text. */
   url?: string
+  /**
+   * Base folder of an HTML page, already encoded as a `pilot-media://` URL, so
+   * the sandboxed frame and the markdown body resolve relative assets.
+   */
+  baseUrl?: string
+}
+
+export interface DocumentWindowState {
+  /** Stored preference; `system` still has to be resolved against the OS. */
+  theme: ThemePreference
+  accent: AccentPalette
+  contrast: ContrastPreference
+  saturation: SaturationPreference
+  fontSize: FontSizePreference
+  /** Concrete locale tag, already resolved by the main process. */
+  locale: AppLocale
+  version: string
+  platform: string
 }
 
 export interface ApprovalRequest {
@@ -2249,6 +2268,17 @@ export interface PilotBridge {
     options?: MessageOptions,
   ): Promise<SendMessageResult>
   pickImages(): Promise<string[]>
+  /** Copy files picked on this computer into the workspace, newest last. */
+  pickFiles(workspacePath: string): Promise<WorkspaceUploadFile[]>
+  /**
+   * 拖拽或粘贴上传：有磁盘路径的只传路径，没有路径的传字节，
+   * 两者都会落在工作区的 uploads/ 目录。
+   */
+  uploadFiles(workspacePath: string, input: UploadBatch): Promise<WorkspaceUploadFile[]>
+  /** 把剪贴板里的一张图片压成可以随消息发送的 data URL。 */
+  pasteImage(input: { name?: string; data: ArrayBuffer }): Promise<string>
+  /** 问 Chromium 要拖拽/粘贴来的 File 的真实磁盘路径；虚拟文件返回空串。 */
+  pathForFile(file: unknown): string
   cancelRun(sessionId: string): Promise<void>
   pauseRun(sessionId: string): Promise<void>
   continueRun(sessionId: string): Promise<SendMessageResult>
@@ -2272,9 +2302,6 @@ export interface PilotBridge {
   /** Retry a failed or interrupted run from its last user message. */
   retryRun(sessionId: string): Promise<void>
 
-  getContextStats(sessionId: string): Promise<ContextStats>
-  /** Persist compaction of old tool output, then return the new stats. */
-  compactContext(sessionId: string): Promise<ContextStats>
   projectInstructions(workspacePath: string): Promise<ProjectInstructionFile[]>
 
   reviewSessionChanges(sessionId: string): Promise<SessionChange[]>
@@ -2465,6 +2492,14 @@ export interface PilotBridge {
   listFiles(path: string, directory: string): Promise<FileNode[]>
   previewFile(path: string, file: string): Promise<FilePreview>
   revealFile(path: string, file: string): Promise<void>
+  /**
+   * Open one workspace file in a standalone window, so reading a long report
+   * never competes with the transcript (or pauses a running task).
+   */
+  openDocument(workspace: string, file: string): Promise<void>
+  /** Palette a standalone document window paints itself with. */
+  documentState(): Promise<DocumentWindowState>
+  closeDocument(): Promise<void>
   /**
    * Open a link: web pages render in an in-app preview window, media files
    * play in the same window, `external: true` hands it to the system browser.

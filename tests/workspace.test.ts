@@ -8,14 +8,18 @@ import {
   applyPatch,
   beginWorkspaceUpload,
   finishWorkspaceUpload,
+  importWorkspaceBytes,
+  importWorkspaceFile,
   MAX_FILE_CHUNK_BYTES,
   MAX_UPLOAD_BYTES,
   readFileChunk,
+  readFileSlice,
   redactSecretLine,
   resolveExisting,
   runCommand,
   runShell,
   searchFiles,
+  writeTextFile,
 } from '../src/main/workspace'
 
 const roots: string[] = []
@@ -54,6 +58,38 @@ describe('redactSecretLine', () => {
   })
 })
 
+describe('writeTextFile', () => {
+  it('creates parent directories and reports a scratch directory it made', async () => {
+    const root = await makeRoot()
+    const result = await writeTextFile(root, 'build-output/app.js', 'x\n')
+    expect(await readFile(join(root, 'build-output', 'app.js'), 'utf8')).toBe('x\n')
+    // The model is told this tree stays out of rollback points, so it does not
+    // promise the user a rollback of bytes that were never captured.
+    expect(result.metadata['newDir']).toBe('build-output')
+    expect(result.output).toContain('rollback points')
+  })
+
+  it('reports a built-in scratch name by its own segment', async () => {
+    const root = await makeRoot()
+    const result = await writeTextFile(root, 'tmp/deep/notes.txt', 'x\n')
+    expect(result.output).toContain('scratch/generated directory')
+  })
+
+  it('stays quiet for an ordinary source directory', async () => {
+    const root = await makeRoot()
+    const result = await writeTextFile(root, 'src/lib/util/deep.ts', 'export {}\n')
+    expect(result.metadata['newDir']).toBe('src/lib/util')
+    expect(result.output).not.toContain('rollback')
+  })
+
+  it('does not report a directory that already existed', async () => {
+    const root = await makeRoot({ 'src/a.ts': 'one\n' })
+    const result = await writeTextFile(root, 'src/a.ts', 'two\n')
+    expect(result.metadata['newDir']).toBeUndefined()
+    expect(await readFile(join(root, 'src', 'a.ts'), 'utf8')).toBe('two\n')
+  })
+})
+
 describe('applyPatch', () => {
   it('replaces an exact block and returns a diff', async () => {
     const root = await makeRoot({ 'a.ts': 'const one = 1\nconst two = 2\n' })
@@ -85,6 +121,27 @@ describe('applyPatch', () => {
     expect(await readFile(join(root, 'a.ts'), 'utf8')).toBe('hello\n')
   })
 
+  it('quotes the real lines around a near-miss so one retry is enough', async () => {
+    const root = await makeRoot({
+      'a.ts': 'function outer() {\n  if (ready) {\n    run(task)\n  }\n}\n',
+    })
+    // The first line matches, the body does not: the model guessed the
+    // indentation, which is exactly what a re-read used to be needed for.
+    const failure = await applyPatch(root, {
+      path: 'a.ts',
+      oldText: 'if (ready) {\n  run(other)\n}',
+      newText: 'if (ready) {\n  run(other)\n}',
+    }).catch((error: unknown) => error as Error)
+    expect(failure).toBeInstanceOf(Error)
+    const message = (failure as Error).message
+    expect(message).toContain('Its first line appears at line(s) 2')
+    expect(message).toContain('> 2|   if (ready) {')
+    expect(message).toContain('  3|     run(task)')
+    expect(message).toContain('Re-send oldText using these exact lines')
+    expect(message.length).toBeLessThan(1_400)
+    expect(await readFile(join(root, 'a.ts'), 'utf8')).toContain('run(task)')
+  })
+
   it('reports a no-op edit as success when the file already matches', async () => {
     const root = await makeRoot({ 'a.ts': 'hello\n' })
     const result = await applyPatch(root, {
@@ -102,6 +159,22 @@ describe('applyPatch', () => {
     await expect(
       applyPatch(root, { path: '../outside.ts', oldText: 'hello', newText: 'bye' }),
     ).rejects.toThrow()
+  })
+})
+
+describe('readFileSlice', () => {
+  it('names the line to continue from when the window is cut off', async () => {
+    const root = await makeRoot()
+    const body = Array.from({ length: 2_500 }, (_, index) => `line ${index + 1}`).join('\n')
+    await writeFile(join(root, 'big.ts'), body, 'utf8')
+    const first = await readFileSlice(root, 'big.ts', undefined, undefined)
+    expect(first.metadata['endLine']).toBe(2000)
+    expect(first.metadata['nextStartLine']).toBe(2001)
+    expect(first.output).toContain('more lines available; continue with startLine=2001')
+    const second = await readFileSlice(root, 'big.ts', 2001, undefined)
+    expect(second.metadata['truncated']).toBe(false)
+    expect(second.output).toContain('2001| line 2001')
+    expect(second.output).not.toContain('more lines available')
   })
 })
 
@@ -355,5 +428,73 @@ describe('phone uploads', () => {
       finishWorkspaceUpload(root, plan.tempPath, 'part.bin', 10),
     ).rejects.toThrow(/不完整/)
     await abortWorkspaceUpload(plan.tempPath)
+  })
+})
+
+describe('desktop file import', () => {
+  it('copies a picked file into uploads and reports its relative path', async () => {
+    const root = await makeRoot()
+    const outside = await makeRoot({ 'report 2026.pdf': 'quarterly numbers' })
+    const imported = await importWorkspaceFile(root, 'uploads', join(outside, 'report 2026.pdf'))
+    expect(imported).toMatchObject({ path: 'uploads/report 2026.pdf', name: 'report 2026.pdf' })
+    expect(await readFile(join(root, 'uploads', 'report 2026.pdf'), 'utf8')).toBe(
+      'quarterly numbers',
+    )
+  })
+
+  it('never overwrites an existing file, it picks a numbered name', async () => {
+    const root = await makeRoot({ 'uploads/notes.txt': 'kept' })
+    const outside = await makeRoot({ 'notes.txt': 'new' })
+    const imported = await importWorkspaceFile(root, undefined, join(outside, 'notes.txt'))
+    expect(imported.path).toBe('uploads/notes (1).txt')
+    expect(await readFile(join(root, 'uploads', 'notes.txt'), 'utf8')).toBe('kept')
+    expect(await readFile(join(root, 'uploads', 'notes (1).txt'), 'utf8')).toBe('new')
+  })
+
+  it('references a file that already lives in the workspace instead of copying it', async () => {
+    const root = await makeRoot({ 'docs/spec.md': '# spec' })
+    const imported = await importWorkspaceFile(root, 'uploads', join(root, 'docs', 'spec.md'))
+    expect(imported).toMatchObject({ path: 'docs/spec.md', name: 'spec.md', size: 6 })
+    await expect(readFile(join(root, 'uploads', 'spec.md'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
+  it('rejects a missing source and a directory that escapes the workspace', async () => {
+    const root = await makeRoot()
+    const outside = await makeRoot({ 'a.txt': 'x' })
+    await expect(importWorkspaceFile(root, 'uploads', join(outside, 'gone.txt'))).rejects.toThrow(
+      /找不到/,
+    )
+    await expect(importWorkspaceFile(root, 'uploads', outside)).rejects.toThrow(/找不到/)
+    await expect(
+      importWorkspaceFile(root, '../outside', join(outside, 'a.txt')),
+    ).rejects.toThrow(/跳出工作区|escapes/i)
+  })
+
+  it('writes pasted bytes into uploads and keeps existing files untouched', async () => {
+    const root = await makeRoot({ 'uploads/paste.txt': 'kept' })
+    const written = await importWorkspaceBytes(
+      root,
+      undefined,
+      'paste.txt',
+      Buffer.from('from clipboard'),
+    )
+    expect(written).toMatchObject({ path: 'uploads/paste (1).txt', size: 14 })
+    expect(await readFile(join(root, 'uploads', 'paste.txt'), 'utf8')).toBe('kept')
+    expect(await readFile(join(root, 'uploads', 'paste (1).txt'), 'utf8')).toBe('from clipboard')
+  })
+
+  it('rejects empty bytes, unsafe names and an escaping directory', async () => {
+    const root = await makeRoot()
+    await expect(importWorkspaceBytes(root, 'uploads', 'a.png', Buffer.alloc(0))).rejects.toThrow(
+      /为空/,
+    )
+    await expect(
+      importWorkspaceBytes(root, 'uploads', '../escape.txt', Buffer.from('x')),
+    ).rejects.toThrow(/分隔符/)
+    await expect(
+      importWorkspaceBytes(root, '..\\escape', 'a.png', Buffer.from('x')),
+    ).rejects.toThrow(/escape|跳出|分隔符/i)
   })
 })

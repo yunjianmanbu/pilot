@@ -22,6 +22,7 @@ import { normalizeSelfSourceSettings } from './self-source-git'
 import { sanitizeProfileComparison } from './agent/profile-benchmark'
 import { sanitizeJudgeUsage } from './agent/judge-runtime'
 import { settlePlan } from './agent/plan'
+import { pruneProfiles } from '../core/profile-archive'
 export interface JudgeTarget {
   id: string
   label: string
@@ -61,6 +62,12 @@ export interface PersistedSettings {
   model: string
   maxSteps: number
   maxContextTokens: number
+  /**
+   * Hard cap on the tokens one run may consume in total. `0` disables it, which
+   * is the default: a budget that is too low silently truncates a task that was
+   * otherwise going to finish.
+   */
+  maxTokens: number
   maxOutputTokens: number
   temperature: number
   autoReflect: boolean
@@ -218,6 +225,8 @@ export function defaults(): PersistedState {
       baseUrl: primaryBaseUrl,
       model: primaryModel,
       maxSteps: 200,
+      // Off by default; the UI offers explicit budgets instead of guessing one.
+      maxTokens: 0,
       // Claude-sized window; `effectiveContextTokens` clamps it down to
       // whatever the selected model actually accepts.
       maxContextTokens: DEFAULT_CONTEXT_TOKENS,
@@ -774,10 +783,13 @@ export function sanitizeWorkspace(value: unknown): PersistedWorkspace | null {
       })
       .filter((entry) => entry.content)
       .slice(0, MEMORY_STORE_LIMIT),
-    profiles: rawProfiles
-      .map(sanitizeProfile)
-      .filter((profile): profile is ProfileVersion => Boolean(profile))
-      .slice(0, 40),
+    // Same survival rule as the store's own cap: a plain slice keeps the newest
+    // 40 and would cut the active profile, which sits at the oldest end.
+    profiles: pruneProfiles(
+      rawProfiles
+        .map(sanitizeProfile)
+        .filter((profile): profile is ProfileVersion => Boolean(profile)),
+    ),
     runs: rawRuns
       .filter((run): run is RunRecord => Boolean(run) && typeof run === 'object' && typeof (run as RunRecord).id === 'string')
       .map((run) => ({ ...run, status: run.status === 'running' ? 'interrupted' : run.status }))
@@ -1375,6 +1387,7 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
       200_000,
       fallback.settings.maxContextTokens,
     ),
+    maxTokens: Math.round(clampNumber(settingsRaw['maxTokens'], 0, 0, 20_000_000)),
     maxOutputTokens: clampNumber(
       settingsRaw['maxOutputTokens'],
       fallback.settings.maxOutputTokens,

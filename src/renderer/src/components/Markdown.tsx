@@ -11,6 +11,7 @@ import {
 } from 'react'
 import ReactMarkdown, { type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { resolveMediaRef } from '../../../shared/media'
 import { copyText } from '../clipboard'
 import { highlightCode } from '../highlight'
 import { CheckIcon, CopyIcon } from '../icons'
@@ -94,9 +95,22 @@ const Link = ({ node, href, children, ...props }: AnchorProps) => {
   )
 }
 
-export const Markdown = memo(function Markdown({ content }: { content: string }) {
+export const Markdown = memo(function Markdown({
+  content,
+  baseDir,
+}: {
+  content: string
+  /**
+   * Folder of the markdown file. A relative `![](img/a.png)` is rewritten to a
+   * `pilot-media:` URL inside that folder, so a previewed README shows its own
+   * screenshots instead of a broken image. Chat answers pass nothing.
+   *
+   * `''` is meaningful: it means the folder is the workspace root.
+   */
+  baseDir?: string
+}) {
   return (
-    <div className="markdown">
+    <div className={`markdown${baseDir === undefined ? '' : ' markdown-doc'}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -109,6 +123,14 @@ export const Markdown = memo(function Markdown({ content }: { content: string })
                 <table {...props} />
               </div>
             )
+          },
+          img: ({ node, src, alt, ...props }) => {
+            void node
+            // Only relative references are rewritten; an http(s) image keeps
+            // its own URL and is blocked by the page CSP, as before.
+            const resolved =
+              baseDir === undefined ? src : (resolveMediaRef(baseDir, src) ?? src)
+            return <img {...props} src={resolved} alt={alt ?? ''} loading="lazy" />
           },
         }}
       >

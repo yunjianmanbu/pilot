@@ -15,7 +15,7 @@ import {
   type IpcMainInvokeEvent,
 } from 'electron'
 import { existsSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, stat } from 'node:fs/promises'
 import { hostname, release } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import type {
@@ -84,7 +84,12 @@ import { ensureGlobalInstructions, loadProjectInstructions } from './instruction
 import { sandboxStatus } from './sandbox'
 import { runSelfCheck } from './self-check'
 import { systemInfo, feedbackEnvironment } from './system-info'
-import { prepareGitBase, PersonalEvolutionService } from './personal'
+import {
+  configureFingerprintCache,
+  forgetSourceFingerprint,
+  prepareGitBase,
+  PersonalEvolutionService,
+} from './personal'
 import {
   normalizeSelfSourceSettings,
   resolveSelfSource,
@@ -102,8 +107,18 @@ import { approvalAuditEntry, crashEntry, runSettledEntry, toolAuditEntry, toolFa
 import { Store } from './store'
 import { warmShellProfile } from './shell'
 import { UpdaterService } from './updater'
-import { listDirectory, previewFile, resolveExisting, workspaceRoot } from './workspace'
+import {
+  importWorkspaceBytes,
+  importWorkspaceFile,
+  listDirectory,
+  MAX_UPLOAD_BYTES,
+  previewFile,
+  resolveExisting,
+  workspaceRoot,
+} from './workspace'
 import { installMediaProtocol, openLink, registerMediaScheme } from './preview'
+import { isDocumentWindowContents, openDocumentWindow } from './document-window'
+import { parseUploadBatch, UPLOAD_DIRECTORY, type UploadBatch } from '../shared/uploads'
 
 process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
 
@@ -214,10 +229,23 @@ let billing: BillingService
 let checkpointMaintenanceTimer: NodeJS.Timeout | null = null
 let pendingCheckpointMaintenance = false
 
-function assertTrusted(event: IpcMainInvokeEvent): void {
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
-    throw new Error('Rejected IPC call from an unknown page')
-  }
+/**
+ * Channels a standalone document window may call: read one file, read the
+ * palette it should paint with, close itself, and open a link. Everything else
+ * stays reserved for the main window, so the preview bundle can never start a
+ * run or change a setting. The check is the sender identity, not a filename.
+ */
+const DOCUMENT_CHANNELS = new Set([
+  'pilot:file-preview',
+  'pilot:doc-state',
+  'pilot:doc-close',
+  'pilot:open-link',
+])
+
+function assertTrustedSender(event: IpcMainInvokeEvent, channel: string): void {
+  if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) return
+  if (DOCUMENT_CHANNELS.has(channel) && isDocumentWindowContents(event.sender.id)) return
+  throw new Error('Rejected IPC call from an unknown page')
 }
 
 function handle<Args extends unknown[], Result>(
@@ -225,7 +253,7 @@ function handle<Args extends unknown[], Result>(
   handler: (...args: Args) => Promise<Result> | Result,
 ): void {
   ipcMain.handle(channel, async (event, ...args) => {
-    assertTrusted(event)
+    assertTrustedSender(event, channel)
     try {
       return await handler(...(args as Args))
     } catch (error) {
@@ -237,6 +265,74 @@ function handle<Args extends unknown[], Result>(
       throw error
     }
   })
+}
+
+/**
+ * 把一张图片压进一条消息能承受的体积：图片还会经 512 KB 的加密中继发到手机上，
+ * 所以逐级降质量、降尺寸，直到塞进上限为止，而不是让整次选择失败。
+ */
+function encodeMessageImage(image: Electron.NativeImage): string {
+  const size = image.getSize()
+  // 下限钳到 320：小截图（比如 240×120 的粘贴图）本身已经比这个还小，
+  // 如果不钳，while 一次都不会跑，dataUrl 为空直接报「图片太大」。
+  let edge = Math.min(1600, Math.max(320, Math.max(size.width, size.height)))
+  let dataUrl = ''
+  while (edge >= 320) {
+    for (const quality of [82, 72, 62, 52]) {
+      const scale = Math.min(1, edge / Math.max(size.width, size.height))
+      const resized =
+        scale < 1
+          ? image.resize({
+              width: Math.max(1, Math.round(size.width * scale)),
+              height: Math.max(1, Math.round(size.height * scale)),
+              quality: 'good',
+            })
+          : image
+      dataUrl = `data:image/jpeg;base64,${resized.toJPEG(quality).toString('base64')}`
+      if (dataUrl.length <= MAX_IMAGE_DATA_URL_CHARS) break
+    }
+    if (dataUrl && dataUrl.length <= MAX_IMAGE_DATA_URL_CHARS) break
+    edge = Math.round(edge * 0.75)
+  }
+  if (!dataUrl || dataUrl.length > MAX_IMAGE_DATA_URL_CHARS) {
+    throw new Error('图片太大，请压缩后再添加')
+  }
+  return dataUrl
+}
+
+/**
+ * 上传合流点：磁盘路径和内存字节在这里进入同一个工作区目录，
+ * 走同一套校验，失败时整批拒绝而不是留下一半文件。
+ */
+function uploadBytes(data: ArrayBuffer | Uint8Array): Buffer {
+  return ArrayBuffer.isView(data)
+    ? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+    : Buffer.from(new Uint8Array(data))
+}
+
+async function importUploadBatch(workspacePath: string, batch: UploadBatch) {
+  // Check every size before the first write so a rejected batch does not leave
+  // a half-imported set behind.
+  for (const file of batch.paths) {
+    const info = await stat(file).catch(() => null)
+    if (!info) throw new Error(`找不到要上传的文件：${basename(file)}`)
+    if (!info.isFile()) throw new Error(`不能上传文件夹或特殊文件：${basename(file)}`)
+    if (info.size > MAX_UPLOAD_BYTES) {
+      throw new Error(
+        `「${basename(file)}」超过 ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))} MB`,
+      )
+    }
+  }
+  const uploaded: Array<{ path: string; name: string; size: number }> = []
+  for (const file of batch.paths) {
+    uploaded.push(await importWorkspaceFile(workspacePath, UPLOAD_DIRECTORY, file))
+  }
+  for (const blob of batch.blobs) {
+    uploaded.push(
+      await importWorkspaceBytes(workspacePath, UPLOAD_DIRECTORY, blob.name, uploadBytes(blob.data)),
+    )
+  }
+  return uploaded
 }
 
 function broadcast(event: RunEvent): void {
@@ -299,6 +395,74 @@ function onRunSettled(sessionId: string, status: string, runId?: string): void {
 }
 
 /**
+ * 解析自身源码要起好几个 git 子进程（开发态实测约 2 s），而且 runGit 是
+ * spawnSync —— 它会把整个主进程的事件循环堵住，期间连 `exists` 都要排队。
+ * 结果只与设置、安装路径和官方 HEAD 有关，设置变化会换 key，准备/同步源码时
+ * 显式失效，所以缓存可以放得比较长。
+ */
+const PERSONAL_RESOLVE_TTL_MS = 10 * 60_000
+let personalResolve: {
+  key: string
+  at: number
+  promise: Promise<PersonalEvolutionService>
+} | null = null
+let selfSourceResolve: {
+  key: string
+  at: number
+  promise: ReturnType<typeof resolveSelfSource>
+} | null = null
+
+function personalServiceKey(): string {
+  return JSON.stringify({
+    packaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+    userDataPath: app.getPath('userData'),
+    version: app.getVersion(),
+    settings: currentSelfSourceSettings(),
+  })
+}
+
+/**
+ * 缓存的 `resolveSelfSource`。进化页会同时问个人状态和源码来源，两次都把
+ * 同一串 git 子进程跑一遍就会白白阻塞主进程两次。
+ */
+function resolveSelfSourceCached(): ReturnType<typeof resolveSelfSource> {
+  const key = personalServiceKey()
+  if (
+    selfSourceResolve &&
+    selfSourceResolve.key === key &&
+    Date.now() - selfSourceResolve.at < PERSONAL_RESOLVE_TTL_MS
+  ) {
+    return selfSourceResolve.promise
+  }
+  const promise = resolveSelfSource({
+    packaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+    userDataPath: app.getPath('userData'),
+    settings: currentSelfSourceSettings(),
+  })
+  const entry = { key, at: Date.now(), promise }
+  selfSourceResolve = entry
+  promise.catch(() => {
+    if (selfSourceResolve === entry) selfSourceResolve = null
+  })
+  return promise
+}
+
+/** 源码目录或官方基线刚刚变过，下一次必须重新解析。 */
+function forgetPersonalService(): void {
+  personalResolve = null
+  selfSourceResolve = null
+  // prepare/sync 会重写官方基线树，指纹也必须重算。
+  const userData = app.getPath('userData')
+  forgetSourceFingerprint(selfSourcePath())
+  forgetSourceFingerprint(join(userData, 'self-src-base'))
+  forgetSourceFingerprint(join(process.resourcesPath, 'source'))
+}
+
+/**
  * Build the personal-fork service for the current install. Installed builds
  * diff against the pristine `resources/source`; development runs use a cached
  * git-HEAD snapshot so unrelated working-tree edits are still visible.
@@ -307,7 +471,32 @@ async function personalService(options: {
   ensureSource?: boolean
   ensureBase?: boolean
 } = {}): Promise<PersonalEvolutionService> {
+  const key = personalServiceKey()
+  const force = Boolean(options.ensureSource || options.ensureBase)
+  if (
+    !force &&
+    personalResolve &&
+    personalResolve.key === key &&
+    Date.now() - personalResolve.at < PERSONAL_RESOLVE_TTL_MS
+  ) {
+    return personalResolve.promise
+  }
+  const promise = createPersonalService(options)
+  const entry = { key, at: Date.now(), promise }
+  personalResolve = entry
+  promise.catch(() => {
+    // A failed resolution must not be replayed to the next caller.
+    if (personalResolve === entry) personalResolve = null
+  })
+  return promise
+}
+
+async function createPersonalService(options: {
+  ensureSource?: boolean
+  ensureBase?: boolean
+}): Promise<PersonalEvolutionService> {
   const userData = app.getPath('userData')
+  configureFingerprintCache(join(userData, 'personal', 'fingerprints.json'))
   const sourceOptions = {
     packaged: app.isPackaged,
     appPath: app.getAppPath(),
@@ -318,10 +507,7 @@ async function personalService(options: {
   // Which copy is editable, and which tree is "official", depends on the
   // user's source settings: built-in (official git baseline) or a custom
   // checkout. Falls back to the installer snapshot when nothing is configured.
-  const resolved = await resolveSelfSource({
-    ...sourceOptions,
-    settings: currentSelfSourceSettings(),
-  })
+  const resolved = await resolveSelfSourceCached()
   let sourcePath = resolved.sourcePath
   let basePath = resolved.basePath
   if (!basePath) {
@@ -1172,35 +1358,60 @@ function registerIpc(): void {
     for (const file of result.filePaths.slice(0, 3)) {
       const image = nativeImage.createFromPath(file)
       if (image.isEmpty()) continue
-      const size = image.getSize()
-      let edge = Math.min(1600, Math.max(size.width, size.height))
-      let dataUrl = ''
-      // Images also travel to the phone through the 512 KB encrypted relay, so
-      // each one must fit a small budget. Step down quality and size until it
-      // does instead of failing the whole pick.
-      while (edge >= 320) {
-        for (const quality of [82, 72, 62, 52]) {
-          const scale = Math.min(1, edge / Math.max(size.width, size.height))
-          const resized =
-            scale < 1
-              ? image.resize({
-                  width: Math.max(1, Math.round(size.width * scale)),
-                  height: Math.max(1, Math.round(size.height * scale)),
-                  quality: 'good',
-                })
-              : image
-          dataUrl = `data:image/jpeg;base64,${resized.toJPEG(quality).toString('base64')}`
-          if (dataUrl.length <= MAX_IMAGE_DATA_URL_CHARS) break
-        }
-        if (dataUrl && dataUrl.length <= MAX_IMAGE_DATA_URL_CHARS) break
-        edge = Math.round(edge * 0.75)
-      }
-      if (!dataUrl || dataUrl.length > MAX_IMAGE_DATA_URL_CHARS) {
-        throw new Error('图片太大，请压缩后再添加')
-      }
-      images.push(dataUrl)
+      images.push(encodeMessageImage(image))
     }
     return sanitizeImages(images)
+  })
+
+  /**
+   * Copy files the user picked on this computer into the session workspace.
+   * The renderer sends the workspace path of its own session, so it is matched
+   * against the store instead of being trusted.
+   */
+  handle('pilot:pick-files', async (workspacePath: unknown) => {
+    if (!mainWindow) return []
+    const requested = typeof workspacePath === 'string' ? workspacePath.trim() : ''
+    if (!requested) throw new Error('当前会话没有工作区，无法上传文件')
+    const known = store.workspaces().find((entry) => pathKey(entry.path) === pathKey(requested))
+    if (!known) throw new Error('文件只能上传到已经打开的工作区')
+    const english = store.uiLocale() === 'en'
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: english ? 'Upload files to the workspace' : '上传文件到工作区',
+      buttonLabel: english ? 'Upload' : '上传',
+      properties: ['openFile', 'multiSelections'],
+    })
+    if (result.canceled) return []
+    return importUploadBatch(known.path, { paths: result.filePaths.slice(0, 3), blobs: [] })
+  })
+
+  /**
+   * 拖拽或粘贴来的文件。渲染进程能拿到磁盘路径的（拖拽、资源管理器复制）
+   * 只传路径，主进程自己复制；拿不到路径的（剪贴板里的虚拟文件）才传字节。
+   */
+  handle('pilot:upload-files', async (workspacePath: unknown, input: unknown) => {
+    const requested = typeof workspacePath === 'string' ? workspacePath.trim() : ''
+    if (!requested) throw new Error('当前会话没有工作区，无法上传文件')
+    const known = store.workspaces().find((entry) => pathKey(entry.path) === pathKey(requested))
+    if (!known) throw new Error('文件只能上传到已经打开的工作区')
+    return importUploadBatch(known.path, parseUploadBatch(input))
+  })
+
+  /**
+   * 粘贴进来的图片没有磁盘文件：先解成位图，再走和「图片」按钮同一套压缩，
+   * 这样两条链路的体积上限与失败文案不会分叉。
+   */
+  handle('pilot:paste-image', async (input: unknown) => {
+    const record = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+    const data = record.data
+    if (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
+      throw new Error('剪贴板里没有可用的图片')
+    }
+    const bytes = uploadBytes(data as ArrayBuffer | Uint8Array)
+    if (bytes.length === 0) throw new Error('剪贴板里没有可用的图片')
+    if (bytes.length > MAX_UPLOAD_BYTES) throw new Error('图片太大，请压缩后再添加')
+    const image = nativeImage.createFromBuffer(bytes)
+    if (image.isEmpty()) throw new Error('无法识别剪贴板里的图片')
+    return encodeMessageImage(image)
   })
 
   handle('pilot:workspace-open', async (path: string) => {
@@ -1238,18 +1449,20 @@ function registerIpc(): void {
     return updated
   })
 
-  handle('pilot:self-source-prepare', () =>
-    prepareSelfSource({
+  handle('pilot:self-source-prepare', async () => {
+    const prepared = await prepareSelfSource({
       packaged: app.isPackaged,
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath,
       userDataPath: app.getPath('userData'),
-    }),
-  )
+    })
+    forgetPersonalService()
+    return prepared
+  })
 
   handle('pilot:personal-state', async () => (await personalService()).state())
   // Source provenance: which commit the evolution loop is measured against.
-  handle('pilot:self-source-status', async () => (await resolveSelfSource(selfSourceContext())).provenance)
+  handle('pilot:self-source-status', async () => (await resolveSelfSourceCached()).provenance)
   handle('pilot:self-source-configure', async (input: unknown) => {
     const settings = normalizeSelfSourceSettings(input)
     store.updateSettings({
@@ -1261,9 +1474,15 @@ function registerIpc(): void {
     })
     // Re-resolve immediately so the panel shows the new baseline without a
     // second round trip; nothing is fetched here.
-    return (await resolveSelfSource(selfSourceContext())).provenance
+    forgetPersonalService()
+    return (await resolveSelfSourceCached()).provenance
   })
-  handle('pilot:self-source-sync', async () => syncSelfSource(selfSourceContext()))
+  handle('pilot:self-source-sync', async () => {
+    const result = await syncSelfSource(selfSourceContext())
+    // The fetched baseline moved, so the resolved paths and provenance are stale.
+    forgetPersonalService()
+    return result
+  })
   handle('pilot:self-source-pick', async (): Promise<string | null> => {
     if (!mainWindow) return null
     const english = store.uiLocale() === 'en'
@@ -1425,8 +1644,6 @@ function registerIpc(): void {
   )
   handle('pilot:run-regenerate', (sessionId: string) => runner.regenerate(sessionId))
   handle('pilot:run-retry', (sessionId: string) => runner.retryRun(sessionId))
-  handle('pilot:context-stats', (sessionId: string) => runner.contextStats(sessionId))
-  handle('pilot:context-compact', (sessionId: string) => runner.compactContext(sessionId))
   handle('pilot:project-instructions', (workspacePath: string) =>
     loadProjectInstructions(workspacePath).then((files) =>
       files.map(({ name, bytes, truncated }) => ({ name, bytes, truncated })),
@@ -2026,6 +2243,38 @@ function registerIpc(): void {
     await openLink(url, { external, activeRoot: () => store.activeWorkspace() })
   })
 
+  /**
+   * Open one file in its own window. The workspace still has to be one the user
+   * opened, and the path is resolved (and jail-checked) before a window exists.
+   */
+  handle('pilot:doc-open', async (workspace: string, file: string) => {
+    const root = await resolveExisting(workspace, '.')
+    await resolveExisting(root, file)
+    openDocumentWindow({
+      workspace: root,
+      relativePath: file,
+      preload: join(__dirname, '../preload/index.js'),
+    })
+  })
+  /** What a standalone document window needs to paint itself like the app. */
+  handle('pilot:doc-state', () => {
+    const settings = store.settingsView()
+    return {
+      theme: settings.theme,
+      accent: settings.accent,
+      contrast: settings.contrast,
+      saturation: settings.saturation,
+      fontSize: settings.fontSize,
+      locale: store.uiLocale(),
+      version: app.getVersion(),
+      platform: process.platform,
+    }
+  })
+  handle('pilot:doc-close', () => {
+    const focused = BrowserWindow.getFocusedWindow()
+    if (focused && isDocumentWindowContents(focused.webContents.id)) focused.close()
+  })
+
   handle('pilot:update-state', () => localizeUpdateState(updater.stateSnapshot(), store.uiLocale()))
   handle('pilot:update-check', async () =>
     localizeUpdateState(await updater.check(), store.uiLocale()),
@@ -2221,6 +2470,11 @@ app.whenReady().then(async () => {
   // Capture Git Bash's login environment while the window loads so the first
   // shell command does not pay for /etc/profile and ~/.bashrc.
   warmShellProfile()
+  // 进化页要等自身源码解析（若干 git 子进程，Windows 上约 3 s）才能渲染个人分支。
+  // 窗口加载时先把它跑起来，用户点进来时通常已经就绪。
+  void personalService()
+    .then((service) => service.state())
+    .catch(() => undefined)
   registerIpc()
   createTray()
   createWindow()

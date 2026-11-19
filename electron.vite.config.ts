@@ -24,7 +24,12 @@ export default defineConfig({
     plugins: [react()],
     build: {
       rollupOptions: {
-        input: resolve(__dirname, 'src/renderer/index.html'),
+        // Two pages sharing one bundle graph: the app shell and the standalone
+        // document window it opens for a previewed file.
+        input: {
+          index: resolve(__dirname, 'src/renderer/index.html'),
+          doc: resolve(__dirname, 'src/renderer/doc.html'),
+        },
       },
     },
   },

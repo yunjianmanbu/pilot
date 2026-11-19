@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { constants } from 'node:fs'
 import {
+  copyFile,
   lstat,
   mkdir,
   open,
@@ -11,10 +13,28 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises'
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path'
 import type { FileNode, FilePreview, ShellInterpreter } from '../shared/types'
-import { MEDIA_SCHEME, previewKindOf, type PreviewKind } from '../shared/media'
+import {
+  mediaFileUrlFor,
+  mediaDirUrlFor,
+  mediaUrlFor,
+  dirOf,
+  isTextKind,
+  previewKindOf,
+  type PreviewKind,
+} from '../shared/media'
 import { createUnifiedDiff } from './agent/diff'
+import { ephemeralDirSegment, looksEphemeralDirPath } from '../shared/checkpoint-ignore'
 import { buildSandboxPlan } from './sandbox'
 import { gitBashLoginEnvironment, resolveShellLaunch } from './shell'
 import { diskSpace, diskWarning } from './system-info'
@@ -650,9 +670,19 @@ export async function readFileSlice(
     .map((line, index) => `${String(start + index).padStart(width, ' ')}| ${redactSecretLine(line, rel)}`)
     .join('\n')
   const truncated = end < lines.length
+  const nextStartLine = truncated ? end + 1 : null
   return {
-    output: `${rel} (lines ${start}-${end} of ${lines.length})\n${output}${truncated ? '\n…（more lines available）' : ''}`,
-    metadata: { path: rel, startLine: start, endLine: end, totalLines: lines.length, truncated },
+    output: `${rel} (lines ${start}-${end} of ${lines.length})\n${output}${
+      truncated ? `\n…（more lines available; continue with startLine=${nextStartLine}）` : ''
+    }`,
+    metadata: {
+      path: rel,
+      startLine: start,
+      endLine: end,
+      totalLines: lines.length,
+      truncated,
+      ...(nextStartLine ? { nextStartLine } : {}),
+    },
   }
 }
 
@@ -689,31 +719,7 @@ export function redactSecretLine(line: string, path: string): string {
     .replace(/(-----BEGIN [A-Z ]*PRIVATE KEY-----)/g, '<redacted>')
 }
 
-/** `pilot-media://local/<base64url(workspace-relative path)>` — absolute paths are refused. */
-export function mediaUrlFor(relativePath: string): string {
-  return `${MEDIA_SCHEME}://local/${Buffer.from(relativePath, 'utf8').toString('base64url')}`
-}
-
-/** Inverse of {@link mediaUrlFor}; returns null for anything malformed. */
-export function mediaPathFromUrl(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null
-  let parsed: URL
-  try {
-    parsed = new URL(raw)
-  } catch {
-    return null
-  }
-  if (parsed.protocol !== `${MEDIA_SCHEME}:`) return null
-  const encoded = parsed.pathname.replace(/^\/+/, '')
-  if (!encoded) return null
-  try {
-    // decodeURIComponent first: Chromium percent-encodes the base64url payload.
-    const decoded = Buffer.from(decodeURIComponent(encoded), 'base64url').toString('utf8')
-    return decoded || null
-  } catch {
-    return null
-  }
-}
+export { mediaPathFromUrl, mediaUrlFor } from '../shared/media'
 
 /**
  * Absolute path of a `pilot-media` target, or null when it is not a file
@@ -736,7 +742,8 @@ export async function previewFile(root: string, path: string): Promise<FilePrevi
   const kind: PreviewKind = previewKindOf(rel)
   // Images, video, audio and web pages are streamed to the renderer instead of
   // being read into memory: a 200 MB mp4 must not be buffered or truncated.
-  if (kind !== 'text') {
+  // HTML goes through the folder-scoped URL so its own css/img/script resolve.
+  if (!isTextKind(kind)) {
     return {
       path: rel,
       size: info.size,
@@ -746,7 +753,9 @@ export async function previewFile(root: string, path: string): Promise<FilePrevi
       language: formatLabel(rel),
       truncated: false,
       kind,
-      url: mediaUrlFor(rel),
+      url: kind === 'html' ? mediaFileUrlFor(rel) : mediaUrlFor(rel),
+      // Same-folder assets of an HTML page or a markdown body.
+      baseUrl: mediaDirUrlFor(dirOf(rel)),
     }
   }
   if (info.size > MAX_READ_BYTES) throw new Error('File is too large to preview')
@@ -760,7 +769,10 @@ export async function previewFile(root: string, path: string): Promise<FilePrevi
     content: text.length > limit ? `${text.slice(0, limit)}\n…（preview truncated）` : text,
     language: languageFor(rel),
     truncated: text.length > limit,
-    kind: 'text',
+    // `markdown` is still read as text; the renderer only formats it differently.
+    kind: kind === 'markdown' ? 'markdown' : 'text',
+    // Relative images inside a markdown file resolve against its folder.
+    baseUrl: mediaDirUrlFor(dirOf(rel)),
   }
 }
 
@@ -1002,6 +1014,127 @@ export async function abortWorkspaceUpload(tempPath: string): Promise<void> {
   await rm(tempPath, { force: true })
 }
 
+/**
+ * Copy a file the user picked on this computer into the workspace.
+ *
+ * The phone has to stream through the relay in chunks; the desktop can copy
+ * straight from disk. The destination follows the same rules as the relay
+ * upload: it lands under `uploads/`, an existing file is never overwritten,
+ * and a file that already lives in the workspace is referenced in place so a
+ * second copy does not appear.
+ */
+export async function importWorkspaceFile(
+  root: string,
+  directory: unknown,
+  sourcePath: unknown,
+): Promise<FinishedWorkspaceUpload> {
+  if (typeof sourcePath !== 'string' || !sourcePath.trim()) {
+    throw new Error('请选择要上传的文件')
+  }
+  const source = resolve(sourcePath.trim())
+  const info = await stat(source).catch(() => null)
+  if (!info || !info.isFile()) throw new Error(`找不到要上传的文件：${basename(source)}`)
+  if (info.size > MAX_UPLOAD_BYTES) {
+    throw new Error(
+      `「${basename(source)}」超过 ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))} MB`,
+    )
+  }
+  const base = await workspaceRoot(root)
+  const realSource = await realpath(source)
+  const inside = relative(normalize(base), normalize(realSource))
+  const withinWorkspace =
+    inside !== '' && inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside)
+  if (withinWorkspace) {
+    return { path: toPosix(inside), name: basename(realSource), size: info.size }
+  }
+  const cleanName = uploadName(basename(realSource))
+  const requested = await resolveForWrite(
+    root,
+    join(uploadDirectory(directory ?? 'uploads'), cleanName),
+  )
+  const parent = dirname(requested)
+  await mkdir(parent, { recursive: true })
+  // Anchor the copy to the real parent so a directory swapped for a symlink
+  // cannot redirect the write outside the workspace.
+  const realParent = await realpath(parent)
+  assertInside(base, realParent)
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const target = await availableUploadTarget(realParent, cleanName)
+    try {
+      // COPYFILE_EXCL keeps a concurrent upload from being overwritten.
+      await copyFile(realSource, target, constants.COPYFILE_EXCL)
+      return {
+        path: toPosix(relative(base, target)),
+        name: basename(target),
+        size: info.size,
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue
+      throw error
+    }
+  }
+  throw new Error('同名文件太多，请先整理工作区后再上传')
+}
+
+/**
+ * 把剪贴板或拖拽拿到的一段内存写进工作区。没有源路径可以复制，所以直接落盘，
+ * 但目标目录、命名和同名避让和 `importWorkspaceFile` 走同一套规则。
+ */
+export async function importWorkspaceBytes(
+  root: string,
+  directory: unknown,
+  name: unknown,
+  data: Buffer,
+): Promise<FinishedWorkspaceUpload> {
+  if (!Buffer.isBuffer(data) || data.length === 0) throw new Error('上传内容为空')
+  const cleanName = uploadName(name)
+  if (data.length > MAX_UPLOAD_BYTES) {
+    throw new Error(`「${cleanName}」超过 ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))} MB`)
+  }
+  const requested = await resolveForWrite(
+    root,
+    join(uploadDirectory(directory ?? 'uploads'), cleanName),
+  )
+  const parent = dirname(requested)
+  await mkdir(parent, { recursive: true })
+  const base = await workspaceRoot(root)
+  const realParent = await realpath(parent)
+  assertInside(base, realParent)
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const target = await availableUploadTarget(realParent, cleanName)
+    try {
+      // wx 等价于 COPYFILE_EXCL：并发上传同名内容时后者让位，不覆盖已存在的文件。
+      await writeFile(target, data, { flag: 'wx' })
+      return { path: toPosix(relative(base, target)), name: basename(target), size: data.length }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue
+      throw error
+    }
+  }
+  throw new Error('同名文件太多，请先整理工作区后再上传')
+}
+
+/**
+ * Say so when a write creates a directory a rollback point will not capture.
+ *
+ * A build tree created by accident (`build-output/`, `run-tmp/`) used to join
+ * every later snapshot walk: 80 000 extra files to stat and hash per command.
+ * The checkpoint service drops such a directory on its own; this line is what
+ * tells the model, so it does not later promise the user a rollback of files
+ * that were never captured.
+ */
+function checkpointDirNote(dirRel: string): string {
+  if (!dirRel) return ''
+  const ephemeral = ephemeralDirSegment(dirRel)
+  if (ephemeral) {
+    return `\nNote: ${dirRel} is a scratch/generated directory ("${ephemeral}"), so rollback points never capture its files.`
+  }
+  if (looksEphemeralDirPath(dirRel)) {
+    return `\nNote: ${dirRel} looks generated, so it is left out of later rollback points.`
+  }
+  return ''
+}
+
 export async function writeTextFile(
   root: string,
   path: string,
@@ -1023,14 +1156,24 @@ export async function writeTextFile(
   } catch (error) {
     if (error instanceof Error && error.message === 'Target exists and is not a file') throw error
   }
-  await mkdir(dirname(target), { recursive: true })
-  await writeFile(target, content, 'utf8')
+  const parent = dirname(target)
   const base = await workspaceRoot(root)
+  // A directory this write is about to create may be one no snapshot should
+  // ever walk; check it before it exists so the answer costs one lstat.
+  const newDir = (await pathExists(parent)) ? '' : toPosix(relative(base, parent))
+  await mkdir(parent, { recursive: true })
+  await writeFile(target, content, 'utf8')
   const rel = toPosix(relative(base, target))
+  const bytes = Buffer.byteLength(content, 'utf8')
   return {
-    output: `${existed ? 'Updated' : 'Created'} ${rel} (${Buffer.byteLength(content, 'utf8')} bytes)`,
+    output: `${existed ? 'Updated' : 'Created'} ${rel} (${bytes} bytes)${checkpointDirNote(newDir)}`,
     diff: createUnifiedDiff(rel, before, content),
-    metadata: { path: rel, created: !existed, bytes: Buffer.byteLength(content, 'utf8') },
+    metadata: {
+      path: rel,
+      created: !existed,
+      bytes,
+      ...(newDir ? { newDir } : {}),
+    },
   }
 }
 
@@ -1103,6 +1246,47 @@ function lineNumberAt(text: string, index: number): number {
   return line
 }
 
+const PATCH_SNIPPET_CONTEXT = 2
+const PATCH_SNIPPET_LINE_CHARS = 200
+const PATCH_SNIPPET_MAX_CHARS = 1_200
+
+/**
+ * Quote the real file text around a line so a failed patch can be repaired in
+ * one retry. Without it the model has to re-read the whole file just to learn
+ * how its `oldText` is actually spelled (indentation, commas, quotes).
+ */
+export function patchFailureSnippet(text: string, line: number): string {
+  const lines = text.split(/\r?\n/)
+  const from = Math.max(1, line - PATCH_SNIPPET_CONTEXT)
+  const to = Math.min(lines.length, line + PATCH_SNIPPET_CONTEXT)
+  const width = String(to).length
+  const render = (cursor: number): string => {
+    const marker = cursor === line ? '>' : ' '
+    const raw = lines[cursor - 1] ?? ''
+    const clipped =
+      raw.length > PATCH_SNIPPET_LINE_CHARS ? `${raw.slice(0, PATCH_SNIPPET_LINE_CHARS)}…` : raw
+    return `${marker} ${String(cursor).padStart(width, ' ')}| ${clipped}`
+  }
+  const rows: number[] = []
+  for (let cursor = from; cursor <= to; cursor += 1) rows.push(cursor)
+  // Trim the quoted block from the outside in, but never drop the hit itself.
+  let rendered = rows.map(render)
+  while (
+    rendered.join('\n').length > PATCH_SNIPPET_MAX_CHARS &&
+    rendered.length > 1
+  ) {
+    if (rows[0] !== line && rows.length > 2) {
+      rows.shift()
+    } else if (rows[rows.length - 1] !== line && rows.length > 2) {
+      rows.pop()
+    } else {
+      rows.shift()
+    }
+    rendered = rows.map(render)
+  }
+  return rendered.join('\n')
+}
+
 function applyEdit(
   text: string,
   edit: PatchEdit,
@@ -1124,11 +1308,21 @@ function applyEdit(
         if ((lines[index] ?? '').includes(firstLine)) hits.push(index + 1)
       }
     }
+    if (hits.length === 0) {
+      return {
+        ok: false,
+        error:
+          'Could not find oldText in the file. Read the file first and use the exact text, including indentation.',
+      }
+    }
+    const listed = hits.slice(0, 3).join(', ')
+    const others = hits.length > 3 ? ` (and ${hits.length - 3} more)` : ''
     return {
       ok: false,
-      error: hits.length
-        ? `Could not find the full oldText. Its first line appears at line(s) ${hits.slice(0, 3).join(', ')}; include more surrounding context.`
-        : 'Could not find oldText in the file. Read the file first and use the exact text, including indentation.',
+      error: `Could not find the full oldText. Its first line appears at line(s) ${listed}${others}:\n${patchFailureSnippet(
+        text,
+        hits[0]!,
+      )}\nRe-send oldText using these exact lines (indentation included).`,
     }
   }
   if (found.length > 1 && !edit.replaceAll) {

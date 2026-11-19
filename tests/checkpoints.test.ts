@@ -151,6 +151,115 @@ describe('checkpoint service', () => {
     expect(await exists(join(workspacePath, 'extra.txt'))).toBe(false)
   })
 
+  it('keeps scratch and generated trees out with no pattern configured', async () => {
+    const { service, session, workspacePath } = await setup()
+    // 79 746 files of scratch tree against ~2 700 source files is what made a
+    // `beforeShell` snapshot cost seconds; these names are now always excluded.
+    for (const dir of ['tmp', '.build', 'unpackage', 'Temp', 'logs']) {
+      await mkdir(join(workspacePath, dir, 'deep'), { recursive: true })
+      await writeFile(join(workspacePath, dir, 'deep', 'noise.js'), 'noise\n')
+    }
+
+    const checkpoint = await service.create({
+      sessionId: session.id,
+      workspacePath,
+      label: 'no patterns at all',
+      messageCount: 0,
+      trigger: 'prompt',
+      retention: 20,
+    })
+
+    expect(checkpoint.files).toBe(2)
+    const paths = (await manifestFor(session.id, checkpoint.id)).map((entry) => entry.path)
+    expect(paths.sort()).toEqual(['b.txt', 'src/a.txt'])
+  })
+
+  it('registers a generated directory a write created and skips it next time', async () => {
+    const { service, session, workspacePath } = await setup()
+    await mkdir(join(workspacePath, 'build-output'), { recursive: true })
+    await writeFile(join(workspacePath, 'build-output', 'bundle.js'), 'x\n')
+
+    // `src` is source: the service must refuse to exclude it.
+    expect(service.noteEphemeralDir(workspacePath, 'src')).toBeNull()
+    expect(service.noteEphemeralDir(workspacePath, '../escape')).toBeNull()
+    expect(service.noteEphemeralDir(workspacePath, 'build-output')).toBe('build-output')
+    // Registering twice is a no-op, not a second entry.
+    expect(service.noteEphemeralDir(workspacePath, 'build-output')).toBeNull()
+
+    const checkpoint = await service.create({
+      sessionId: session.id,
+      workspacePath,
+      label: 'after the tool created build-output',
+      messageCount: 0,
+      trigger: 'prompt',
+      retention: 20,
+    })
+    expect(checkpoint.files).toBe(2)
+    const paths = (await manifestFor(session.id, checkpoint.id)).map((entry) => entry.path)
+    expect(paths).not.toContain('build-output/bundle.js')
+    // Excluded from the snapshot only: the file is still there to be read.
+    expect(await exists(join(workspacePath, 'build-output', 'bundle.js'))).toBe(true)
+  })
+
+  it('snapshots two workspaces at the same time instead of one after another', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pilot-checkpoints-par-'))
+    cleanups.push(root)
+    userDataDir = join(root, 'user-data')
+    const store = new Store()
+    await store.load()
+    // Enough files that the walk dominates, which is the situation a real
+    // workspace is in and the only one where the lock matters.
+    const makeWorkspace = async (name: string) => {
+      const dir = join(root, name)
+      for (let index = 0; index < 60; index += 1) {
+        await mkdir(join(dir, 'src', `d${index}`), { recursive: true })
+        await writeFile(join(dir, 'src', `d${index}`, 'f.txt'), `${name}${index}\n`)
+      }
+      const workspace = await store.addWorkspace(dir)
+      return { dir, session: await store.createSession(workspace.path) }
+    }
+    const a = await makeWorkspace('a')
+    const b = await makeWorkspace('b')
+    const service = new CheckpointService(userDataDir, store)
+
+    const time = async (run: () => Promise<unknown>): Promise<number> => {
+      const startedAt = Date.now()
+      await run()
+      return Date.now() - startedAt
+    }
+    const snap = (target: { dir: string; session: { id: string } }, label: string) =>
+      service.create({
+        sessionId: target.session.id,
+        workspacePath: target.dir,
+        label,
+        messageCount: 0,
+        trigger: 'prompt',
+        retention: 20,
+      })
+
+    await snap(a, 'warm a')
+    await snap(b, 'warm b')
+    const sequential = await time(async () => {
+      await snap(a, 'sequential a')
+      await snap(b, 'sequential b')
+    })
+    const parallel = await time(async () => {
+      await Promise.all([snap(a, 'parallel a'), snap(b, 'parallel b')])
+    })
+
+    // Both workspaces are done and correct — a shared lock would also do that.
+    const listA = await service.list(a.session.id)
+    const listB = await service.list(b.session.id)
+    expect(listA.map((entry) => entry.label)).toContain('parallel a')
+    expect(listB.map((entry) => entry.label)).toContain('parallel b')
+    expect(listA.find((entry) => entry.label === 'parallel a')?.files).toBe(60)
+    expect(listB.find((entry) => entry.label === 'parallel b')?.files).toBe(60)
+    // The margin is deliberately loose: this asserts "not serialized", not a
+    // speedup number. A global lock made these two runs add up end to end.
+    expect(parallel).toBeLessThan(Math.max(sequential, 40))
+    service.dispose()
+  }, 30_000)
+
   it('keeps ignored build output out of the snapshot but leaves it on disk', async () => {
     const { service, session, workspacePath } = await setup()
     await mkdir(join(workspacePath, 'tmp', 'nested'), { recursive: true })
@@ -203,8 +312,10 @@ describe('checkpoint service', () => {
 
   it('drops index entries that a newly added pattern now excludes', async () => {
     const { service, session, workspacePath } = await setup()
-    await mkdir(join(workspacePath, 'tmp'), { recursive: true })
-    await writeFile(join(workspacePath, 'tmp', 'a.log'), 'first\n')
+    // `drafts` is not a built-in scratch name, so only a settings pattern can
+    // exclude it — the point of this test.
+    await mkdir(join(workspacePath, 'drafts'), { recursive: true })
+    await writeFile(join(workspacePath, 'drafts', 'a.log'), 'first\n')
 
     const before = await service.create({
       sessionId: session.id,
@@ -223,11 +334,11 @@ describe('checkpoint service', () => {
       messageCount: 0,
       trigger: 'prompt',
       retention: 20,
-      ignore: ['tmp'],
+      ignore: ['drafts'],
     })
     expect(after.files).toBe(2)
     const paths = (await manifestFor(session.id, after.id)).map((entry) => entry.path)
-    expect(paths).not.toContain('tmp/a.log')
+    expect(paths).not.toContain('drafts/a.log')
   })
 
   it('excludes .git and node_modules from snapshots', async () => {
@@ -815,7 +926,9 @@ describe('checkpoint service', () => {
 
     const trash = await trashFiles()
     expect(trash.some((entry) => entry.endsWith('notes.md'))).toBe(true)
-  })
+    // Seven snapshot copies plus two forced budget sweeps: this exceeds the 5s
+    // default on Windows, where every copy/unlink costs much more than on Linux.
+  }, 30_000)
 
   it('backs up an overwritten file into the trash during a per-file revert', async () => {
     const { service, session, workspacePath } = await setup()

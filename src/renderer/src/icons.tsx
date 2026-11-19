@@ -237,6 +237,14 @@ export const ArrowUpRightIcon = (props: IconProps) => (
   </Base>
 )
 
+/** 弹窗：外框 + 从框内指向右上的箭头，用来表示「在独立窗口打开」。 */
+export const PopoutIcon = (props: IconProps) => (
+  <Base {...props}>
+    <path d="M11 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-6" />
+    <path d="M14 3h7v7M21 3l-9 9" />
+  </Base>
+)
+
 export const ClockIcon = (props: IconProps) => (
   <Base {...props}>
     <circle cx="12" cy="12" r="9" />

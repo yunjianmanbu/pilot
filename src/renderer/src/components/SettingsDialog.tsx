@@ -149,6 +149,17 @@ const APPROVAL_OPTIONS: Array<{ value: ApprovalMode; label: string }> = [
 ]
 
 /**
+ * A per-run ceiling on total tokens. Off by default: a budget that is too low
+ * ends a task that would have finished, so it is an explicit choice.
+ */
+const TOKEN_BUDGET_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '0', label: t("不限制") },
+  { value: '200000', label: t("20 万") },
+  { value: '600000', label: t("60 万") },
+  { value: '2000000', label: t("200 万") },
+]
+
+/**
  * Swatches show a mid-tone of each palette so the choice reads on both the
  * dark and light background; the actual accent values live in styles.css.
  */
@@ -203,6 +214,7 @@ export function SettingsDialog({
   focusSection?: SettingsFocus
 }) {
   const [maxSteps, setMaxSteps] = useState(String(settings.maxSteps))
+  const [maxTokens, setMaxTokens] = useState(String(settings.maxTokens))
   const [maxContextTokens, setMaxContextTokens] = useState(String(settings.maxContextTokens))
   const [maxOutputTokens, setMaxOutputTokens] = useState(String(settings.maxOutputTokens))
   const [temperature, setTemperature] = useState(String(settings.temperature))
@@ -539,6 +551,7 @@ export function SettingsDialog({
   const save = async () => {
     setError('')
     const steps = Number(maxSteps)
+    const budget = Number(maxTokens)
     const context = Number(maxContextTokens)
     const output = Number(maxOutputTokens)
     const temp = Number(temperature)
@@ -549,6 +562,10 @@ export function SettingsDialog({
 
     if (!Number.isFinite(steps) || steps < 1 || steps > 1_000) {
       setError(t("最大步数需要在 1 到 1,000 之间。"))
+      return
+    }
+    if (!Number.isFinite(budget) || budget < 0) {
+      setError(t("token 总量上限需要是 0 或正整数（0 = 不限制）。"))
       return
     }
     if (!Number.isFinite(context) || context < 8_000 || context > SETTING_CONTEXT_MAX) {
@@ -651,6 +668,7 @@ export function SettingsDialog({
       evaluationModelIds: selectedEvaluation,
       reviewModelId,
       maxSteps: Math.round(steps),
+      maxTokens: Math.round(budget),
       maxContextTokens: Math.round(context),
       maxOutputTokens: Math.round(output),
       temperature: temp,
@@ -1100,6 +1118,14 @@ export function SettingsDialog({
                   ariaLabel={t("新会话默认执行模式")}
                 />
               </Field>
+              <Field label={t("token 总量上限")} hint={t("单次任务累计；不限制则跑满步数为止")}>
+                <SelectMenu
+                  value={maxTokens}
+                  options={TOKEN_BUDGET_OPTIONS}
+                  onChange={setMaxTokens}
+                  ariaLabel={t("token 总量上限")}
+                />
+              </Field>
             </div>
 
             <div className="field-grid">
@@ -1447,7 +1473,7 @@ export function SettingsDialog({
               <Field
                 label={t("快照跳过的路径")}
                 hint={t(
-                  "每行一条，只影响回退点：这些路径不会被扫描或保存，但仍可在文件树里查看和修改。构建缓存、临时目录、日志等生成物应写在这里。支持 * 通配（如 build-*），带 / 的路径从工作区根算起。",
+                  "每行一条，只影响回退点：这些路径不会被扫描或保存，但仍可在文件树里查看和修改。构建缓存、临时目录、日志等生成物应写在这里。支持 * 通配（如 build-*），带 / 的路径从工作区根算起。tmp、.build、unpackage、logs、checkpoints 等常见生成目录已默认跳过；助手新建的目录若看起来是生成物，也会自动加进来。",
                 )}
               >
                 <textarea

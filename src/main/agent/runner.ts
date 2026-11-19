@@ -8,7 +8,6 @@ import type {
   ApprovalMode,
   ApprovalRequest as SharedApprovalRequest,
   CheckpointTrigger,
-  ContextStats,
   MessageOptions,
   PermissionRules,
   Plan,
@@ -25,7 +24,12 @@ import type {
   ToolResult,
 } from '../../shared/types'
 import type { CheckpointService } from '../checkpoints'
-import { loadGlobalInstructions, loadProjectInstructions } from '../instructions'
+import {
+  loadGlobalInstructions,
+  loadProjectInstructions,
+  loadProjectInstructionsDetailed,
+  type InstructionIssues,
+} from '../instructions'
 import type { Store } from '../store'
 import { sandboxStatus } from '../sandbox'
 import { shellInterpreterLabel } from '../shell'
@@ -38,7 +42,7 @@ import {
   classifyToolCall,
   createClassifierMemo,
 } from './classifier'
-import { contextUsage, estimateTokens, truncateMiddle } from './context'
+import { estimateTokens, truncateMiddle } from './context'
 import { EvolutionService, formatToolFailures, type ProfileJudge } from './evolution'
 import { QualityService } from './quality'
 import { HookService } from './hooks'
@@ -624,7 +628,9 @@ export class AgentRunner {
       session.workspacePath,
       sanitizeReferences(options.references),
     )
-    if (!text && images.length === 0) throw new Error('Message is empty')
+    if (!text && images.length === 0 && references.length === 0) {
+      throw new Error('Message is empty')
+    }
     this.clearAutoContinue(sessionId)
     this.autoContinueAttempts.delete(sessionId)
 
@@ -646,7 +652,13 @@ export class AgentRunner {
     }
 
     this.ensureReady(sessionId)
-    const instruction = text || '请查看这张图片，并说明你看到的内容。'
+    // Attachments can carry the whole message: files and images on their own
+    // still need an instruction the model can act on.
+    const instruction =
+      text ||
+      (images.length > 0
+        ? '请查看这张图片，并说明你看到的内容。'
+        : '请读取我参照的文件，并说明你看到的内容。')
     const ctx = this.newContext(session, session.approvalMode, instruction)
     this.active.set(sessionId, ctx)
     try {
@@ -1354,10 +1366,30 @@ export class AgentRunner {
         // The user-level instruction file is optional.
       }
       let projectInstructions: Awaited<ReturnType<typeof loadProjectInstructions>> = []
+      let instructionIssues: InstructionIssues | null = null
       try {
-        projectInstructions = review ? [] : await loadProjectInstructions(workspacePath)
+        if (!review) {
+          const loaded = await loadProjectInstructionsDetailed(workspacePath)
+          projectInstructions = loaded.files
+          const { truncated, unreadable } = loaded.issues
+          if (truncated.length > 0 || unreadable.length > 0) instructionIssues = loaded.issues
+        }
       } catch {
         // Instruction files are optional; a broken one must not stop the run.
+      }
+      if (instructionIssues) {
+        const parts: string[] = []
+        for (const entry of instructionIssues.truncated) {
+          parts.push(`${entry.name} 超过 24 KB，只注入了开头部分（${entry.bytes} 字节）`)
+        }
+        for (const entry of instructionIssues.unreadable) {
+          parts.push(`${entry.name} 无法读取（${entry.reason}）`)
+        }
+        this.emit({
+          type: 'notice',
+          level: 'warn',
+          message: `项目指令文件未完整加载，本轮可能缺少这些约定：${parts.join('；')}。可把关键规则收紧到 24 KB 以内或改成普通文件。`,
+        })
       }
       const skills = new SkillsService(workspacePath)
       let skillList: Awaited<ReturnType<SkillsService['load']>> = []
@@ -1933,6 +1965,9 @@ export class AgentRunner {
         tools,
         pullTools,
         maxSteps,
+        // A budget of 0 means "no cap". Review runs keep their own small step
+        // ceiling, so no separate token budget is applied there.
+        maxTokens: review ? 0 : settings.maxTokens,
         maxContextTokens: effectiveContextTokens(
           settings.maxContextTokens,
           review ? reviewModel : sessionModelName,
@@ -1956,9 +1991,11 @@ export class AgentRunner {
         screenshotFeedback: settings.screenshotFeedback,
         verificationGate: !review,
         verificationHint,
+        // Names the project's own entry points when a command is not found.
+        workspaceRoot: workspacePath,
         toolsmith: !review,
-        summarize: (history) =>
-          summarizeConversation(client, history, ctx.controller.signal),
+        summarize: (history, previousSummary) =>
+          summarizeConversation(client, history, ctx.controller.signal, previousSummary),
         preTool: async (call, tool) => {
           const outcome = await hooks.beforeTool(call, tool, ctx.controller.signal)
           if (outcome.blocked) {
@@ -2050,7 +2087,22 @@ export class AgentRunner {
           if (mcp?.has(call.name)) {
             return mcp.call(call.name, call.arguments)
           }
-          return executePilotTool(call.name, call.arguments, host, signal)
+          const result = await executePilotTool(call.name, call.arguments, host, signal)
+          // A write that just created a generated directory registers it before
+          // the next snapshot, so that tree never joins a snapshot walk.
+          const newDir =
+            typeof result.metadata?.['newDir'] === 'string' ? result.metadata['newDir'] : ''
+          if (newDir && this.checkpoints) {
+            const excluded = this.checkpoints.noteEphemeralDir(ctx.workspacePath, newDir)
+            if (excluded) {
+              this.emit({
+                type: 'notice',
+                level: 'info',
+                message: `新目录 ${excluded} 像是生成目录，已排除在回退点之外（可在设置→回退点里调整）。`,
+              })
+            }
+          }
+          return result
         },
       })
       await mcp?.dispose()
@@ -2776,62 +2828,6 @@ export class AgentRunner {
     const session = this.store.session(sessionId)
     if (!session) return 0
     return estimateTokens(session.messages.map((message) => message.content).join('\n'))
-  }
-
-  /** Current prompt footprint plus tool schemas, mirroring the loop budget. */
-  contextStats(sessionId: string): ContextStats {
-    const session = this.store.session(sessionId)
-    if (!session) throw new Error('Session not found')
-    const settings = this.store.settings()
-    const usage = contextUsage(session.messages.map(toAgentMessage), 8)
-    const tools =
-      session.kind === 'review' && session.review
-        ? reviewToolsFor(session.review)
-        : withShellDescription(
-            withReferenceRoots(
-              settings.shellMode
-                ? pilotTools
-                : pilotTools.filter((tool) => tool.name !== RUN_SHELL),
-              sessionReferenceRoots(session),
-            ),
-            settings.shellMode ? shellInterpreterLabel(settings.shellInterpreter) : undefined,
-          )
-    const toolsTokens = estimateTokens(JSON.stringify(tools))
-    const estimatedTokens = usage.estimatedTokens + toolsTokens
-    const model =
-      session.kind === 'review'
-        ? this.reviewModelName()
-        : this.store.sessionModelTarget(session.id)?.model ||
-          settings.model
-    const maxContextTokens = effectiveContextTokens(settings.maxContextTokens, model)
-    return {
-      estimatedTokens,
-      maxContextTokens,
-      percent:
-        maxContextTokens > 0
-          ? Math.round((estimatedTokens / maxContextTokens) * 1000) / 10
-          : 0,
-      messageCount: usage.messageCount,
-      toolResultTokens: usage.toolResultTokens,
-      compactableChars: usage.savedChars,
-      compactedResults: usage.compactedResults,
-      savedChars: usage.savedChars,
-    }
-  }
-
-  /** Persist compaction of old tool output so the next run starts smaller. */
-  async compactContext(sessionId: string): Promise<ContextStats> {
-    if (this.active.has(sessionId)) {
-      throw new Error('当前任务正在执行，结束后再压缩上下文')
-    }
-    const result = await this.store.compactSessionMessages(sessionId)
-    this.emit({ type: 'session.changed', sessionId })
-    const stats = this.contextStats(sessionId)
-    return {
-      ...stats,
-      compactedResults: result.compacted,
-      savedChars: result.savedChars,
-    }
   }
 
   /** Exposed only for diagnostics; no transcript contents are returned. */

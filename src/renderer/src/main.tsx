@@ -37,6 +37,15 @@ window.addEventListener('unhandledrejection', (event) => {
   )
 })
 
+/**
+ * 拖到会话框以外的地方时，Electron 默认会导航到那个 file:// 地址，整个界面就
+ * 跟着白屏了。窗口级只做一件事：吃掉这个默认行为（会话框自己的 drop 先消化
+ * 文件，它的 handler 在冒泡前已经 preventDefault）。
+ */
+for (const type of ['dragover', 'drop'] as const) {
+  window.addEventListener(type, (event) => event.preventDefault())
+}
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />
