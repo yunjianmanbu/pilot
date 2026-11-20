@@ -46,9 +46,9 @@ import { SessionFilesPanel } from './components/SessionFilesPanel'
 import { FeedbackDialog } from './components/FeedbackDialog'
 import { SettingsDialog, type SettingsFocus } from './components/SettingsDialog'
 import { Sidebar } from './components/Sidebar'
+import { TopbarMenu, type TopbarMenuItem } from './components/TopbarMenu'
 import { WorkspaceDialog } from './components/WorkspaceDialog'
 import {
-  CheckIcon,
   ClockIcon,
   CopyIcon,
   DiffIcon,
@@ -366,7 +366,6 @@ export function App() {
   const [sessionHasMore, setSessionHasMore] = useState(false)
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const [continuing, setContinuing] = useState(false)
-  const [transcriptCopied, setTranscriptCopied] = useState(false)
   const [companionOpen, setCompanionOpen] = useState(false)
   /** A phone waiting for this window to allow or reject the connection. */
   const [pairRequest, setPairRequest] = useState<CompanionPairRequest | null>(null)
@@ -1857,8 +1856,8 @@ export function App() {
         pushToast(t("复制失败，请稍后重试。"), 'error')
         return
       }
-      setTranscriptCopied(true)
-      window.setTimeout(() => setTranscriptCopied(false), 1600)
+      // 复制入口现在收在「更多操作」菜单里，菜单会随即关闭，所以用 toast 回执。
+      pushToast(t("已复制完整对话记录"))
     } catch {
       pushToast(t("复制失败，请稍后重试。"), 'error')
     }
@@ -2565,6 +2564,68 @@ export function App() {
     [session, live?.content],
   )
 
+  // 会话级操作原来平铺成七个图标，现在收进一个「更多操作」菜单：
+  // 顶栏少占约 230px，标题不再被挤成两三个字，面板打开状态改用勾选表达。
+  const sessionMenuItems: TopbarMenuItem[] = []
+  if (session) {
+    sessionMenuItems.push({
+      key: 'copy-transcript',
+      label: t("复制完整对话记录"),
+      icon: <CopyIcon width={15} height={15} />,
+      onSelect: () => void copyTranscript(),
+    })
+    sessionMenuItems.push({
+      key: 'session-knowledge',
+      label: t("会话知识库"),
+      hint: t("会话知识库：检索这个会话的提问与回复"),
+      icon: <SearchIcon width={15} height={15} />,
+      onSelect: () => openKnowledge('session', session.id),
+    })
+    if (session.kind !== 'review') {
+      sessionMenuItems.push({
+        key: 'fork',
+        label: t("创建会话副本"),
+        hint: t("从当前会话创建副本"),
+        icon: <LayersIcon width={15} height={15} />,
+        onSelect: () => void forkSession(),
+      })
+      sessionMenuItems.push({
+        key: 'checkpoints',
+        label: t("回退点"),
+        hint: t("回退点：恢复文件或对话"),
+        icon: <HistoryIcon width={15} height={15} />,
+        active: checkpointsOpen,
+        onSelect: () => setCheckpointsOpen(true),
+      })
+      sessionMenuItems.push({
+        key: 'artifacts',
+        label: t("本次会话产出的文件"),
+        icon: <FileIcon width={15} height={15} />,
+        active: artifactsOpen,
+        dividerBefore: true,
+        onSelect: () => setArtifactsOpen((value) => !value),
+      })
+      sessionMenuItems.push({
+        key: 'changes',
+        label: t("变更审阅"),
+        hint: t("变更审阅：比较并撤销本次会话修改的文件"),
+        icon: <DiffIcon width={15} height={15} />,
+        active: changesOpen,
+        onSelect: () => setChangesOpen(true),
+      })
+      sessionMenuItems.push({
+        key: 'schedule',
+        label: t("定时任务"),
+        icon: <ClockIcon width={15} height={15} />,
+        active: scheduleOpen,
+        onSelect: () => {
+          setScheduleSeed(null)
+          setScheduleOpen(true)
+        },
+      })
+    }
+  }
+
   if (!booted) {
     return (
       <div className="app-splash">
@@ -2699,82 +2760,11 @@ export function App() {
               ) : null}
 
               {view === 'chat' && session ? (
-                <>
-                  <button
-                    type="button"
-                    className="topbar-icon"
-                    onClick={() => void copyTranscript()}
-                    title={t("复制完整对话记录")}
-                    aria-label={t("复制完整对话记录")}
-                  >
-                    {transcriptCopied ? (
-                      <CheckIcon width={16} height={16} />
-                    ) : (
-                      <CopyIcon width={16} height={16} />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    className="topbar-icon"
-                    onClick={() => openKnowledge('session', session.id)}
-                    title={t("会话知识库：检索这个会话的提问与回复")}
-                    aria-label={t("会话知识库")}
-                  >
-                    <SearchIcon width={16} height={16} />
-                  </button>
-                  {session.kind !== 'review' ? (
-                    <>
-                      <button
-                        type="button"
-                        className="topbar-icon"
-                        onClick={() => void forkSession()}
-                        title={t("从当前会话创建副本")}
-                        aria-label={t("创建会话副本")}
-                      >
-                        <LayersIcon width={16} height={16} />
-                      </button>
-                      <button
-                        type="button"
-                        className={`topbar-icon${checkpointsOpen ? ' is-active' : ''}`}
-                        onClick={() => setCheckpointsOpen(true)}
-                        title={t("回退点：恢复文件或对话")}
-                        aria-label={t("回退点")}
-                      >
-                        <HistoryIcon width={16} height={16} />
-                      </button>
-                      <button
-                        type="button"
-                        className={`topbar-icon${artifactsOpen ? ' is-active' : ''}`}
-                        onClick={() => setArtifactsOpen((value) => !value)}
-                        title={t("本次会话产出的文件")}
-                        aria-label={t("本次会话产出的文件")}
-                      >
-                        <FileIcon width={16} height={16} />
-                      </button>
-                      <button
-                        type="button"
-                        className={`topbar-icon${changesOpen ? ' is-active' : ''}`}
-                        onClick={() => setChangesOpen(true)}
-                        title={t("变更审阅：比较并撤销本次会话修改的文件")}
-                        aria-label={t("变更审阅")}
-                      >
-                        <DiffIcon width={16} height={16} />
-                      </button>
-                      <button
-                        type="button"
-                        className={`topbar-icon${scheduleOpen ? ' is-active' : ''}`}
-                        onClick={() => {
-                          setScheduleSeed(null)
-                          setScheduleOpen(true)
-                        }}
-                        title={t("定时任务")}
-                        aria-label={t("定时任务")}
-                      >
-                        <ClockIcon width={16} height={16} />
-                      </button>
-                    </>
-                  ) : null}
-                </>
+                <TopbarMenu
+                  items={sessionMenuItems}
+                  label={t("会话操作")}
+                  title={t("更多会话操作")}
+                />
               ) : null}
 
               {running ? (
@@ -2782,6 +2772,9 @@ export function App() {
                   <i className="live-dot" />
                   {t("执行中")}</span>
               ) : null}
+
+              {/* 分隔线把「当前会话的模式与操作」与「全局的铃铛/模型/主题/连接」分开。 */}
+              {view === 'chat' && session ? <span className="topbar-split" /> : null}
 
               {/* 小铃铛：评估模型认为有更优版本时亮起，批准前不会打包。 */}
               <QualityBell

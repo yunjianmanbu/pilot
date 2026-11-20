@@ -14,6 +14,7 @@ import { basename } from 'node:path'
 import { Readable } from 'node:stream'
 import { BrowserWindow, session, shell, protocol } from 'electron'
 import { contentTypeFor, MEDIA_SCHEME, linkLabel, parseByteRange, parseOpenLink } from '../shared/media'
+import { windowIconOption } from './app-icon'
 import { resolveMediaTarget, mediaPathFromUrl } from './workspace'
 
 /**
@@ -171,6 +172,7 @@ export function openPreviewWindow(url: string): void {
     minWidth: 640,
     minHeight: 480,
     title: titleFor(url),
+    ...windowIconOption(),
     backgroundColor: '#111111',
     autoHideMenuBar: true,
     webPreferences: {

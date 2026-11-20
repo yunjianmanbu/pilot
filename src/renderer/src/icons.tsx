@@ -266,6 +266,15 @@ export const LayersIcon = (props: IconProps) => (
   </Base>
 )
 
+/** 顶栏「更多操作」：三个点，表示还有一层菜单。 */
+export const MoreIcon = (props: IconProps) => (
+  <Base {...props}>
+    <circle cx="5.5" cy="12" r="1.3" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none" />
+    <circle cx="18.5" cy="12" r="1.3" fill="currentColor" stroke="none" />
+  </Base>
+)
+
 export const MenuIcon = (props: IconProps) => (
   <Base {...props}>
     <path d="M4 6h16M4 12h16M4 18h16" />

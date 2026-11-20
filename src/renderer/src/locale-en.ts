@@ -175,6 +175,8 @@ export const en: Record<string, string> = {
   "会话产出文件": "Session output files",
   "会话已删除。": "Session deleted.",
   "会话排序": "Session order",
+  "会话操作": "Session actions",
+  "更多会话操作": "More session actions",
   "会话知识库": "Session knowledge",
   "会话知识库：检索这个会话的提问与回复":
     "Session knowledge: search this session's questions and replies",
@@ -386,6 +388,7 @@ export const en: Record<string, string> = {
   "工作区所在卷剩余空间不足 {v1}，安装依赖或构建可能因 ENOSPC 失败。":
     "Less than {v1} free on the workspace volume; installing dependencies or building may fail with ENOSPC.",
   "复制完整对话记录": "Copy full transcript",
+  "已复制完整对话记录": "Full transcript copied",
   "复制相对路径": "Copy relative path",
   "复制这条消息": "Copy this message",
   "复制链接": "Copy link",

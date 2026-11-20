@@ -13,6 +13,7 @@
  */
 import { BrowserWindow, nativeTheme, shell } from 'electron'
 import { basename, join } from 'node:path'
+import { windowIconOption } from './app-icon'
 
 /** Enough for a comparison of a few files, small enough to stay bounded. */
 const MAX_DOCUMENT_WINDOWS = 8
@@ -78,6 +79,7 @@ export function openDocumentWindow(options: OpenDocumentWindowOptions): void {
     minHeight: 420,
     show: false,
     title,
+    ...windowIconOption(),
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#111111' : '#f4f4f4',
     autoHideMenuBar: true,
     webPreferences: {

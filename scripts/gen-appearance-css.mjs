@@ -17,14 +17,27 @@
 //   node pilot/scripts/gen-appearance-css.mjs --check   # 只检查是否最新，退出码 0/1
 //
 // 改动任何配色后重跑一次；两端色值始终以 styles.css / App.vue 为准。
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const pilotDir = resolve(here, '..')
-const CLIENT_CSS = join(pilotDir, 'client', 'src', 'renderer', 'src', 'styles.css')
-const APP_VUE = join(pilotDir, 'app', 'App.vue')
+
+/**
+ * 本脚本同时活在两种布局里：
+ *   主仓库 pilot/scripts/  → 两端的源文件在 pilot/client/...、pilot/app/...
+ *   独立仓库 pilot/scripts/ → 仓库根就是子项目本身，源文件在 src/...、App.vue
+ * 拆仓后如果不认布局，这里会拼出 <repo>/client/src/... 这种不存在的路径，CI 里是一句
+ * ENOENT 而不是“路径算错”。用 src/renderer 是否存在判定。
+ */
+const standalone = existsSync(join(pilotDir, 'src', 'renderer'))
+const CLIENT_CSS = standalone
+  ? join(pilotDir, 'src', 'renderer', 'src', 'styles.css')
+  : join(pilotDir, 'client', 'src', 'renderer', 'src', 'styles.css')
+// 手机端源文件只存在于主仓库：独立仓库（pilot）里只有桌面端，那一半得整体跳过，
+// 不能“读不到就报错”——否则桌面端仓库的 CI 永远跑不过。
+const APP_VUE = standalone ? null : join(pilotDir, 'app', 'App.vue')
 
 const ACCENTS = [
   'pine',
@@ -583,37 +596,39 @@ function replaceSection(source, content, title, insertBefore) {
 }
 
 const clientSource = stripLegacyTone(readFileSync(CLIENT_CSS, 'utf8'))
-const appSource = stripLegacyTone(readFileSync(APP_VUE, 'utf8'))
+const appSource = APP_VUE ? stripLegacyTone(readFileSync(APP_VUE, 'utf8')) : null
 
 const LEVELS = ['standard', 'low', 'high']
 const clientContent = [
   ...LEVELS.map((level) => clientContrastRules(clientSource, level)),
   ...LEVELS.map((level) => clientSaturationRules(clientSource, level))
 ].join('\n\n')
-const appContent = [
-  ...LEVELS.map((level) => appContrastRules(appSource, level)),
-  ...LEVELS.map((level) => appSaturationRules(appSource, level))
-].join('\n\n')
+const appContent = appSource
+  ? [
+      ...LEVELS.map((level) => appContrastRules(appSource, level)),
+      ...LEVELS.map((level) => appSaturationRules(appSource, level))
+    ].join('\n\n')
+  : null
 
 const clientNext = replaceSection(clientSource, clientContent, '对比度与饱和度（桌面端）')
-const appNext = replaceSection(appSource, appContent, '对比度与饱和度（手机端）', '</style>')
+const appNext = appSource ? replaceSection(appSource, appContent, '对比度与饱和度（手机端）', '</style>') : null
 
 const check = process.argv.includes('--check')
 if (check) {
   const stale = []
   if (clientNext !== readFileSync(CLIENT_CSS, 'utf8')) stale.push('client/src/renderer/src/styles.css')
-  if (appNext !== readFileSync(APP_VUE, 'utf8')) stale.push('app/App.vue')
+  if (appNext !== null && appNext !== readFileSync(APP_VUE, 'utf8')) stale.push('app/App.vue')
   if (stale.length) {
     console.error(`✗ 外观样式不是最新：${stale.join('、')}`)
     console.error('  运行 node pilot/scripts/gen-appearance-css.mjs 重新生成。')
     process.exit(1)
   }
-  console.log('✓ 外观样式已是最新')
+  console.log(`✓ 外观样式已是最新${appSource ? '' : '（独立仓库只校桌面端）'}`)
   process.exit(0)
 }
 
 if (clientNext !== readFileSync(CLIENT_CSS, 'utf8')) writeFileSync(CLIENT_CSS, clientNext)
-if (appNext !== readFileSync(APP_VUE, 'utf8')) writeFileSync(APP_VUE, appNext)
+if (appNext !== null && appNext !== readFileSync(APP_VUE, 'utf8')) writeFileSync(APP_VUE, appNext)
 console.log('✓ 已生成对比度与饱和度样式')
 console.log('  client/src/renderer/src/styles.css')
-console.log('  app/App.vue')
+if (appSource) console.log('  app/App.vue')

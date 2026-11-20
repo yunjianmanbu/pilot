@@ -2183,8 +2183,8 @@ button.status-line:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 0 18px 0 22px;
+  gap: 12px;
+  padding: 0 14px 0 22px;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(10px);
@@ -2192,6 +2192,8 @@ button.status-line:hover {
 }
 
 .topbar-left {
+  /* 标题拿剩余宽度：会话操作收进菜单后，长标题不会再被挤成两三个字。 */
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -2202,6 +2204,9 @@ button.status-line:hover {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* 标题优先：宽度不够时先截断工作区名，而不是标题。 */
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 200px;
   overflow: hidden;
   white-space: nowrap;
@@ -2237,7 +2242,9 @@ button.status-line:hover {
 }
 
 .header-title {
-  max-width: 360px;
+  /* 弹性宽度：够宽就整句显示，窄了才按剩余空间省略。 */
+  flex: 0 1 auto;
+  min-width: 96px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -2268,6 +2275,8 @@ button.header-title:hover {
 .header-title-input {
   width: 300px;
   max-width: 40vw;
+  min-width: 0;
+  flex: 1 1 auto;
   border: 1px solid var(--accent);
   border-radius: 7px;
   padding: 3px 7px;
@@ -2278,10 +2287,28 @@ button.header-title:hover {
   outline: none;
 }
 
+/* 窗口变窄时先收掉工作区名：顶部标题栏已经显示了完整路径，重复一个会被截断的名字
+   不如把宽度让给会话标题。原来的断点是 920px，那时标题已经被榜到两三个字。 */
+@media (max-width: 1100px) {
+  .topbar-workspace,
+  .topbar-divider {
+    display: none;
+  }
+}
+
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex: none;
+}
+
+/* 会话作用域与全局作用域之间的细竖线，比纯靠间距更容易扫读。 */
+.topbar-split {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--line);
   flex: none;
 }
 
@@ -2405,6 +2432,93 @@ button.header-title:hover {
   border-color: color-mix(in srgb, var(--amber) 34%, var(--border));
   background: var(--amber-soft);
   color: var(--amber);
+}
+
+.topbar-menu {
+  /* 弹层配色与 SelectMenu 同源：这组 --select-* 变量定义在 .select-menu 上，
+     顶栏没有那个祖先，所以在这里补一份同样的映射。 */
+  --select-line-strong: var(--line-strong);
+  --select-text: var(--text);
+  --select-list-bg: var(--surface);
+  --select-active: var(--hover);
+  --select-selected: var(--accent);
+  position: relative;
+  flex: none;
+}
+
+.topbar-menu-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  width: 232px;
+  padding: 5px;
+  border: 1px solid var(--select-line-strong);
+  border-radius: 10px;
+  background: var(--select-list-bg);
+  box-shadow: var(--float-shadow);
+  animation: select-pop 0.12s ease;
+}
+
+.topbar-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--select-text);
+  font: inherit;
+  font-size: calc(12.5px * var(--font-scale));
+  text-align: left;
+  cursor: pointer;
+}
+
+.topbar-menu-item:hover:not(:disabled),
+.topbar-menu-item:focus-visible {
+  background: var(--select-active);
+  outline: none;
+}
+
+.topbar-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.topbar-menu-item.is-active {
+  color: var(--select-selected);
+}
+
+.topbar-menu-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--faint);
+}
+
+.topbar-menu-item.is-active .topbar-menu-icon {
+  color: var(--accent);
+}
+
+.topbar-menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.topbar-menu-check {
+  flex: none;
+  color: var(--accent);
+}
+
+.topbar-menu-sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--line);
 }
 
 .session-loading-view {

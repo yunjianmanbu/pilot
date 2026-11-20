@@ -93,14 +93,25 @@ mac:
   target:
     - target: dmg
       arch: [x64, arm64]
-  artifactName: Pilot-${version}-${arch}.${ext}
+  # No Apple Developer ID: electron-builder ad-hoc signs universal/arm64 builds
+  # (required on Apple Silicon) and skips notarization, so macOS shows the usual
+  # "unidentified developer" prompt on first open.
+  notarize: false
+  # Electron 44 links SMAppService (macOS 13+), so a 44-era dmg dies in dyld on
+  # Monterey with "Symbol not found: _OBJC_CLASS_$_SMAppService". The mac target is
+  # built with the newest Electron that still starts on macOS 12: pass
+  # -c.electronVersion=43.8.7 (already wired into `pnpm package:mac`), which makes
+  # LSMinimumSystemVersion 12.0. Windows/Linux stay on the Electron version in
+  # client/package.json; app.asar is identical either way.
+  artifactName: Pilot-${version}-mac-${arch}.${ext}
 
 linux:
   category: Development
   icon: build/icon.png
   target:
     - target: AppImage
-      arch: [x64]
-  artifactName: Pilot-${version}-${arch}.${ext}
+      arch: [x64, arm64]
+  executableName: pilot
+  artifactName: Pilot-${version}-linux-${arch}.${ext}
 
 publish: null

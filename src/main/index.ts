@@ -14,10 +14,13 @@ import {
   Tray,
   type IpcMainInvokeEvent,
 } from 'electron'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync, unlinkSync } from 'node:fs'
 import { mkdir, stat } from 'node:fs/promises'
 import { hostname, release } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
+import { appIconPath } from './app-icon'
+import { appUserModelId, foreignShortcuts, type ShortcutIdentity } from './win-identity'
+import { trayClickAction } from './window-action'
 import type {
   AccentPalette,
   ApprovalMode,
@@ -951,23 +954,61 @@ function applyTheme(
 }
 
 /**
- * 窗口图标与托盘图标都从这里取。Windows 的任务栏与 Alt-Tab 读的是窗口的
- * `WM_GETICON`，主进程不显式给图标时窗口没有图标，任务栏只能退回类图标，
- * 部分主题下就渲染成一块空白——这正是「任务栏没有 logo」的成因。
- * 打包后图标由 electron-builder 的 extraResources 放在 resources/build 下。
+ * Start-menu folders that can register an AppUserModelID for the current user.
  */
-function appIconPath(): string {
-  const names = process.platform === 'win32' ? ['icon.ico', 'icon.png'] : ['icon.png', 'icon.ico']
-  const roots = app.isPackaged
-    ? [join(process.resourcesPath, 'build'), join(__dirname, '../../build')]
-    : [join(__dirname, '../../build')]
-  for (const root of roots) {
+function startMenuRoots(): string[] {
+  return [
+    join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+    join(
+      process.env.ProgramData ?? 'C:\\ProgramData',
+      'Microsoft',
+      'Windows',
+      'Start Menu',
+      'Programs',
+    ),
+  ]
+}
+
+/**
+ * Windows reads the taskbar name and icon of an AppUserModelID from the first
+ * Start-menu shortcut that registers it. A stale shortcut that claims an AUMID
+ * of ours but launches another executable (the `Electron.lnk` a dev run leaves
+ * behind, or one from an install into an older directory) therefore wins over
+ * the icon our window reports. Drop those before the first window is created.
+ *
+ * Guarded twice: packaged builds only, and never the shortcut that launches
+ * this executable. An unreadable shortcut is left alone rather than guessed at.
+ */
+function healWindowsShortcuts(): void {
+  if (process.platform !== 'win32' || !app.isPackaged) return
+  const records: ShortcutIdentity[] = []
+  for (const root of startMenuRoots()) {
+    if (!existsSync(root)) continue
+    let names: string[]
+    try {
+      names = readdirSync(root, { recursive: true, encoding: 'utf8' })
+    } catch {
+      continue
+    }
     for (const name of names) {
+      if (!name.toLowerCase().endsWith('.lnk')) continue
       const file = join(root, name)
-      if (existsSync(file)) return file
+      try {
+        const link = shell.readShortcutLink(file)
+        records.push({ path: file, target: link.target, appUserModelId: link.appUserModelId })
+      } catch {
+        // Not a shortcut Windows can read: not ours to judge.
+      }
     }
   }
-  return ''
+  for (const stale of foreignShortcuts(records, process.execPath)) {
+    try {
+      unlinkSync(stale.path)
+      console.warn(`[pilot] 已删除占用本应用 AppUserModelID 的陈旧快捷方式: ${stale.path}`)
+    } catch {
+      // Locked by Explorer; the next install rewrites the shortcut anyway.
+    }
+  }
 }
 
 function createWindow(): void {
@@ -987,6 +1028,9 @@ function createWindow(): void {
     show: false,
     backgroundColor: palette.color,
     title: 'Pilot',
+    // Windows takes the icon from the window (WM_GETICON); the installed
+    // build also keeps a shortcut icon, but only one of the two is reliable
+    // across themes, so both are set.
     ...(iconPath ? { icon: iconPath } : {}),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     ...(process.platform !== 'darwin'
@@ -1099,14 +1143,23 @@ function notifyTrayHint(): void {
   notification.show()
 }
 
-/** 左键单击/双击与菜单项都要能把窗口叫回来，包括已被最小化的情形。 */
-function toggleMainWindow(): void {
-  if (!mainWindow || mainWindow.isDestroyed()) {
+/**
+ * 托盘图标的单击/双击：只负责把窗口叫回来，从不隐藏。
+ *
+ * 以前这里是 toggle —— 窗口可见时点击就 hide，Windows 随即移除任务栏按钮，
+ * 下次点击又生成一个新的按钮，用户看到的就是「任务栏图标关掉又重启一个」。
+ * 而且 Windows 的双击会先发 click 再发 double-click，原来的 click=hide、
+ * double-click=focus 组合在双击时必然闪一下。隐藏改由托盘菜单项与窗口关闭
+ * 按钮负责，那是用户明确要求的动作。
+ */
+function revealMainWindow(): void {
+  const action = trayClickAction({
+    exists: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    visible: mainWindow?.isVisible() ?? false,
+    minimized: mainWindow?.isMinimized() ?? false,
+  })
+  if (action === 'create') {
     createWindow()
-    return
-  }
-  if (mainWindow.isVisible() && !mainWindow.isMinimized()) {
-    mainWindow.hide()
     return
   }
   focusMainWindow()
@@ -1126,7 +1179,14 @@ function refreshTrayMenu(): void {
           : open
             ? '隐藏 Pilot'
             : '显示 Pilot',
-        click: () => toggleMainWindow(),
+        click: () => {
+          const current = mainWindow
+          if (open && current && !current.isDestroyed()) {
+            current.hide()
+            return
+          }
+          revealMainWindow()
+        },
       },
       { type: 'separator' },
       {
@@ -1153,8 +1213,10 @@ function createTray(): void {
   tray = new Tray(process.platform === 'win32' ? image : image.resize({ width: 22, height: 22 }))
   tray.setToolTip('Pilot')
   refreshTrayMenu()
-  tray.on('click', () => toggleMainWindow())
-  tray.on('double-click', () => focusMainWindow())
+  // Windows 上双击会连发一次 click，两个回调都收敛到同一条幂等的「显示并置前」，
+  // 所以双击不会再先隐藏再显示。
+  tray.on('click', () => revealMainWindow())
+  tray.on('double-click', () => revealMainWindow())
 }
 
 function registerIpc(): void {
@@ -2292,14 +2354,22 @@ function registerIpc(): void {
 }
 
 app.on('second-instance', () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  }
+  // 从开始菜单/快捷方式再启动一次时，窗口可能只是藏到托盘里：`focus()` 不会把
+  // 隐藏窗口显示出来，用户会以为没反应，所以走同一条「显示并置前」路径。
+  // 主窗口还没建（启动早期）时什么都别做：`whenReady` 紧接着就会建它，而那时
+  // `createWindow()` 需要的 store 还没加载完。
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  revealMainWindow()
 })
 
 app.whenReady().then(async () => {
-  if (process.platform === 'win32') app.setAppUserModelId('com.pilot.agent')
+  if (process.platform === 'win32') {
+    // Dev must not claim the product AUMID: Electron's shell integration would
+    // write `Electron.lnk` under it and the installed app would then show
+    // Electron's name and icon on the taskbar.
+    app.setAppUserModelId(appUserModelId(app.isPackaged))
+    healWindowsShortcuts()
+  }
   // The handler reads the active workspace lazily: the store loads below.
   installMediaProtocol(() => store?.activeWorkspace() ?? null)
   if (process.platform !== 'darwin') Menu.setApplicationMenu(null)

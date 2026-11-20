@@ -1,6 +1,6 @@
 {
   "name": "pilot-agent",
-  "version": "0.1.75",
+  "version": "0.1.78",
   "private": true,
   "license": "Apache-2.0",
   "description": "Pilot — a local-first self-improving coding agent",
@@ -34,7 +34,7 @@
     "package:dir": "pnpm prepare:self-source && pnpm build && electron-builder --dir",
     "self-build": "node scripts/self-build.mjs",
     "package:win": "pnpm prepare:self-source && pnpm build && electron-builder --win",
-    "package:mac": "pnpm prepare:self-source && pnpm build && electron-builder --mac",
+    "package:mac": "pnpm prepare:self-source && pnpm build && electron-builder --mac -c.electronVersion=43.8.7",
     "package:linux": "pnpm prepare:self-source && pnpm build && electron-builder --linux",
     "package:source": "node ./scripts/pack-source.mjs",
     "builtin:pack": "node ./scripts/pack-builtin-tools.mjs --from ../../.pilot/tools",
