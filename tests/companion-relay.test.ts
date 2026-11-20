@@ -179,7 +179,7 @@ async function startConnector(
   extraEnv: Record<string, string> = {},
 ): Promise<{ url: string; child: ChildProcess }> {
   const port = await freePort()
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../../relay/server.mjs', import.meta.url))], {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../../pilot-connector/server.mjs', import.meta.url))], {
     env: {
       ...process.env,
       PORT: String(port),

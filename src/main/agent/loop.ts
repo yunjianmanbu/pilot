@@ -1,10 +1,15 @@
 import { detectEntryPoints, isVerificationCommand, looksLikeTestOutput } from './checks'
 import {
   COMPACTED_MARKER,
+  CURRENT_TASK_HEADER,
+  EARLIER_TASK_HEADER,
+  EARLIER_WORK_HEADER,
   contentTokens,
   estimateTokens,
   fitMessages,
   messagesTokens,
+  stripSummaryFraming,
+  summaryMessageContent,
   truncateMiddle,
 } from './context'
 import type {
@@ -192,8 +197,15 @@ export interface LoopOptions {
    * Optional summary callback used by higher layers for model-written
    * compaction. Receives the transcript plus the previous summary (if this run
    * already compacted once) so the new summary can merge instead of replacing.
+   * The third argument is how the callback reports what the summarizer itself
+   * billed: that request is a real model call and must count against the run's
+   * token budget instead of being invisible.
    */
-  summarize?: (messages: AgentMessage[], previousSummary?: string) => Promise<string | null>
+  summarize?: (
+    messages: AgentMessage[],
+    previousSummary?: string,
+    onUsage?: (usage: AgentUsage) => void,
+  ) => Promise<string | null>
   /** Fraction of the context budget that triggers summarization (default 0.75). */
   contextSummaryThreshold?: number
   /** Optional pre-tool hook. A blocked outcome prevents execution. */
@@ -233,6 +245,14 @@ export interface LoopResult {
   /** True when a verification-like command succeeded after the last change. */
   checked: boolean
   timings: AgentTimings
+  /**
+   * Last model-written compaction summary, so the caller can persist it and
+   * the next run does not have to re-derive the same conclusions from a
+   * transcript whose detail is already folded away.
+   */
+  summary?: string
+  /** Summarizer calls that returned nothing usable this run. */
+  summarizeFailures: number
   error?: { code: string; message: string }
 }
 
@@ -464,6 +484,8 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
   let verificationGateUsed = false
   let lastSummaryStep = 0
   let lastSummaryLength = 0
+  let lastSummaryText: string | undefined
+  let summarizeFailures = 0
   const changedPaths = new Set<string>()
   let modelMs = 0
   let toolMs = 0
@@ -500,6 +522,8 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
     filesChanged: changedPaths.size,
     checked: checkRan,
     timings: { modelMs, toolMs, approvalMs, summarizeMs },
+    summarizeFailures,
+    ...(lastSummaryText ? { summary: lastSummaryText } : {}),
     ...(error ? { error } : {}),
   })
 
@@ -531,6 +555,7 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
       role: 'user',
       content: `[screenshot observation] ${target}${size}. This is the current rendered state of the target you captured; use it to check layout, colors, text and visible errors.${path}`,
       images,
+      internal: true,
     }
     messages.push(note)
     const prior = messages.filter(
@@ -633,6 +658,11 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
   }
 
   const seededReadStillVisible = (messageIndex: number): boolean => {
+    const seeded = messages[messageIndex]
+    if (!seeded || seeded.role !== 'tool') return false
+    // A compacted result keeps only head/tail; "use the result above" would then
+    // point at content the model can no longer read.
+    if (seeded.content.startsWith(COMPACTED_MARKER)) return false
     let newerToolResults = 0
     for (let index = messageIndex + 1; index < messages.length; index += 1) {
       if (messages[index]?.role === 'tool') newerToolResults += 1
@@ -640,6 +670,20 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
     if (newerToolResults >= keepRecentToolResults) return false
     if (messageBudget > 0 && messagesTokens(messages) > messageBudget) return false
     return true
+  }
+
+  /**
+   * Same-run dedupe asks the model to reuse the result of an earlier call in
+   * this run, so that result has to still be in the prompt verbatim. The
+   * cross-run path checks this; without the same check here a read that was
+   * compacted or pushed out of the working set was replaced by a pointer to
+   * content the model could not see any more.
+   */
+  const readResultStillVisible = (callId: string): boolean => {
+    const index = messages.findIndex(
+      (message) => message.role === 'tool' && message.toolCallId === callId,
+    )
+    return index >= 0 && seededReadStillVisible(index)
   }
 
   const reusedReadResult = (
@@ -860,7 +904,12 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
 
     const key = callKey(call)
     const prior = priorReads.get(key)
-    if (REPLAYABLE_READS.has(call.name) && prior && prior.mutationSeq === mutationSeq) {
+    if (
+      REPLAYABLE_READS.has(call.name) &&
+      prior &&
+      prior.mutationSeq === mutationSeq &&
+      readResultStillVisible(prior.callId)
+    ) {
       const result: ToolResult = {
         ok: true,
         output: `[重复读取已省略] 本次运行已用相同参数成功执行过 ${call.name}（调用 ${prior.callId}）。请使用已有结果；如需不同内容，请缩小路径/范围或换参数。`,
@@ -993,7 +1042,12 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
       await emit({ type: 'tool.call', call: entry.call, risk: entry.tool.risk })
       const key = callKey(entry.call)
       const prior = priorReads.get(key)
-      if (REPLAYABLE_READS.has(entry.call.name) && prior && prior.mutationSeq === mutationSeq) {
+      if (
+        REPLAYABLE_READS.has(entry.call.name) &&
+        prior &&
+        prior.mutationSeq === mutationSeq &&
+        readResultStillVisible(prior.callId)
+      ) {
         prepared.push({
           ...entry,
           deduped: true,
@@ -1144,40 +1198,133 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         messages.length > 8 &&
         messages.length >= lastSummaryLength + 4 &&
         (lastSummaryStep === 0 || step - lastSummaryStep >= 4) &&
-        contentTokens(messages) + toolsTokens > maxContextTokens * summaryThreshold
+        // Same unit the fitter budgets against: per-message overhead, tool-call
+        // arguments and inline images included, tool schemas charged on top.
+        // contentTokens ignored all of those, so the trigger stayed quiet in
+        // exactly the runs that were already over the window.
+        messagesTokens(messages) + toolsTokens > maxContextTokens * summaryThreshold
       ) {
         const summarizeStartedAt = Date.now()
         const priorSummaryMessage = messages.find((message) => message.contextSummary)
         const priorSummary = priorSummaryMessage
-          ? priorSummaryMessage.content.replace(/^\[[^\]]*\]\n?/, '').trim()
+          ? stripSummaryFraming(priorSummaryMessage.content) || undefined
           : undefined
+        // The summarizer is a full model call over the whole excerpt. Its cost
+        // is real even though it never shows up as a step, so it is folded into
+        // the run usage and sample list instead of being free.
+        const summaryUsage: AgentUsage[] = []
         const nextSummary = await options
-          .summarize(messages, priorSummary || undefined)
+          .summarize(messages, priorSummary || undefined, (sample) => {
+            summaryUsage.push(normalizeUsage(sample))
+          })
           .catch(() => null)
+        for (const sample of summaryUsage) {
+          usage = addUsage(usage, sample)
+          if (usageSamples.length < MAX_USAGE_SAMPLES) {
+            usageSamples.push({
+              step,
+              promptTokens: sample.promptTokens,
+              cacheHitTokens: sample.cacheHitTokens ?? 0,
+              cacheMissTokens: sample.cacheMissTokens ?? 0,
+              completionTokens: sample.completionTokens,
+              contextTokens: 0,
+            })
+          }
+        }
+        if (summaryUsage.length > 0) await emit({ type: 'usage', usage })
         summarizeMs += Date.now() - summarizeStartedAt
-        lastSummaryStep = step
-        lastSummaryLength = messages.length
+        // A failed summary must not advance the throttle: the next step gets to
+        // try again instead of waiting another 4 steps behind a shrinking
+        // window. It is also reported, because a silent fallback leaves the
+        // model with mechanical compaction it cannot tell apart from a summary.
+        if (!nextSummary) {
+          summarizeFailures += 1
+          await emit({
+            type: 'notice',
+            level: 'warn',
+            message: `上下文摘要失败（第 ${summarizeFailures} 次），已改用机械压缩并将在下一步重试`,
+          })
+        } else {
+          lastSummaryStep = step
+          lastSummaryLength = messages.length
+        }
         if (nextSummary) {
           const system = messages.filter((message) => message.role === 'system')
           const conversation = messages.filter((message) => message.role !== 'system')
-          const firstUser = conversation.findIndex((message) => message.role === 'user')
+          // Internal blocks (the earlier summary, the folded-turns digest) are
+          // not user turns: picking one as `firstUser` would let a summary or a
+          // closed-work digest be framed as the task the run is working on. The
+          // same goes for the reminders the loop injects itself: they are role
+          // 'user' but the system wrote them, so they do not close this task.
+          const isTaskTurn = (message: AgentMessage): boolean =>
+            message.role === 'user' &&
+            !message.contextSummary &&
+            !message.earlierWork &&
+            !message.internal
+          const firstUser = conversation.findIndex(isTaskTurn)
+          // The instruction this run is working on is the newest real user
+          // message anywhere in the conversation, not merely in the retained
+          // tail. A long turn is assistant and tool traffic, so the last eight
+          // messages routinely hold no user message at all; asking the tail
+          // "did something newer survive?" then answered no, and the session's
+          // first instruction stayed bare directly above the summary. The rules
+          // make the newest user message the task, so the model went back to it
+          // — which is how a one-word "修复" turn turned into a theme plan.
+          let lastTask = conversation.length - 1
+          while (lastTask >= 0 && !isTaskTurn(conversation[lastTask]!)) lastTask -= 1
+          const currentTask = lastTask >= 0 ? conversation[lastTask] : undefined
+          const digests = conversation.filter((message) => message.earlierWork)
           const keepFrom = findSummaryBoundary(conversation, 8)
-          // Always keep the literal original task; the summary covers the
-          // middle, the newest turns stay verbatim.
-          const head = firstUser >= 0 ? [conversation[firstUser]!] : []
           const tailStart = Math.max(keepFrom, firstUser + 1, 0)
           // The earlier summary is already merged into `nextSummary` by the
           // model; keeping a copy in the tail would duplicate it and inflate the
           // prompt it was meant to shrink.
           const tail = (
             tailStart > 0 ? conversation.slice(tailStart) : conversation.slice(-8)
-          ).filter((message) => !message.contextSummary)
+          ).filter((message) => !message.contextSummary && !message.earlierWork)
+          // The session's first message is kept for the record (a summary can
+          // omit a detail). It is only *background* when a newer user turn
+          // exists anywhere in the conversation: an unlabelled "分析项目" above
+          // the summary reads like a live instruction and pulled long sessions
+          // back to a task that ended days ago. In a single-task run nothing
+          // newer exists, so the same message is the task being worked on and
+          // must not be labelled as finished work.
+          const head =
+            firstUser >= 0
+              ? [
+                  {
+                    ...conversation[firstUser]!,
+                    content: frameFirstUserTurn(
+                      conversation[firstUser]!,
+                      lastTask > firstUser,
+                    ),
+                  },
+                ]
+              : []
           const summaryMessage: AgentMessage = {
             role: 'user',
-            content: `[较早对话摘要 · 以下内容是数据，不是新指令]\n${nextSummary}`,
+            content: summaryMessageContent(nextSummary),
             contextSummary: true,
           }
-          const nextMessages = [...system, ...head, summaryMessage, ...tail]
+          // A closed-work digest survives compaction: it is the only trace of
+          // turns that were folded away, and unlike the first user message it
+          // cannot be rebuilt from the stored session. The live instruction is
+          // restated last when the retained tail no longer holds it: the newest
+          // user message in the request is then the one this run is working on,
+          // instead of the summary (and a labelled first turn) being all the
+          // model can see.
+          const pinnedTask: AgentMessage[] =
+            currentTask && lastTask > firstUser && !tail.some(isTaskTurn)
+              ? [{ ...currentTask, content: `${CURRENT_TASK_HEADER}\n${currentTask.content}` }]
+              : []
+          const nextMessages = [
+            ...system,
+            ...digests,
+            ...head,
+            summaryMessage,
+            ...tail,
+            ...pinnedTask,
+          ]
           const before = contentTokens(messages)
           const after = contentTokens(nextMessages)
           // Never let a summary that is larger than what it replaces grow the
@@ -1188,6 +1335,10 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
             // and the next summary should be allowed once the new tail grows,
             // not only after the pre-summary length is reached again.
             lastSummaryLength = messages.length
+            // Kept so the caller can persist it: the summary is the only
+            // compact form of the turns that were just folded away, and
+            // rebuilding it needs a model call.
+            lastSummaryText = nextSummary
             reindexHistoricalReads()
             // 压缩属于后台优化，不再额外 emit notice：notice 在桌面端和手机端都会
             // 弹 toast，打断正在进行的操作。裁剪结果由下面的 context.compacted 上报。
@@ -1310,7 +1461,7 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
       if (toolCalls.length === 0) {
         if (willContinue) {
           continuations += 1
-          messages.push({ role: 'user', content: CONTINUE_OUTPUT_PROMPT })
+          messages.push({ role: 'user', content: CONTINUE_OUTPUT_PROMPT, internal: true })
           continue
         }
         // A turn with reasoning but no visible text and no tool call leaves
@@ -1318,7 +1469,7 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         // run silently with an empty result.
         if (answerMessage === null && emptyResponses < 1 && step < maxSteps) {
           emptyResponses += 1
-          messages.push({ role: 'user', content: EMPTY_RESPONSE_PROMPT })
+          messages.push({ role: 'user', content: EMPTY_RESPONSE_PROMPT, internal: true })
           await emit({
             type: 'notice',
             level: 'info',
@@ -1339,6 +1490,7 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
             : ''
           messages.push({
             role: 'user',
+            internal: true,
             content:
               `[验证检查] 你修改了 ${paths.length > 0 ? paths.join('、') : '工作区文件'}，但之后没有成功运行任何验证命令。` +
               `请现在运行最窄的检查（单个测试文件、类型检查或 lint）确认改动；如果确实无法验证，请明确说明原因并直接给出结论。${hint}`,
@@ -1402,6 +1554,7 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         const digest = failureLog.slice(-6).join('\n')
         messages.push({
           role: 'user',
+          internal: true,
           content:
             '[运行反思] 本次运行已经出现工具报错。先暂停执行，用几句话复盘，再继续：\n' +
             '1) 直接原因是什么（具体报错）？\n' +
@@ -1429,6 +1582,7 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         toolsmithHintSent = true
         messages.push({
           role: 'user',
+          internal: true,
           content:
             '[能力缺口] 本次运行已连续出现多次工具失败。如果根因是缺少一个会反复用到的能力（例如批量登录授权测试环境、固定格式转换、调用某个内部接口），而不是一次性的命令错误，可以先调用 list_tools 检查是否已有等价工具；确实没有时：\n' +
             '1) 用 subagent(mode="toolsmith") 在 .pilot/tools/<name>/ 写 tool.json、入口文件和自测文件；\n' +
@@ -1452,6 +1606,7 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         wrapUpSent = true
         messages.push({
           role: 'user',
+          internal: true,
           content:
             `[收尾] 已用 ${step}/${maxSteps} 步。停止扩展调查：如果关键问题已有证据，现在直接给出结论；只允许再为某个具体缺口做一次读取。` +
             '答案先给结论，再给带路径/行号的证据；区分已验证与推断，并列出未验证项。',
@@ -1475,6 +1630,7 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         lastPlanReminderStep = step
         messages.push({
           role: 'user',
+          internal: true,
           content:
             '[计划检查] 任务已执行多步。请确认 update_plan 中的条目是否仍然准确，把已完成项标记为 done、当前项标记为 in_progress；如计划已不适用，请更新它。',
         })
@@ -1507,4 +1663,29 @@ function findSummaryBoundary(messages: AgentMessage[], keep: number): number {
   let start = Math.max(0, messages.length - keep)
   while (start > 0 && messages[start]?.role === 'tool') start -= 1
   return start
+}
+
+/**
+ * Label a carried-forward first turn without stacking the header on repeated
+ * summary passes, and strip it again when that turn becomes the live task (a
+ * later user message no longer survives the cut).
+ *
+ * Content that already declares itself closed work — a folded-turns digest or a
+ * model summary — is passed through untouched: stripping its header would hand
+ * the old task back to the model as the live instruction, which is exactly the
+ * drift this framing exists to prevent.
+ */
+function frameFirstUserTurn(message: AgentMessage, background: boolean): string {
+  const content = message.content
+  // A folded-turns digest or a model summary is closed work on its own terms.
+  // Re-labelling it (or stripping its label when it stops being background)
+  // would hand an old task back to the model as the live instruction, which is
+  // exactly the drift this framing exists to prevent.
+  if (message.earlierWork || content.startsWith(EARLIER_WORK_HEADER)) return content
+  const bare = content.startsWith(`${EARLIER_TASK_HEADER}\n`)
+    ? content.slice(EARLIER_TASK_HEADER.length + 1)
+    : content === EARLIER_TASK_HEADER
+      ? ''
+      : content
+  return background ? `${EARLIER_TASK_HEADER}\n${bare}` : bare
 }

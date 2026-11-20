@@ -26,18 +26,18 @@ const pilotDir = resolve(here, '..')
 
 /**
  * 本脚本同时活在两种布局里：
- *   主仓库 pilot/scripts/  → 两端的源文件在 pilot/client/...、pilot/app/...
+ *   主仓库 pilot/scripts/  → 两端的源文件在 pilot/pilot/...、pilot/pilot-link/...
  *   独立仓库 pilot/scripts/ → 仓库根就是子项目本身，源文件在 src/...、App.vue
- * 拆仓后如果不认布局，这里会拼出 <repo>/client/src/... 这种不存在的路径，CI 里是一句
+ * 拆仓后如果不认布局，这里会拼出 <repo>/pilot/src/... 这种不存在的路径，CI 里是一句
  * ENOENT 而不是“路径算错”。用 src/renderer 是否存在判定。
  */
 const standalone = existsSync(join(pilotDir, 'src', 'renderer'))
 const CLIENT_CSS = standalone
   ? join(pilotDir, 'src', 'renderer', 'src', 'styles.css')
-  : join(pilotDir, 'client', 'src', 'renderer', 'src', 'styles.css')
+  : join(pilotDir, 'pilot', 'src', 'renderer', 'src', 'styles.css')
 // 手机端源文件只存在于主仓库：独立仓库（pilot）里只有桌面端，那一半得整体跳过，
 // 不能“读不到就报错”——否则桌面端仓库的 CI 永远跑不过。
-const APP_VUE = standalone ? null : join(pilotDir, 'app', 'App.vue')
+const APP_VUE = standalone ? null : join(pilotDir, 'pilot-link', 'App.vue')
 
 const ACCENTS = [
   'pine',
@@ -616,8 +616,8 @@ const appNext = appSource ? replaceSection(appSource, appContent, '对比度与�
 const check = process.argv.includes('--check')
 if (check) {
   const stale = []
-  if (clientNext !== readFileSync(CLIENT_CSS, 'utf8')) stale.push('client/src/renderer/src/styles.css')
-  if (appNext !== null && appNext !== readFileSync(APP_VUE, 'utf8')) stale.push('app/App.vue')
+  if (clientNext !== readFileSync(CLIENT_CSS, 'utf8')) stale.push('pilot/src/renderer/src/styles.css')
+  if (appNext !== null && appNext !== readFileSync(APP_VUE, 'utf8')) stale.push('pilot-link/App.vue')
   if (stale.length) {
     console.error(`✗ 外观样式不是最新：${stale.join('、')}`)
     console.error('  运行 node pilot/scripts/gen-appearance-css.mjs 重新生成。')
@@ -630,5 +630,5 @@ if (check) {
 if (clientNext !== readFileSync(CLIENT_CSS, 'utf8')) writeFileSync(CLIENT_CSS, clientNext)
 if (appNext !== null && appNext !== readFileSync(APP_VUE, 'utf8')) writeFileSync(APP_VUE, appNext)
 console.log('✓ 已生成对比度与饱和度样式')
-console.log('  client/src/renderer/src/styles.css')
-if (appSource) console.log('  app/App.vue')
+console.log('  pilot/src/renderer/src/styles.css')
+if (appSource) console.log('  pilot-link/App.vue')

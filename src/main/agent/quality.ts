@@ -67,7 +67,7 @@ export interface QualityServiceOptions {
   judges: () => ProfileJudge[]
   /** 运行模型客户端，仅在没有任何评估模型时使用。 */
   makeClient: () => ModelClient
-  /** pilot/client 目录（打包脚本所在处）。 */
+  /** pilot/pilot 目录（打包脚本所在处）。 */
   packageRoot: string
   /** 注入点：测试用它避免真的打包。 */
   runPackage?: (target: QualityPublishTarget, cwd: string) => Promise<PackageRunResult>

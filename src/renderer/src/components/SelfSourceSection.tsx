@@ -174,10 +174,10 @@ export function SelfSourceSection({
                 <span>{t('仓库内路径')}</span>
                 <input
                   value={form.gitPath}
-                  placeholder="pilot/client"
+                  placeholder="pilot/pilot"
                   onChange={(event) => setForm({ ...form, gitPath: event.target.value })}
                 />
-                <small>{t('填源码在仓库里的相对目录，例如 pilot/client；留空表示仓库根就是客户端源码。')}</small>
+                <small>{t('填源码在仓库里的相对目录，例如 pilot/pilot；留空表示仓库根就是客户端源码。')}</small>
               </label>
             </div>
           ) : (
@@ -201,7 +201,7 @@ export function SelfSourceSection({
                 <span>{t('仓库内路径')}</span>
                 <input
                   value={form.gitPath}
-                  placeholder="pilot/client"
+                  placeholder="pilot/pilot"
                   onChange={(event) => setForm({ ...form, gitPath: event.target.value })}
                 />
               </label>

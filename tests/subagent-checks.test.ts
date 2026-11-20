@@ -54,9 +54,9 @@ describe('planCheck whitelist', () => {
   it('accepts the narrow checks a project actually needs', () => {
     const scripts = new Set(['typecheck', 'test'])
     for (const input of [
-      { command: 'npx', args: ['vitest', 'run', 'tests/a.test.ts'], cwd: 'pilot/client' },
+      { command: 'npx', args: ['vitest', 'run', 'tests/a.test.ts'], cwd: 'pilot/pilot' },
       { command: 'npx', args: ['tsc', '-p', 'tsconfig.node.json', '--noEmit'] },
-      { command: 'pnpm', args: ['run', 'typecheck'], cwd: 'pilot/client' },
+      { command: 'pnpm', args: ['run', 'typecheck'], cwd: 'pilot/pilot' },
       { command: 'pnpm', args: ['test'] },
       { command: 'tsc', args: ['--noEmit'] },
       { command: 'eslint', args: ['src/**/*.ts'] },
@@ -86,7 +86,7 @@ describe('planCheck whitelist', () => {
       { command: 'npx', args: ['vitest', 'run'], cwd: '../outside' },
       { command: 'npx', args: ['vitest', 'run'], cwd: 'C:/Windows' },
       { command: 'npx', args: ['vitest', 'run'], cwd: '/etc' },
-      { command: 'pnpm', args: ['run', 'typecheck', 'and-more'], cwd: 'pilot/client' },
+      { command: 'pnpm', args: ['run', 'typecheck', 'and-more'], cwd: 'pilot/pilot' },
       { command: './node_modules/.bin/vitest', args: [] },
       { command: '' },
     ]

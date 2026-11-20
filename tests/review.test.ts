@@ -311,6 +311,58 @@ describe('review session scope', () => {
       ),
     ).rejects.toThrow(/outside this review scope/i)
   })
+
+  it('shows the plan each run ended with, not the settled session plan', async () => {
+    // The session plan belongs to the newest turn and is settled on load
+    // (in_progress becomes done/pending), so reviewing past work off it reported
+    // a state the run never had.
+    const live = session({
+      id: 'inside',
+      review: scope(),
+      plan: {
+        goal: 'live turn goal',
+        items: [{ id: 'p1', text: 'still pending', status: 'pending' }],
+        updatedAt: '2026-11-12T00:00:00.000Z',
+      },
+      messages: [
+        {
+          id: 'm1',
+          role: 'assistant',
+          content: 'finished work',
+          createdAt: '2026-11-11T01:00:00.000Z',
+          runId: 'run-a',
+          plan: {
+            goal: 'goal of the reviewed run',
+            items: [{ id: 'p2', text: 'wrote the release notes', status: 'done' }],
+            updatedAt: '2026-11-11T02:00:00.000Z',
+          },
+        },
+      ],
+    })
+    const store = {
+      session: (id: string) => (id === 'inside' ? live : null),
+      sessions: () => [live],
+      runs: () => [{ id: 'run-a', sessionId: 'inside', status: 'completed' }],
+      run: () => null,
+      workspaces: () => [{ path: ROOT, name: 'app' }],
+    } as unknown as Store
+    const output = await executeReviewTool(
+      GET_SESSION,
+      { sessionId: 'inside' },
+      {} as ToolHost,
+      new AbortController().signal,
+      {
+        store,
+        session: live,
+        scope: live.review!,
+        model: 'review-model',
+        record: async () => ({ memoryCount: 0 }),
+      },
+    )
+    expect(output.output).toContain('Plan recorded by run run-a')
+    expect(output.output).toContain('[done] wrote the release notes')
+    expect(output.output).not.toContain('live turn goal')
+  })
 })
 
 describe('buildFixPrompt', () => {

@@ -30,11 +30,14 @@ function formatBytes(size: number): string {
 export function SessionFilesPanel({
   session,
   workspace,
+  openSeed,
   onClose,
   onError,
 }: {
   session: Session | null
   workspace: WorkspaceSummary | null
+  /** A file requested from an answer's change bar; `key` makes repeats distinct. */
+  openSeed?: { path: string; key: number } | null
   onClose: () => void
   onError: (message: string) => void
 }) {
@@ -88,6 +91,31 @@ export function SessionFilesPanel({
       setPreviewLoading(false)
     }
   }
+
+  // A change bar row names one file: open it straight away instead of making the
+  // user find the same path in the list below. Declared after the list effect so
+  // the seeded preview wins over its `setPreview(null)` reset.
+  const seedKey = openSeed?.key
+  const seedPath = openSeed?.path
+  useEffect(() => {
+    if (!seedPath || !session || !workspace) return
+    let cancelled = false
+    setPreviewLoading(true)
+    window.pilot
+      .previewFile(workspace.path, seedPath)
+      .then((file) => {
+        if (!cancelled) setPreview(file)
+      })
+      .catch((error) => {
+        if (!cancelled) onError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [seedKey, seedPath, session?.id, workspace?.path, onError])
 
   return (
     <>

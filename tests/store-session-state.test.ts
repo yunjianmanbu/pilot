@@ -77,6 +77,33 @@ describe('Store session continuation state', () => {
     store.setRunInfo(sessionId, null)
     expect(store.sessions(store.session(sessionId)!.workspacePath)[0]?.runInstruction).toBeUndefined()
   })
+
+  it('persists the compaction summary across a reload', async () => {
+    // Without this the summary died with the run: the next turn paid for the
+    // same summarizer call over a transcript whose detail was already folded.
+    const { store, sessionId } = await setup()
+    expect(store.contextSummary(sessionId)).toBeNull()
+    await store.setContextSummary(sessionId, '  Goal: 修复登录\nFacts: a.ts:12  ')
+    expect(store.contextSummary(sessionId)).toBe('Goal: 修复登录\nFacts: a.ts:12')
+    expect(store.session(sessionId)?.summary).toBe('Goal: 修复登录\nFacts: a.ts:12')
+    // The summary stays out of SessionSummary: that view goes to the renderer
+    // and the compact form is model-facing only. It rides in the index entry
+    // instead, which is why the reload below can still answer for it.
+    const listed = store.sessions(store.session(sessionId)!.workspacePath)[0]
+    expect(listed).toBeDefined()
+    await store.flush()
+
+    const reopened = new Store()
+    await reopened.load()
+    expect(reopened.contextSummary(sessionId)).toBe('Goal: 修复登录\nFacts: a.ts:12')
+
+    await reopened.setContextSummary(sessionId, null)
+    expect(reopened.contextSummary(sessionId)).toBeNull()
+    await reopened.flush()
+    const again = new Store()
+    await again.load()
+    expect(again.contextSummary(sessionId)).toBeNull()
+  })
 })
 
 describe('Store todos', () => {

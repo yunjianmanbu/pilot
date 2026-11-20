@@ -13,7 +13,7 @@ const root = resolve(__dirname, '..')
 const entry = join(root, 'out', 'server', 'main.js')
 if (!existsSync(entry)) {
   process.stderr.write(
-    `未找到服务器构建产物：${entry}\n请在 pilot/client 目录执行 \`npm run build:server\`（或 pnpm build:server）后重试。\n`,
+    `未找到服务器构建产物：${entry}\n请在 pilot/pilot 目录执行 \`npm run build:server\`（或 pnpm build:server）后重试。\n`,
   )
   process.exit(1)
 }

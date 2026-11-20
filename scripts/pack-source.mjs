@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const pilotDir = resolve(scriptDir, '..')
 const repoRoot = resolve(pilotDir, '..')
-const version = JSON.parse(readFileSync(join(pilotDir, 'client', 'package.json'), 'utf8')).version
+const version = JSON.parse(readFileSync(join(pilotDir, 'pilot', 'package.json'), 'utf8')).version
 
 const argv = process.argv.slice(2)
 const outIndex = argv.indexOf('--out')
@@ -18,8 +18,8 @@ const out = outIndex >= 0 && argv[outIndex + 1]
   ? resolve(argv[outIndex + 1])
   : join(pilotDir, 'release', `Pilot-source-${version}.tar.gz`)
 
-if (!existsSync(join(repoRoot, 'pilot', 'client', 'package.json'))) {
-  console.error(`✗ 找不到仓库根目录下的 pilot/client（当前根目录：${repoRoot}）`)
+if (!existsSync(join(repoRoot, 'pilot', 'pilot', 'package.json'))) {
+  console.error(`✗ 找不到仓库根目录下的 pilot/pilot（当前根目录：${repoRoot}）`)
   process.exit(1)
 }
 
@@ -30,20 +30,20 @@ const excludes = [
   // pilot/site（官网）不开源，也不进源码包：它不属于四个开源子项目，
   // 且工作盘上有 7 个宣传视频（约 61 MB）只在部署机需要。
   'pilot/site',
-  'pilot/client/node_modules',
-  'pilot/client/out',
-  'pilot/client/release',
-  'pilot/client/tmp',
-  'pilot/client/.selfdev-build',
-  'pilot/client/release-selfdev',
-  'pilot/client/build/self-source-package.json',
+  'pilot/pilot/node_modules',
+  'pilot/pilot/out',
+  'pilot/pilot/release',
+  'pilot/pilot/tmp',
+  'pilot/pilot/.selfdev-build',
+  'pilot/pilot/release-selfdev',
+  'pilot/pilot/build/self-source-package.json',
   'pilot/release',
-  'pilot/app/node_modules',
-  'pilot/app/unpackage',
-  'pilot/app/.build',
+  'pilot/pilot-link/node_modules',
+  'pilot/pilot-link/unpackage',
+  'pilot/pilot-link/.build',
   'pilot/mobile/node_modules',
   'pilot/mobile/unpackage',
-  'pilot/relay/node_modules',
+  'pilot/pilot-connector/node_modules',
   'pilot/tmp',
   'pilot/.tmp-*',
   'pilot/.archive',

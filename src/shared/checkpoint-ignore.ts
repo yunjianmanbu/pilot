@@ -10,7 +10,7 @@
  * Pattern syntax (deliberately small):
  *   `tmp`          a directory or file named tmp at any depth
  *   `build-*`      glob within one path segment (`?` matches one character)
- *   `pilot/client/out`  resolved from the workspace root
+ *   `pilot/pilot/out`  resolved from the workspace root
  */
 export const CHECKPOINT_IGNORE_LIMIT = 200
 

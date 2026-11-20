@@ -13,6 +13,7 @@ import type {
   RunEvent,
   ScheduledTaskInput,
   Session,
+  SessionArtifact,
   SessionPage,
   SessionSummary,
   SettingsView,
@@ -356,6 +357,9 @@ export function App() {
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [filesOpen, setFilesOpen] = useState(false)
   const [artifactsOpen, setArtifactsOpen] = useState(false)
+  /** File the抽屉 should preview right away, set by an answer's change bar. */
+  const [artifactSeed, setArtifactSeed] = useState<{ path: string; key: number } | null>(null)
+  const artifactSeedKey = useRef(0)
   const [checkpointsOpen, setCheckpointsOpen] = useState(false)
   const [scheduleOpen, setScheduleOpen] = useState(false)
   const [scheduleRevision, setScheduleRevision] = useState(0)
@@ -422,6 +426,21 @@ export function App() {
     (message: string) => pushToast(stripIpcWrapper(message), 'error'),
     [pushToast],
   )
+
+  /**
+   * An answer's change bar opened the files area. A row also names the file it
+   * stands for, so the drawer jumps straight to that preview.
+   */
+  const openArtifacts = useCallback(() => {
+    setArtifactSeed(null)
+    setArtifactsOpen(true)
+  }, [])
+
+  const openArtifact = useCallback((artifact: SessionArtifact) => {
+    artifactSeedKey.current += 1
+    setArtifactSeed({ path: artifact.path, key: artifactSeedKey.current })
+    setArtifactsOpen(true)
+  }, [])
 
   /**
    * Answer the pending phone request. The dialog closes right away and the
@@ -1878,6 +1897,47 @@ export function App() {
     [pushToast, todoSession],
   )
 
+  /**
+   * 正文里滑选一段话后「添加待办」。
+   *
+   * 与会话输入框加待办不同：这里可能连会话都还没有（新窗口先读了一段旧内容），
+   * 所以缺会话时先建一个再写待办，否则选中的文字会静静丢掉。
+   */
+  const addSelectedTodo = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim()
+      if (!trimmed) return
+      try {
+        let sessionId = activeSessionRef.current
+        if (!sessionId) {
+          const workspacePath = activeWorkspaceRef.current
+          if (!workspacePath) {
+            setWorkspaceDialogOpen(true)
+            pushToast(t("先选择一个工作区。"), 'warn')
+            return
+          }
+          const created = await window.pilot.createSession(workspacePath)
+          sessionId = created.id
+          activeSessionRef.current = created.id
+          setActiveSessionId(created.id)
+          setSession(created)
+          setSessionHasMoreBoth(false)
+          setSessions((previous) => [
+            summaryOf(created),
+            ...previous.filter((entry) => entry.id !== created.id),
+          ])
+          void refreshSessions(workspacePath)
+        }
+        await window.pilot.addTodo(sessionId, trimmed)
+        await loadSession(sessionId)
+        pushToast(t("已把选中内容加入待办。"), 'info')
+      } catch (error) {
+        pushToast(errorMessage(error), 'error')
+      }
+    },
+    [loadSession, pushToast, refreshSessions, setSessionHasMoreBoth],
+  )
+
   const updateTodo = useCallback(
     async (todoId: string, text: string) => {
       const sessionId = todoSession()
@@ -2920,12 +2980,15 @@ export function App() {
                 onPickWorkspace={() => void pickWorkspace()}
                 onOpenSettings={openSettings}
                 onAddTodo={addTodo}
+                onAddSelectedTodo={addSelectedTodo}
                 onUpdateTodo={updateTodo}
                 onRemoveTodo={removeTodo}
                 onSendTodo={sendTodo}
                 onSendAllTodos={sendAllTodos}
                 onClearSentTodos={clearSentTodos}
                 onScheduleTodo={scheduleTodo}
+                onOpenArtifact={openArtifact}
+                onOpenArtifacts={openArtifacts}
                 />
               </>
             )
@@ -3025,7 +3088,11 @@ export function App() {
         <SessionFilesPanel
           session={session}
           workspace={workspace}
-          onClose={() => setArtifactsOpen(false)}
+          openSeed={artifactSeed}
+          onClose={() => {
+            setArtifactsOpen(false)
+            setArtifactSeed(null)
+          }}
           onError={showError}
         />
       ) : null}

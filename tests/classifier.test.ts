@@ -87,4 +87,46 @@ describe('permission classifier', () => {
     expect(serialized).not.toContain('IGNORE ALL RULES')
     expect(serialized).not.toContain('super-secret')
   })
+
+  it('does not present a loop-written reminder as a user request', async () => {
+    const complete = vi.fn(async (_request: ModelRequest) => ({
+      content: '{"decision":"allow","reason":"ok"}',
+      toolCalls: [],
+    }))
+    const transcript: AgentMessage[] = [
+      { role: 'user', content: 'run the tests' },
+      {
+        role: 'user',
+        content: '[运行反思] 先暂停执行，再用几句话复盘。',
+        internal: true,
+      },
+    ]
+    await classifyToolCall(input({ complete }, transcript))
+
+    const request = complete.mock.calls[0]?.[0]
+    expect(request).toBeDefined()
+    const prompt = (request as ModelRequest).messages
+      .map((message) => String(message.content ?? ''))
+      .join('\n')
+    expect(prompt).toContain('USER: run the tests')
+    expect(prompt).toContain('INTERNAL: [运行反思]')
+    expect(prompt).not.toContain('USER: [运行反思]')
+  })
+
+  it('labels a folded-turn digest as internal instead of a user task', async () => {
+    const complete = vi.fn(async (_request: ModelRequest) => ({
+      content: '{"decision":"allow","reason":"ok"}',
+      toolCalls: [],
+    }))
+    const transcript: AgentMessage[] = [
+      { role: 'user', content: '已折叠的较早对话', earlierWork: true },
+    ]
+    await classifyToolCall(input({ complete }, transcript))
+
+    const prompt = ((complete.mock.calls[0]?.[0] as ModelRequest).messages ?? [])
+      .map((message) => String(message.content ?? ''))
+      .join('\n')
+    expect(prompt).toContain('INTERNAL: 已折叠的较早对话')
+    expect(prompt).not.toContain('USER: 已折叠的较早对话')
+  })
 })

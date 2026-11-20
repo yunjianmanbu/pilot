@@ -2395,7 +2395,7 @@ app.whenReady().then(async () => {
       companion?.publish(event)
     },
     getWindow: () => mainWindow,
-    // 打包脚本只存在于 pilot/client，开发时就是 appPath；安装后的自带源码在 userData。
+    // 打包脚本只存在于 pilot/pilot，开发时就是 appPath；安装后的自带源码在 userData。
     packageRoot: app.isPackaged
       ? join(app.getPath('userData'), 'self-src')
       : app.getAppPath(),

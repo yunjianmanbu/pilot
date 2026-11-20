@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentMessage, AgentToolDefinition, ToolCall } from '../src/shared/types'
-import { applyComparison, formatToolFailures } from '../src/main/agent/evolution'
-import type { ProfileComparison, ProfileReview } from '../src/shared/types'
+import { applyComparison, formatToolFailures, reflectionTranscript } from '../src/main/agent/evolution'
+import type { ProfileComparison, ProfileReview, Session } from '../src/shared/types'
 import {
   runAgentLoop,
   type ModelClient,
@@ -278,5 +278,22 @@ describe('reflection evidence digest', () => {
     expect(digest).toContain('3. run_shell → failed with <redacted>')
     expect(digest).not.toContain('ok')
     expect(digest).not.toContain('sk-abcdefghijklmnop')
+  })
+})
+
+describe('reflection transcript attribution', () => {
+  it('does not present a loop-written reminder as a user request', () => {
+    const session = {
+      messages: [
+        { role: 'user', content: '修一下登录按钮' },
+        { role: 'user', content: '[运行反思] 先暂停执行，复盘后再继续。', internal: true },
+        { role: 'assistant', content: '好的，先看登录页。' },
+      ],
+    } as unknown as Session
+
+    const transcript = reflectionTranscript(session)
+    expect(transcript).toContain('USER: 修一下登录按钮')
+    expect(transcript).toContain('INTERNAL: [运行反思]')
+    expect(transcript).not.toContain('USER: [运行反思]')
   })
 })

@@ -3,7 +3,7 @@
 随安装包分发的通用工具。**这个目录由脚本生成，不要手改。**
 
 ```bash
-# 在 pilot/client 下执行；--from 指向已沉淀（提升为全局）的工具目录
+# 在 pilot/pilot 下执行；--from 指向已沉淀（提升为全局）的工具目录
 pnpm builtin:pack
 ```
 

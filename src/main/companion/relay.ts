@@ -62,6 +62,9 @@ export class RelayHostChannel {
     private readonly room: string,
     private readonly key: string,
     private readonly handlers: RelayChannelHandlers = {},
+    // L1 admission code (`id:secret`) from the connection string's `#k=`.
+    // Empty when the connector runs open (self-hosted without keys).
+    private readonly access: string = '',
   ) {}
 
   get connected(): boolean {
@@ -201,6 +204,7 @@ export class RelayHostChannel {
             key: this.key,
             protocol: PROTOCOL_VERSION,
             hostInstance: HOST_INSTANCE_ID,
+            ...(this.access ? { access: this.access } : {}),
           }),
         )
       } catch (error) {

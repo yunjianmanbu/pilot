@@ -1,0 +1,47 @@
+{
+  "id": "pilot-auth",
+  "name": "Pilot 账号与权限",
+  "version": 1,
+  "api": 1,
+  "runtime": "node",
+  "entry": "index.mjs",
+  "description": "参考实现：邮箱注册/登录、会话令牌、角色与权限。以 provides: session 成为其他插件的身份提供者。",
+  "provides": "session",
+  "permissions": ["users:read", "users:write"],
+  "roles": [
+    { "id": "owner", "permissions": ["users:*"] },
+    { "id": "admin", "permissions": ["users:read", "users:write"] },
+    { "id": "member", "permissions": [] }
+  ],
+  "routes": [
+    {
+      "method": "POST",
+      "path": "register",
+      "auth": "public",
+      "description": "注册；第一个注册用户成为 owner"
+    },
+    {
+      "method": "POST",
+      "path": "login",
+      "auth": "public",
+      "description": "邮箱 + 密码换取会话令牌"
+    },
+    { "method": "POST", "path": "logout", "auth": "required", "description": "吊销当前令牌" },
+    { "method": "GET", "path": "me", "auth": "required", "description": "当前身份与权限" },
+    {
+      "method": "GET",
+      "path": "users",
+      "auth": "required",
+      "permission": "users:read",
+      "description": "用户列表"
+    },
+    {
+      "method": "POST",
+      "path": "role",
+      "auth": "required",
+      "permission": "users:write",
+      "description": "设置某用户角色"
+    }
+  ],
+  "limits": { "timeoutMs": 5000, "rateLimitPerMinute": 120, "maxBodyBytes": 16384 }
+}

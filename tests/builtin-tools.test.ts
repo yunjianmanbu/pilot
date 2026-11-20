@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -12,13 +13,16 @@ import {
 import { DynamicToolRegistry } from '../src/main/agent/toolsmith'
 
 const cleanups: string[] = []
-const packScript = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  'scripts',
-  'pack-builtin-tools.mjs',
+/**
+ * `pack-builtin-tools.mjs` 在两种布局里的位置不同：主仓库 pilot/pilot/tests/
+ * 的共享脚本在 pilot/scripts/，而拆出去的独立仓库里它被带进仓库根的 scripts/。
+ * 写死 `../../scripts` 只在主仓库成立，独立仓库会指到仓库根之外。
+ */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const SCRIPT_DIR = [join(REPO_ROOT, '..', 'scripts'), join(REPO_ROOT, 'scripts')].find(
+  (dir) => existsSync(join(dir, 'pack-builtin-tools.mjs')),
 )
+const packScript = join(SCRIPT_DIR ?? join(REPO_ROOT, '..', 'scripts'), 'pack-builtin-tools.mjs')
 
 afterEach(async () => {
   while (cleanups.length > 0) {

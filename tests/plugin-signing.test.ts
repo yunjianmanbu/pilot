@@ -420,7 +420,7 @@ describe('pilot plugin / solution commands', () => {
 
   it('plans the shipped example solution pack as installable', async () => {
     const workspace = await makeWorkspace()
-    // Vitest runs with pilot/client as cwd; the example pack lives in pilot/examples.
+    // Vitest runs with pilot/pilot as cwd; the example pack lives in pilot/examples.
     const packDir = join(process.cwd(), '..', 'examples', 'solutions', 'retail-member')
     // The example ships unsigned on purpose (no vendor key, no private key), so
     // `warn` is the policy that matches how a customer first receives it.

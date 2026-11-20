@@ -1,5 +1,6 @@
 import {
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -8,6 +9,7 @@ import {
   type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from 'react'
 import type {
   ApprovalMode,
@@ -19,9 +21,11 @@ import type {
   QuickCommand,
   RunRecord,
   Session,
+  SessionArtifact,
   TodoItem,
   WorkspaceSummary,
 } from '../../../shared/types'
+import { artifactsFromCalls, collectArtifactsByRun } from '../../../shared/artifacts'
 import { copyText } from '../clipboard'
 import {
   BrainIcon,
@@ -60,10 +64,13 @@ import {
   type UIMessage,
 } from '../ui'
 import { Markdown } from './Markdown'
+import { FileChangeBar } from './FileChangeBar'
 import type { TranscriptUsage } from '../tokens'
 import { ProcessBox } from './ProcessBox'
 import { QuickCommandsDialog } from './QuickCommandsDialog'
 import { ReferencePicker } from './ReferencePicker'
+import { SelectionTodoMenu, type SelectionMenuState } from './SelectionTodoMenu'
+import { normalizeSelectionText } from '../selection'
 import { t } from '../i18n'
 import {
   isImageUpload,
@@ -203,6 +210,9 @@ function AssistantMessage({
   run,
   focused,
   canRegenerate,
+  files,
+  onOpenFile,
+  onOpenAll,
   onFeedback,
   onReflect,
   onRegenerate,
@@ -211,6 +221,10 @@ function AssistantMessage({
   run?: RunRecord
   focused?: boolean
   canRegenerate?: boolean
+  /** Files this turn wrote or edited; empty hides the change bar entirely. */
+  files: SessionArtifact[]
+  onOpenFile: (artifact: SessionArtifact) => void
+  onOpenAll: () => void
   onFeedback: (runId: string, rating: 'up' | 'down') => void
   onReflect: (runId: string) => Promise<number>
   onRegenerate: () => void
@@ -264,6 +278,8 @@ function AssistantMessage({
         )}
 
         {message.plan ? <TurnPlan plan={message.plan} /> : null}
+
+        <FileChangeBar files={files} onOpenFile={onOpenFile} onOpenAll={onOpenAll} />
 
         {run?.error ? (
           <div className="run-inline-error">
@@ -351,6 +367,22 @@ function AssistantMessage({
   )
 }
 
+/**
+ * What the edit box's primary button does.
+ *
+ * The button doubles as the rerun entry, so unchanged text must still be
+ * submitted: comparing the draft against the stored content here used to close
+ * the box and do nothing, which reads as "保存并重新生成没有生效".
+ */
+export function editSubmission(
+  draft: string,
+  saving: boolean,
+): { submit: false } | { submit: true; text: string } {
+  const text = draft.trim()
+  if (!text || saving) return { submit: false }
+  return { submit: true, text }
+}
+
 function UserMessage({
   message,
   focused,
@@ -393,14 +425,11 @@ function UserMessage({
   }
 
   const save = async () => {
-    const text = draft.trim()
-    if (!text || text === message.content || saving) {
-      setEditing(false)
-      return
-    }
+    const submission = editSubmission(draft, saving)
+    if (!submission.submit) return
     setSaving(true)
     try {
-      await onEdit(message.id, text)
+      await onEdit(message.id, submission.text)
       setEditing(false)
     } finally {
       setSaving(false)
@@ -447,7 +476,7 @@ function UserMessage({
                 disabled={saving || !draft.trim()}
               >
                 {saving ? <i className="spinner small" /> : <RefreshIcon width={12} height={12} />}
-                {t("保存并重新生成")}</button>
+                {draft.trim() === message.content ? t("重新生成") : t("保存并重新生成")}</button>
             </div>
           </div>
         ) : (
@@ -1785,12 +1814,18 @@ export interface ChatViewProps {
   onPickWorkspace: () => void
   onOpenSettings: () => void
   onAddTodo: (text: string) => Promise<void>
+  /** 选中正文后「添加待办」：与输入框加待办分开，因为这里要额外提示一次。 */
+  onAddSelectedTodo: (text: string) => Promise<void>
   onUpdateTodo: (todoId: string, text: string) => Promise<void>
   onRemoveTodo: (todoId: string) => Promise<void>
   onSendTodo: (todoId: string) => Promise<void>
   onSendAllTodos: () => Promise<void>
   onClearSentTodos: () => Promise<void>
   onScheduleTodo: (todo: TodoItem) => void
+  /** Open one file from the answer's change bar (preview inside the files area). */
+  onOpenArtifact: (artifact: SessionArtifact) => void
+  /** 「查看更多」：open the session's files area. */
+  onOpenArtifacts: () => void
 }
 
 export function ChatView({
@@ -1831,18 +1866,23 @@ export function ChatView({
   onPickWorkspace,
   onOpenSettings,
   onAddTodo,
+  onAddSelectedTodo,
   onUpdateTodo,
   onRemoveTodo,
   onSendTodo,
   onSendAllTodos,
   onClearSentTodos,
   onScheduleTodo,
+  onOpenArtifact,
+  onOpenArtifacts,
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   const lastSessionRef = useRef<string | null>(null)
   const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
   const [showJump, setShowJump] = useState(false)
+  // 正文里滑动选中后弹出的「添加待办」菜单；null = 没有选中。
+  const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(null)
   // null = never customized; the welcome screen then shows the built-in prompts.
   const [quickCommands, setQuickCommands] = useState<QuickCommand[] | null>(null)
 
@@ -1866,6 +1906,34 @@ export function ChatView({
   const runsById = useMemo(
     () => new Map(runs.map((run) => [run.id, run])),
     [runs],
+  )
+  // Files per run, so each answer can carry its own change bar. Both sides use
+  // the same collector (shared/artifacts.ts) as the files drawer, so a file can
+  // never show up in one place and not the other.
+  const filesByRun = useMemo(
+    () => (session ? collectArtifactsByRun(session.messages) : new Map<string, SessionArtifact[]>()),
+    [session],
+  )
+  // The run still streaming has no stored messages yet; read its live tool views.
+  const liveFiles = useMemo(
+    () =>
+      artifactsFromCalls(
+        (live?.tools ?? []).map((tool) => ({
+          name: tool.name,
+          args: tool.args,
+          ok: tool.status === 'ok',
+        })),
+      ),
+    [live],
+  )
+  const filesForRun = useCallback(
+    (runId: string | undefined): SessionArtifact[] => {
+      if (!runId) return []
+      const stored = filesByRun.get(runId)
+      if (stored && stored.length > 0) return stored
+      return live?.runId === runId ? liveFiles : []
+    },
+    [filesByRun, live?.runId, liveFiles],
   )
   // Legacy plans can still carry an in_progress item after their run ended.
   // Treat it as settled only when the session's latest run actually completed.
@@ -1938,6 +2006,8 @@ export function ChatView({
       element.scrollHeight - element.scrollTop - element.clientHeight < 120
     stickRef.current = atBottom
     setShowJump(!atBottom)
+    // 菜单用的是视口坐标，正文一滚就错位了，直接收掉。
+    setSelectionMenu((previous) => (previous ? null : previous))
   }
 
   const loadEarlier = () => {
@@ -1946,6 +2016,92 @@ export function ChatView({
     earlierAnchor.current = { height: element.scrollHeight, top: element.scrollTop }
     void onLoadEarlier().then((added) => {
       if (!added) earlierAnchor.current = null
+    })
+  }
+
+  // ── 选中正文 → 添加待办 ──────────────────────────────────────────────
+  // 鼠标拖选与触摸端滑动选中走同一条路径：拖动过程中浏览器不断触发
+  // selectionchange，抬手（pointerup）时选区已经就位，这里再按选区末行
+  // 的位置把菜单放到文字下方。右键则直接落在光标处。
+  const readSelection = useCallback(() => {
+    const element = scrollRef.current
+    if (!element) return null
+    const domSelection = window.getSelection()
+    if (!domSelection || domSelection.isCollapsed || domSelection.rangeCount === 0) return null
+    const range = domSelection.getRangeAt(0)
+    // 只认会话正文里的选区：输入框、侧栏里的选中不该弹这个菜单。
+    if (!element.contains(range.commonAncestorContainer)) return null
+    const text = normalizeSelectionText(range.toString())
+    if (!text) return null
+    const rects = Array.from(range.getClientRects()).filter(
+      (rect) => rect.width > 0 && rect.height > 0,
+    )
+    const rect = rects[rects.length - 1] ?? range.getBoundingClientRect()
+    return { text, rect }
+  }, [])
+
+  const addSelectedTodo = useCallback(
+    (text: string) => {
+      setSelectionMenu(null)
+      // 选中的文字已经落到待办里，正文里的高亮可以收了。
+      window.getSelection()?.removeAllRanges()
+      void onAddSelectedTodo(text)
+    },
+    [onAddSelectedTodo],
+  )
+
+  useEffect(() => {
+    const handleUp = (event: PointerEvent) => {
+      // 右键由 contextmenu 负责，否则抬手会先弹在选区下沿、再跳到光标。
+      if (event.button === 2) return
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('.selection-menu')) return
+      const found = readSelection()
+      if (!found) return
+      setSelectionMenu({
+        x: found.rect.left,
+        y: found.rect.bottom + 8,
+        text: found.text,
+      })
+    }
+    document.addEventListener('pointerup', handleUp)
+    return () => document.removeEventListener('pointerup', handleUp)
+  }, [readSelection])
+
+  // 选区没了（点了空白、按了 Esc、正文重渲染）就把菜单一起收掉。
+  useEffect(() => {
+    if (!selectionMenu) return
+    const sync = () => {
+      if (!readSelection()) setSelectionMenu(null)
+    }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setSelectionMenu(null)
+    }
+    const onPointerDown = (event: Event) => {
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('.selection-menu')) return
+      setSelectionMenu(null)
+    }
+    document.addEventListener('selectionchange', sync)
+    document.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('resize', sync)
+    return () => {
+      document.removeEventListener('selectionchange', sync)
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('resize', sync)
+    }
+  }, [selectionMenu, readSelection])
+
+  const onContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const found = readSelection()
+    if (!found) return
+    event.preventDefault()
+    setSelectionMenu({
+      x: event.clientX || found.rect.left,
+      y: event.clientY || found.rect.bottom + 8,
+      text: found.text,
     })
   }
 
@@ -1962,7 +2118,12 @@ export function ChatView({
 
   return (
     <div className="chat-view">
-      <div className="messages-scroll" ref={scrollRef} onScroll={onScroll}>
+      <div
+        className="messages-scroll"
+        ref={scrollRef}
+        onScroll={onScroll}
+        onContextMenu={onContextMenu}
+      >
         <div className="messages-inner">
           {hasEarlier && !showWelcome ? (
             <button
@@ -2014,12 +2175,16 @@ export function ChatView({
             if (message.kind === 'process') {
               return <ProcessBox process={message} key={message.id} />
             }
+            const files = filesForRun(message.runId)
             return (
               <AssistantMessageRow
                 message={message}
                 key={message.id}
                 focused={focusMessageId === message.id}
                 canRegenerate={!running && message.id === lastAssistantId}
+                files={files}
+                onOpenFile={onOpenArtifact}
+                onOpenAll={onOpenArtifacts}
                 {...(message.runId && runsById.has(message.runId)
                   ? { run: runsById.get(message.runId)! }
                   : {})}
@@ -2066,6 +2231,11 @@ export function ChatView({
                 ) : null}
                 <Markdown content={live.content} />
                 <span className="stream-caret" />
+                <FileChangeBar
+                  files={liveFiles}
+                  onOpenFile={onOpenArtifact}
+                  onOpenAll={onOpenArtifacts}
+                />
               </div>
             </div>
           ) : null}
@@ -2113,6 +2283,14 @@ export function ChatView({
         >
           <ChevronIcon width={14} height={14} className="rotate-90" />
           {t("回到最新")}</button>
+      ) : null}
+
+      {selectionMenu ? (
+        <SelectionTodoMenu
+          state={selectionMenu}
+          onAddTodo={addSelectedTodo}
+          onClose={() => setSelectionMenu(null)}
+        />
       ) : null}
 
       <div className="composer-dock">

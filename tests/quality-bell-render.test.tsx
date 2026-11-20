@@ -1,3 +1,4 @@
+import './locale-zh.mjs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { QualityBell, QualityBellPanel } from '../src/renderer/src/components/QualityBell'

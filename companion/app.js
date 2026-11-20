@@ -165,6 +165,12 @@ function validatePayload(data) {
   const room = typeof data.x === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(data.x) ? data.x : ''
   const roomKey =
     typeof data.h === 'string' && /^[A-Za-z0-9_-]{22,128}$/.test(data.h) ? data.h : ''
+  // L1 admission code (`id:secret`). Absent when the desktop predates 0.2.3;
+  // an open connector still accepts that, a strict one answers 4009.
+  const access =
+    typeof data.a === 'string' && /^[A-Za-z0-9_-]{1,32}:[A-Za-z0-9_-]{16,128}$/.test(data.a)
+      ? data.a
+      : ''
   // Cloud rooms need both identifiers; LAN fallback keeps working without them.
   if (/^wss:\/\//i.test(relayUrl) && (!room || !roomKey)) {
     throw new Error('配对链接缺少云端连接信息')
@@ -175,6 +181,7 @@ function validatePayload(data) {
     localRelayUrl,
     room,
     roomKey,
+    access,
     deviceId: data.d,
     deviceName: String(data.n || '电脑').slice(0, 80),
     lookup: data.k,
@@ -318,6 +325,7 @@ function joinPairing(payload) {
               room: payload.room,
               key: payload.roomKey,
               protocol: 1,
+              ...(payload.access ? { access: payload.access } : {}),
             },
             true,
           )
@@ -383,6 +391,7 @@ function joinPairing(payload) {
             fallbackUrl: urls.find((candidate) => candidate !== url) || '',
             room: payload.room,
             roomKey: payload.roomKey,
+            access: payload.access || '',
             deviceId: payload.deviceId,
             deviceName: value.deviceName || payload.deviceName,
             phoneId: id,
@@ -497,6 +506,7 @@ class RelayClient {
           room: this.pairing.room,
           key: this.pairing.roomKey,
           protocol: 1,
+          ...(this.pairing.access ? { access: this.pairing.access } : {}),
         })
       } else {
         this.sendHello()

@@ -165,7 +165,7 @@ function harness(options: {
         ? [judge, { ...judge, id: 'judge-2', label: '第二个评审', model: 'judge-2' }]
         : [judge],
     makeClient: () => judgeClient,
-    packageRoot: '/pilot/client',
+    packageRoot: '/pilot/pilot',
     runPackage: async (target) => {
       packages.push(target)
       return options.packageResult ?? { code: 0, output: 'built' }

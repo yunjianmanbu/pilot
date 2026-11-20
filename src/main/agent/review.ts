@@ -377,6 +377,19 @@ function formatMessage(message: Session['messages'][number], index: number): str
   return lines.join('\n')
 }
 
+/**
+ * The plan a specific run ended with. `toStoredMessages` attaches it to that
+ * run's final answer, so it survives later turns replacing the session plan.
+ */
+function runPlanSnapshot(session: Session, runId: string): Plan | null {
+  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+    const message = session.messages[index]
+    if (!message || message.runId !== runId) continue
+    if (message.plan && message.plan.items.length > 0) return message.plan
+  }
+  return null
+}
+
 function getSession(runtime: ReviewRuntime, args: Record<string, unknown>): string {
   const sessionId = clip(args['sessionId'], 200)
   if (!sessionId) throw new Error('sessionId is required')
@@ -395,9 +408,26 @@ function getSession(runtime: ReviewRuntime, args: Record<string, unknown>): stri
     `Kind: ${session.kind}; approval mode: ${session.approvalMode}`,
     `Messages: ${session.messages.length}; showing ${offset + 1}-${offset + messages.length}`,
   ]
-  if (session.plan && session.plan.items.length > 0) {
+  // The session-level plan belongs to the newest turn, not to the run under
+  // review, and loading an old store settles it (an in_progress item is turned
+  // into done or pending). Reviewing historical work therefore reads the plan
+  // that run recorded on its own final answer, and the live plan is only shown
+  // as a marked fallback so nobody mistakes it for that run's state.
+  const snapshots = runs
+    .map((run) => ({ run, plan: runPlanSnapshot(session, run.id) }))
+    .filter((entry) => entry.plan !== null)
+  if (snapshots.length > 0) {
+    for (const { run, plan } of snapshots) {
+      if (!plan) continue
+      header.push(
+        `Plan recorded by run ${run.id} (${run.status}, snapshot taken when it ended): ${clip(plan.goal, 200) || '(no goal)'} — ${plan.items
+          .map((item) => `[${item.status}] ${clip(item.text, 160)}`)
+          .join('; ')}`,
+      )
+    }
+  } else if (session.plan && session.plan.items.length > 0) {
     header.push(
-      `Plan: ${clip(session.plan.goal, 200) || '(no goal)'} — ${session.plan.items
+      `Session plan (current turn; no per-run snapshot was recorded, so this may not be the state during the run you are reviewing): ${clip(session.plan.goal, 200) || '(no goal)'} — ${session.plan.items
         .map((item) => `[${item.status}] ${clip(item.text, 160)}`)
         .join('; ')}`,
     )

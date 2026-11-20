@@ -1098,6 +1098,9 @@ export function sanitizeSession(value: unknown): Session | null {
       .filter((item) => item.text)
       .slice(0, 200),
     plan: sanitizePlan(planRaw),
+    ...(typeof record['summary'] === 'string' && record['summary'].trim()
+      ? { summary: record['summary'].trim().slice(0, CONTEXT_SUMMARY_MAX_CHARS) }
+      : {}),
   }
 }
 
@@ -1644,6 +1647,15 @@ export function validShellInterpreter(value: unknown): ShellInterpreter | null {
     ? value
     : null
 }
+
+/**
+ * Cap on the stored compaction summary. It rides in the session index so a
+ * lazily loaded session can answer "what did we already fold away?" without
+ * reading its shard, which means it is paid for by every session listing; 4k
+ * characters matches the digest cap and is far below the 8k a summarizer may
+ * return.
+ */
+export const CONTEXT_SUMMARY_MAX_CHARS = 4_000
 
 export const BODY_KEYS = ['messages', 'queue', 'todos'] as const
 export const SEARCH_INDEX_MIN_INTERVAL_MS = 5_000

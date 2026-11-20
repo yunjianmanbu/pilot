@@ -156,7 +156,9 @@ function oldTrimMessages(
       pinned.content.length > 4_000 ? `${pinned.content.slice(0, 4_000)}…` : pinned.content
     const wrapped = (task: string): AgentMessage => ({
       ...current,
-      content: `[原始任务]\n${task}\n\n[当前任务]\n${current.content}`,
+      // Same header text as the current code: this benchmark measures the
+      // suffix-sum shortcut, not a different carry-forward policy.
+      content: `[更早的任务 · 已完成，除非用户重提否则忽略]\n${task}\n\n[当前任务]\n${current.content}`,
     })
     const fits = (task: string): boolean =>
       rawMessagesTokens([...base, wrapped(task), ...trimmed.slice(1)]) <= maxTokens

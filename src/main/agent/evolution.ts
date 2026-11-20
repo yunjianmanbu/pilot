@@ -43,6 +43,7 @@ import {
 } from './profile-benchmark'
 import { createBenchmarkTaskRunner } from './benchmark-runner'
 import { DEFAULT_BENCHMARK_TASKS } from './profile-benchmark-tasks'
+import { isUserTaskTurn } from './context'
 import { coerceScore, coerceTrue, extractJsonObject as extractJson } from './json'
 import {
   JUDGE_IDLE_TIMEOUT_MS,
@@ -1927,11 +1928,16 @@ export class EvolutionService {
   }
 }
 
-function reflectionTranscript(session: Session): string {
+export function reflectionTranscript(session: Session): string {
   const parts: string[] = []
   for (const message of session.messages) {
     if (message.role === 'user') {
-      parts.push(`USER: ${scrub(message.content, 1_500)}`)
+      // The loop writes continuation prompts, run reminders and turn digests
+      // as user turns. Reflecting on them as `USER:` teaches the profile that
+      // Pilot asked itself to do things, so they are labelled separately.
+      if (!message.content.trim()) continue
+      if (isUserTaskTurn(message)) parts.push(`USER: ${scrub(message.content, 1_500)}`)
+      else parts.push(`INTERNAL: ${scrub(message.content, 500)}`)
       continue
     }
     if (message.role === 'assistant') {

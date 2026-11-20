@@ -104,9 +104,27 @@ export function shortenMemory(content: string, max = MEMORY_ENTRY_MAX_CHARS): st
   return `${(cut > max * 0.6 ? head.slice(0, cut) : head).trimEnd()}…`
 }
 
+/**
+ * Age marker for an entry that has been carried along for a long time. Memory is
+ * rendered as present-tense fact, so a lesson from months ago reads exactly like
+ * one learned today; naming the age is what lets the model treat it as a lead to
+ * re-verify instead of a current truth. Fresh entries stay unmarked.
+ */
+export const MEMORY_STALE_AFTER_DAYS = 30
+
+export function memoryAgeLabel(entry: MemoryEntry, at = Date.now()): string {
+  const created = Date.parse(entry.createdAt)
+  if (!Number.isFinite(created)) return ''
+  const days = Math.floor((at - created) / 86_400_000)
+  if (days < MEMORY_STALE_AFTER_DAYS) return ''
+  return days >= 365 ? `${Math.floor(days / 365)} 年前` : `${days} 天前`
+}
+
 /** One prompt line per entry, labelled so the model knows what kind of fact it is. */
-export function memoryPromptLine(entry: MemoryEntry): string {
-  return `- [${memoryCategoryOf(entry)}/${entry.source}] ${shortenMemory(entry.content)}`
+export function memoryPromptLine(entry: MemoryEntry, at = Date.now()): string {
+  const age = memoryAgeLabel(entry, at)
+  const stamp = age ? ` · ${age}` : ''
+  return `- [${memoryCategoryOf(entry)}/${entry.source}${stamp}] ${shortenMemory(entry.content)}`
 }
 
 const CORRECTION_PATTERNS: RegExp[] = [

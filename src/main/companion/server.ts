@@ -44,7 +44,7 @@ import type {
 import { DESKTOP_CAPABILITIES, type HostCapabilities } from '../../shared/capabilities'
 import { sortRisks, type ModuleCheckSummary } from '../../shared/module-check'
 import type { SelfCheckReport } from '../../shared/self-check'
-import { normalizeRelayUrl } from '../../shared/relay'
+import { normalizeRelayUrl, splitRelayUrl } from '../../shared/relay'
 import { handlePluginHttp } from '../plugins/bridge'
 import { PLUGIN_HTTP_PREFIX } from '../plugins/manifest'
 import { PluginHost } from '../plugins/runtime'
@@ -839,10 +839,23 @@ export class CompanionServer {
     }
   }
 
-  private relayUrl(): string {
+  private relayEndpoint(): { url: string; access: string } {
     const override = (this.options.relayUrl ?? '').trim()
-    if (override) return normalizeRelayUrl(override) ?? ''
-    return normalizeRelayUrl(this.options.store.settingsView().relayUrl) ?? ''
+    const raw = override || this.options.store.settingsView().relayUrl
+    return splitRelayUrl(raw)
+  }
+
+  /** Relay endpoint without the admission code: safe to show and to log. */
+  private relayUrl(): string {
+    return this.relayEndpoint().url
+  }
+
+  /**
+   * L1 admission code (`id:secret`) from the connection string's `#k=`.
+   * Empty when the connector runs open, which is the 0.2.2 behaviour.
+   */
+  private relayAccess(): string {
+    return this.relayEndpoint().access
   }
 
   private relaySource(): 'env' | 'settings' | 'none' {
@@ -915,6 +928,7 @@ export class CompanionServer {
       pairingRequest: this.pendingPair?.request ?? null,
       appUrl: this.appBaseUrl() || null,
       relayUrl: this.relayUrl() || null,
+      relayAccess: Boolean(this.relayAccess()),
       relaySource: this.relaySource(),
       cloudPhones: cloudRecords.length,
       lastRelayUrl,
@@ -948,9 +962,19 @@ export class CompanionServer {
   async setRelayUrl(value: string): Promise<CompanionStatus> {
     const normalized = normalizeRelayUrl(value)
     if (normalized === null) {
-      throw new Error('中继地址必须是 wss:// 或 ws:// 地址，且不能包含用户名或密码。')
+      throw new Error(
+        '中继地址必须是 wss:// 或 ws:// 地址，可带 #k=准入码，且不能包含用户名或密码。',
+      )
     }
-    await this.options.store.updateSettings({ relayUrl: normalized })
+    // The dialog shows and resubmits the endpoint without the code, so a save
+    // that only re-sends the same host/path must not wipe the stored code.
+    const endpoint = splitRelayUrl(normalized)
+    const previous = splitRelayUrl(this.options.store.settingsView().relayUrl)
+    const next =
+      !endpoint.access && endpoint.url && previous.access && previous.url === endpoint.url
+        ? `${endpoint.url}#k=${previous.access}`
+        : normalized
+    await this.options.store.updateSettings({ relayUrl: next })
     if (this.offer) this.clearOffer()
     this.stopRelay()
     // Only reconnect when the companion service is actually running; start()
@@ -1034,6 +1058,11 @@ export class CompanionServer {
       payload['l'] = lanRelay
       payload['x'] = offer.room
       payload['h'] = offer.roomKey
+      // L1 admission code. The relay checks it before it will put the phone
+      // in a room, so the pairing payload is how it reaches the phone without
+      // the user typing anything. It is no more sensitive than `h`.
+      const access = this.relayAccess()
+      if (access) payload['a'] = access
     }
     const url = new URL(baseUrl)
     url.hash = `p=${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}`
@@ -1191,25 +1220,31 @@ export class CompanionServer {
     if (!url || !room || !key || this.relayRooms.has(room)) return
     const sockets = new Map<string, RelaySocket>()
     let channel: RelayHostChannel
-    channel = new RelayHostChannel(url, room, key, {
-      onPeerOpen: (cid) => {
-        const socket = new RelaySocket(channel, cid)
-        sockets.set(cid, socket)
-        this.handleConnection(socket, { via: 'relay' })
+    channel = new RelayHostChannel(
+      url,
+      room,
+      key,
+      {
+        onPeerOpen: (cid) => {
+          const socket = new RelaySocket(channel, cid)
+          sockets.set(cid, socket)
+          this.handleConnection(socket, { via: 'relay' })
+        },
+        onPeerClose: (cid) => {
+          const socket = sockets.get(cid)
+          sockets.delete(cid)
+          socket?.closeFromPeer()
+        },
+        onFrame: (cid, frame) => {
+          sockets.get(cid)?.deliver(frame)
+        },
+        onState: (state: RelayChannelState) => {
+          this.relayError = state.error
+          this.emitStatus()
+        },
       },
-      onPeerClose: (cid) => {
-        const socket = sockets.get(cid)
-        sockets.delete(cid)
-        socket?.closeFromPeer()
-      },
-      onFrame: (cid, frame) => {
-        sockets.get(cid)?.deliver(frame)
-      },
-      onState: (state: RelayChannelState) => {
-        this.relayError = state.error
-        this.emitStatus()
-      },
-    })
+      this.relayAccess(),
+    )
     this.relayRooms.set(room, { channel, sockets })
     channel.start()
   }

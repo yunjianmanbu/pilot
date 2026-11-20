@@ -198,7 +198,7 @@ function runSelfTest(tool, dir, workspace) {
 
 async function main() {
   const from = resolve(process.cwd(), argValue('from', '.pilot/tools'))
-  const out = resolve(process.cwd(), argValue('out', join(scriptDir, '..', 'client', 'builtin-tools')))
+  const out = resolve(process.cwd(), argValue('out', join(scriptDir, '..', 'pilot', 'builtin-tools')))
   const workspace = resolve(process.cwd(), argValue('workspace', process.cwd()))
   const only = argValue('only', '')
     .split(',')

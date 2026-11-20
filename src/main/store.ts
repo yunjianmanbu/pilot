@@ -65,6 +65,7 @@ import {
   validAccent,
   validShellInterpreter,
   BODY_KEYS,
+  CONTEXT_SUMMARY_MAX_CHARS,
   SEARCH_INDEX_MIN_INTERVAL_MS,
   SessionBodyRef,
 } from './store-schema'
@@ -1164,7 +1165,9 @@ export class Store {
     if (input.relayUrl !== undefined) {
       const normalized = normalizeRelayUrl(input.relayUrl)
       if (normalized === null) {
-        throw new Error('中继地址必须是 wss:// 或 ws:// 地址，且不能包含用户名或密码。')
+        throw new Error(
+          '中继地址必须是 wss:// 或 ws:// 地址，可带 #k=准入码，且不能包含用户名或密码。',
+        )
       }
       this.state.settings.relayUrl = normalized
     }
@@ -1424,7 +1427,37 @@ export class Store {
       queue: session.queue,
       todos: session.todos,
       plan: session.plan,
+      ...(session.summary ? { summary: session.summary } : {}),
     }
+  }
+
+  /**
+   * Remember the model-written compaction summary of the last run.
+   *
+   * Without this the summary died with the run: the next run rebuilt the same
+   * compact view from raw history, so a long session paid for a summarizer call
+   * on every turn and lost whatever the model had already distilled.
+   */
+  async setContextSummary(sessionId: string, summary: string | null): Promise<void> {
+    const session = this.state.sessions.find((entry) => entry.id === sessionId)
+    if (!session) throw new Error('Session not found')
+    const clean = typeof summary === 'string' ? summary.trim() : ''
+    if (!clean) {
+      if (!session.summary) return
+      session.summary = undefined
+    } else if (clean === session.summary) {
+      return
+    } else {
+      session.summary = clean.slice(0, CONTEXT_SUMMARY_MAX_CHARS)
+    }
+    session.updatedAt = now()
+    await this.save()
+  }
+
+  /** The stored compaction summary, read without hydrating the transcript. */
+  contextSummary(sessionId: string): string | null {
+    const session = this.state.sessions.find((entry) => entry.id === sessionId)
+    return session?.summary ?? null
   }
 
   setRunning(id: string, running: boolean): void {

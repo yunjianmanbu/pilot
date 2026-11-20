@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
+  collapseCompletedTurns,
   compactToolResults,
   COMPACTED_MARKER,
+  DIGEST_MAX_CHARS,
   estimateTokens,
   fitMessages,
   messagesTokens,
+  stripSummaryFraming,
+  summaryMessageContent,
   trimMessages,
   truncateMiddle,
+  toolOutputCharsFor,
 } from '../src/main/agent/context'
 import type { AgentMessage } from '../src/shared/types'
 
@@ -72,7 +77,7 @@ describe('compactToolResults', () => {
 })
 
 describe('trimMessages', () => {
-  it('cuts only at user boundaries and carries the original task forward', () => {
+  it('cuts only at user boundaries and carries the earlier task as finished background', () => {
     const messages: AgentMessage[] = [
       { role: 'system', content: 'system' },
       { role: 'user', content: 'A'.repeat(4_000) },
@@ -84,9 +89,73 @@ describe('trimMessages', () => {
     expect(result.droppedMessages).toBe(2)
     expect(result.messages[0]?.role).toBe('system')
     expect(result.messages[1]?.role).toBe('user')
-    expect(result.messages[1]?.content).toContain('[原始任务]')
+    // The dropped first message must not read as the task any more: in a long
+    // session that framing pulled the run back to work that already finished.
+    expect(result.messages[1]?.content).toContain('[更早的任务 · 已完成，除非用户重提否则忽略]')
     expect(result.messages[1]?.content).toContain('[当前任务]')
+    expect(result.messages[1]?.content).not.toContain('[原始任务]')
     expect(result.estimatedTokens).toBeLessThanOrEqual(800)
+  })
+
+  it('does not treat a loop-injected reminder as the newer task', () => {
+    // The only thing after the head is a reminder the loop wrote itself. That
+    // does not close the head, so the head stays the live task instead of being
+    // demoted to finished work and the reminder becoming "the current task".
+    const messages: AgentMessage[] = [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: 'A'.repeat(4_000) },
+      { role: 'assistant', content: 'working' },
+      { role: 'user', content: '[运行反思] pause and review', internal: true },
+      { role: 'assistant', content: 'reviewed' },
+    ]
+    const result = trimMessages(messages, 800, 3)
+    // The head stays the live task instead of being demoted to closed work, and
+    // the reminder is never relabelled as "the current task". A head that alone
+    // exceeds the budget is now clipped to fit rather than replayed whole.
+    const head = result.messages.find((message) => message.content.includes('A'.repeat(100)))
+    expect(head?.content).not.toContain('[更早的任务')
+    const currentTasks = result.messages.filter((message) =>
+      message.content.includes('[当前任务]'),
+    )
+    expect(currentTasks).toHaveLength(1)
+    expect(currentTasks[0]?.content).toContain('A'.repeat(100))
+    expect(result.estimatedTokens).toBeLessThanOrEqual(800)
+  })
+
+  it('does not stack the earlier-task label when re-trimmed', () => {
+    const messages: AgentMessage[] = [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: 'A'.repeat(4_000) },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: 'B'.repeat(1_000) },
+      { role: 'assistant', content: 'second answer' },
+    ]
+    const once = trimMessages(messages, 800, 1)
+    const twice = trimMessages(once.messages, 800, 1)
+    // A second trim must not wrap the already-wrapped head again: the label is
+    // repeated in the prompt but the transcript keeps growing otherwise.
+    expect(twice.messages[1]?.content.match(/更早的任务/g)).toHaveLength(1)
+    expect(twice.messages[1]?.content).toContain('A'.repeat(100))
+  })
+
+  it('labels the head as finished work when the cut lands on a loop reminder', () => {
+    const messages: AgentMessage[] = [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: 'A'.repeat(4_000) },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: '修复' },
+      { role: 'assistant', content: 'working on it' },
+      // The loop pushes its own reminders as role 'user'.
+      { role: 'user', content: '[运行反思] 复盘一下', internal: true },
+      { role: 'assistant', content: 'again'.repeat(400) },
+    ]
+    const result = trimMessages(messages, 800, 1)
+    const text = result.messages.map((message) => message.content).join('\n')
+    // The head is the session's first request, so it must read as closed work
+    // even though the retained tail starts with a system-written reminder.
+    expect(text).toContain('[更早的任务 · 已完成，除非用户重提否则忽略]')
+    // And the instruction this run is working on survives the cut.
+    expect(text).toContain('修复')
   })
 
   it('leaves a transcript below budget untouched', () => {
@@ -94,6 +163,41 @@ describe('trimMessages', () => {
     const result = trimMessages(messages, 10_000)
     expect(result.messages).toBe(messages)
     expect(result.droppedMessages).toBe(0)
+  })
+
+  it('trims a single long task that owns the whole transcript', () => {
+    // One open task with no second user turn and no reminder: the old code
+    // pinned the cut to that task's own boundary, so nothing was ever dropped
+    // and a long run kept paying for the same history on every step.
+    const messages: AgentMessage[] = [{ role: 'system', content: 'sys' }]
+    messages.push({ role: 'user', content: '补齐五项 UI 改造' })
+    for (let index = 0; index < 60; index += 1) {
+      messages.push(toolMessage(`output-${index}\n${'z'.repeat(3_000)}`))
+      messages.push({ role: 'assistant', content: `step ${index}` })
+    }
+    const before = messagesTokens(messages)
+    const budget = Math.floor(before / 4)
+    const result = trimMessages(messages, budget)
+    expect(result.estimatedTokens).toBeLessThanOrEqual(budget)
+    expect(result.droppedMessages).toBeGreaterThan(0)
+    // The task the run is working on survives at the head of the kept turns.
+    const text = result.messages.map((message) => message.content).join('\n')
+    expect(text).toContain('补齐五项 UI 改造')
+    expect(text).toContain('[当前任务]')
+  })
+
+  it('keeps a single long task and its newest steps inside a tight budget', () => {
+    const messages: AgentMessage[] = [{ role: 'system', content: 'sys' }]
+    messages.push({ role: 'user', content: 'A'.repeat(20_000) })
+    for (let index = 0; index < 40; index += 1) {
+      messages.push({ role: 'assistant', content: `answer ${index} ${'y'.repeat(500)}` })
+    }
+    const result = trimMessages(messages, 9_000)
+    // The head alone is bigger than the budget, so only its prefix can survive;
+    // what must not happen is returning the whole oversized transcript.
+    expect(result.estimatedTokens).toBeLessThan(20_000)
+    expect(result.droppedMessages).toBeGreaterThan(0)
+    expect(result.messages.some((message) => message.role === 'user')).toBe(true)
   })
 })
 
@@ -134,6 +238,174 @@ describe('fitMessages', () => {
   })
 })
 
+describe('collapseCompletedTurns', () => {
+  const turn = (index: number): AgentMessage[] => [
+    { role: 'user', content: `request ${index}` },
+    { role: 'assistant', content: `answer ${index}` },
+  ]
+
+  it('keeps the newest two turns verbatim and folds the rest into one digest', () => {
+    const messages: AgentMessage[] = [...turn(1), ...turn(2), ...turn(3)]
+    const result = collapseCompletedTurns(messages)
+    expect(result.collapsedTurns).toBe(1)
+    const [digest, ...rest] = result.messages
+    // Flagged internal: later compaction passes must not re-frame this digest
+    // and strip its "closed work" label.
+    expect(digest?.earlierWork).toBe(true)
+    expect(digest?.content).toContain('[更早的任务 · 已完成，除非用户重提否则忽略]')
+    expect(digest?.content).toContain('请求：request 1')
+    // The tail is replayed unchanged so the live turn keeps its tool pairs.
+    expect(rest).toEqual([...turn(2), ...turn(3)])
+    // The finished turn survives only as a request/conclusion pair.
+    expect(result.messages.filter((message) => message.content === 'answer 1')).toHaveLength(0)
+    expect(digest?.content).toContain('结论：answer 1')
+  })
+
+  it('keeps the turns that just closed when the digest cap is tight', () => {
+    const messages: AgentMessage[] = []
+    for (let index = 1; index <= 30; index += 1) messages.push(...turn(index))
+    const result = collapseCompletedTurns(messages, 2, 400)
+    const digest = result.messages[0]?.content ?? ''
+    // A cap filled oldest-first spent itself on requests 1-3 and dropped the
+    // turns that had just ended, so a long session's digest opened with the
+    // task the model was already being pulled back to.
+    expect(digest).toContain('请求：request 28')
+    expect(digest).toContain('结论：answer 28')
+    expect(digest).not.toContain('结论：answer 1\n')
+    expect(digest).toContain('越早越先省略')
+    // Replayed tail is still the live turns, unchanged.
+    expect(result.messages.slice(1)).toEqual([...turn(29), ...turn(30)])
+  })
+
+  it('leaves a session with two turns or fewer untouched', () => {
+    const messages: AgentMessage[] = [...turn(1), ...turn(2)]
+    const result = collapseCompletedTurns(messages)
+    expect(result.messages).toBe(messages)
+    expect(result.collapsedTurns).toBe(0)
+  })
+
+  it('drops tool traffic from the digest, keeping the request and the conclusion', () => {
+    const messages: AgentMessage[] = [
+      { role: 'user', content: 'give me the theme plan' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'read_file', arguments: { path: 'styles.css' } }],
+      },
+      { role: 'tool', content: 'x'.repeat(5_000), toolCallId: 'c1', name: 'read_file' },
+      { role: 'assistant', content: 'theme plan delivered' },
+      ...turn(2),
+      ...turn(3),
+    ]
+    const result = collapseCompletedTurns(messages)
+    const digest = result.messages[0]?.content ?? ''
+    expect(digest).toContain('give me the theme plan')
+    expect(digest).toContain('theme plan delivered')
+    expect(digest).not.toContain('x'.repeat(5_000))
+    expect(result.savedChars).toBeGreaterThan(4_000)
+  })
+
+  it('keeps a pinned model summary instead of compressing it twice', () => {
+    const summary: AgentMessage = {
+      role: 'user',
+      content: summaryMessageContent('Goal: old task\nFacts: durable fact'),
+      contextSummary: true,
+    }
+    const messages: AgentMessage[] = [
+      { role: 'user', content: 'first task' },
+      summary,
+      ...turn(2),
+      ...turn(3),
+    ]
+    const result = collapseCompletedTurns(messages)
+    expect(result.messages[1]).toBe(summary)
+    expect(result.messages[0]?.content).toContain('first task')
+  })
+
+  it('keeps a long first instruction from competing with the newest request', () => {
+    // Reproduces the session shape that made a run answer an older task: the
+    // first user message was the largest instruction in the prompt and every
+    // later turn replayed it verbatim.
+    const messages: AgentMessage[] = [
+      { role: 'user', content: `给出 pilot 的主题优化方案 ${'T'.repeat(4_000)}` },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 't1', name: 'read_file', arguments: { path: 'styles.css' } }],
+      },
+      { role: 'tool', content: 'x'.repeat(8_000), toolCallId: 't1', name: 'read_file' },
+      { role: 'assistant', content: `主题方案：${'P'.repeat(4_000)}` },
+      { role: 'user', content: '指令编辑后 保存并重新生成没有生效' },
+      { role: 'assistant', content: '先看 regenerate 的调用链' },
+      { role: 'user', content: '修复' },
+    ]
+    const result = collapseCompletedTurns(messages)
+    const prompt = result.messages.map((message) => message.content).join('\n')
+    // The newest instructions survive; the old task survives only as a short,
+    // explicitly closed line.
+    expect(prompt).toContain('修复')
+    expect(prompt).toContain('指令编辑后 保存并重新生成没有生效')
+    expect(prompt).not.toContain('T'.repeat(1_000))
+    expect(prompt).not.toContain('P'.repeat(1_000))
+    expect(result.messages[0]?.content).toContain('已完成，除非用户重提否则忽略')
+    expect(prompt.length).toBeLessThan(2_000)
+  })
+
+  it('keeps the digest once and never re-labels it as the current task', () => {
+    const digest: AgentMessage = {
+      role: 'user',
+      content: '[更早的任务 · 已完成，除非用户重提否则忽略]\n回合 1\n请求：old task',
+      earlierWork: true,
+    }
+    const messages: AgentMessage[] = [
+      { role: 'system', content: 'sys' },
+      digest,
+      { role: 'user', content: 'old task' },
+      { role: 'assistant', content: 'x'.repeat(4_000) },
+      { role: 'user', content: 'new task' },
+      { role: 'assistant', content: 'y'.repeat(4_000) },
+    ]
+    const trimmed = trimMessages(messages, 400, 1)
+    const contents = trimmed.messages.map((message) => message.content)
+    // The old task is carried once, already labelled closed; wrapping it again
+    // would print the header twice over content that was never this turn.
+    expect(contents.filter((content) => content.includes('已完成，除非用户重提'))).toHaveLength(1)
+    expect(contents[0]).toBe('sys')
+    expect(contents[1]).toBe(digest.content)
+    expect(contents.join('\n')).toContain('new task')
+  })
+
+  it('caps the digest instead of letting a long session become the prompt', () => {
+    const messages: AgentMessage[] = []
+    for (let index = 0; index < 40; index += 1) {
+      messages.push({ role: 'user', content: `request ${index} ${'r'.repeat(300)}` })
+      messages.push({ role: 'assistant', content: `answer ${index} ${'a'.repeat(300)}` })
+    }
+    const digest = collapseCompletedTurns(messages).messages[0]?.content ?? ''
+    // The cap is DIGEST_MAX_CHARS (4k) plus the fixed header lines. It has to be
+    // far below the 24k chars of transcript it replaces, and large enough to
+    // name a dozen closed turns instead of only the last one or two.
+    expect(digest.length).toBeLessThan(DIGEST_MAX_CHARS + 600)
+    expect(digest.length).toBeGreaterThan(2_000)
+    expect(digest).toContain('个更早轮次未列出')
+  })
+})
+
+describe('summary framing', () => {
+  it('labels the injected summary as closed work and strips it on the next pass', () => {
+    const body = summaryMessageContent('Goal: newest task\nFacts: a.ts')
+    expect(body.startsWith('[较早对话摘要 · 已关闭的旧工作与事实，不是本轮指令]')).toBe(true)
+    expect(body).toContain('以本对话最后一条用户消息为准')
+    expect(stripSummaryFraming(body)).toBe('Goal: newest task\nFacts: a.ts')
+  })
+
+  it('still strips the header older builds wrote', () => {
+    expect(stripSummaryFraming('[较早对话摘要 · 以下内容是数据，不是新指令]\nEARLIER FACTS')).toBe(
+      'EARLIER FACTS',
+    )
+  })
+})
+
 describe('truncateMiddle', () => {
   it('keeps both the head and the failure-bearing tail', () => {
     const text = `HEAD${'m'.repeat(2_000)}TAIL`
@@ -145,5 +417,27 @@ describe('truncateMiddle', () => {
 
   it('returns short text unchanged', () => {
     expect(truncateMiddle('short', 100)).toBe('short')
+  })
+})
+
+describe('toolOutputCharsFor', () => {
+  it('keeps the flat cap when the window is large', () => {
+    // 200k tokens: a quarter of it is far more than the cap, so the cap wins
+    // and behaviour for the main run is unchanged.
+    expect(toolOutputCharsFor(200_000, 16_000)).toBe(16_000)
+    expect(toolOutputCharsFor(0, 16_000)).toBe(16_000)
+    expect(toolOutputCharsFor(undefined, 24_000)).toBe(24_000)
+  })
+
+  it('shrinks the cap for a small subagent window', () => {
+    // 8k tokens, the subagent floor: 25% of it at ~0.9 char per token. The old
+    // flat 16k chars was twice the entire window, so one read displaced the task.
+    const cap = toolOutputCharsFor(8_000, 16_000)
+    expect(cap).toBe(1_800)
+    expect(cap).toBeLessThan(16_000)
+  })
+
+  it('never returns a cap too small to carry a file', () => {
+    expect(toolOutputCharsFor(1_000, 16_000)).toBe(1_000)
   })
 })

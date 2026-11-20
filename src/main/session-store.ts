@@ -97,6 +97,9 @@ export function indexEntryFor(session: Session, counts: SessionCounts): SessionI
   if (session.pauseInstruction) entry.pauseInstruction = session.pauseInstruction
   if (session.runInstruction) entry.runInstruction = session.runInstruction
   if (session.runStartedAt) entry.runStartedAt = session.runStartedAt
+  // Carried in the index so a lazily loaded session knows what was already
+  // compacted without reading its shard.
+  if (session.summary) entry.summary = session.summary
   return entry
 }
 
@@ -149,6 +152,7 @@ export function sessionFromSearchRecords(session: Session, records: SearchRecord
     kind: session.kind,
     review: session.review,
     reviewReport: session.reviewReport,
+    ...(session.summary ? { summary: session.summary } : {}),
     queue: [],
     todos: [],
     messages: records.map((record) => ({

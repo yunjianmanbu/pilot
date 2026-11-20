@@ -42,7 +42,7 @@ import {
   classifyToolCall,
   createClassifierMemo,
 } from './classifier'
-import { estimateTokens, truncateMiddle } from './context'
+import { collapseCompletedTurns, estimateTokens, summaryMessageContent, truncateMiddle } from './context'
 import { EvolutionService, formatToolFailures, type ProfileJudge } from './evolution'
 import { QualityService } from './quality'
 import { HookService } from './hooks'
@@ -259,7 +259,12 @@ function isReplayableMessage(message: StoredMessage): boolean {
   return !isEmptyAssistant(message)
 }
 
-function toAgentMessage(message: StoredMessage): AgentMessage {
+/**
+ * Rebuild the model-side transcript from storage. Exported for the regression
+ * test that pins the `control` → `internal` round trip: losing it turned every
+ * auto-resume prompt back into a brand new user task.
+ */
+export function toAgentMessage(message: StoredMessage): AgentMessage {
   const references = message.role === 'user' ? message.references ?? [] : []
   return {
     role: message.role,
@@ -271,6 +276,13 @@ function toAgentMessage(message: StoredMessage): AgentMessage {
     ...(message.name ? { name: message.name } : {}),
     ...(message.isError ? { isError: true } : {}),
     ...(message.images && message.images.length > 0 ? { images: message.images } : {}),
+    // A persisted continuation prompt (`control`) is the same thing the loop
+    // marks as `internal` while running: the system wrote it, the user did not
+    // open a task with it. Round-tripping it without the mark made the replayed
+    // transcript hand "continue where you left off" back as a brand new user
+    // task, so the real request was labelled closed work and every auto-resume
+    // started from a one-line instruction with no task of its own.
+    ...(message.control ? { internal: true } : {}),
   }
 }
 
@@ -1421,6 +1433,14 @@ export class AgentRunner {
               globalProfile,
               globalInstructions,
               plan: analysisRun ? null : session.plan,
+              // Only the analysis rules (read-only, ~20 tool calls) are gated:
+              // sending them on a change request was telling the model not to
+              // edit files while the user asked for an edit.
+              analysis: analysisRun,
+              // A control message (resume / plan carry-on) exists to finish the
+              // previous task, so the "earlier turns are closed" rule must not
+              // be sent with it.
+              continuation: Boolean(userStored?.control),
               selfUpdate: wantsSelfUpdate(prompt),
               projectInstructions,
               skills: skillList,
@@ -1476,9 +1496,39 @@ export class AgentRunner {
           )
           .catch(() => undefined)
       }
+      // Only the newest turns replay verbatim. Replaying a whole long session
+      // kept its first instruction — often the largest user message — in every
+      // prompt, and the model kept working on it instead of on the message the
+      // user just sent. Older turns become one closed-work digest; the session
+      // record itself is untouched.
+      const replayed = collapseCompletedTurns(
+        session.messages.filter(isReplayableMessage).map(toAgentMessage),
+      )
+      // The summary the last run wrote is the only compact form of the turns
+      // that have already been folded away, and it cannot be rebuilt from the
+      // stored transcript (which keeps every message). Re-injecting it is what
+      // stops a long session from paying for the same summarizer call on every
+      // turn. It is only used once turns are actually being folded: with a short
+      // transcript there is nothing it stands in for, and it would duplicate
+      // history the prompt still carries verbatim. Review runs keep their own
+      // scoped prompt, so they neither write nor receive it.
+      const storedSummary =
+        review === null && replayed.collapsedTurns > 0
+          ? this.store.contextSummary(sessionId)
+          : null
+      const summaryMessages: AgentMessage[] = storedSummary
+        ? [
+            {
+              role: 'user',
+              content: summaryMessageContent(storedSummary),
+              contextSummary: true,
+            },
+          ]
+        : []
       const messages: AgentMessage[] = [
         { role: 'system', content: `${system}${correctionNote}` },
-        ...session.messages.filter(isReplayableMessage).map(toAgentMessage),
+        ...summaryMessages,
+        ...replayed.messages,
       ]
 
       // Whether this run created or changed the plan. Only those turns get a
@@ -1994,8 +2044,14 @@ export class AgentRunner {
         // Names the project's own entry points when a command is not found.
         workspaceRoot: workspacePath,
         toolsmith: !review,
-        summarize: (history, previousSummary) =>
-          summarizeConversation(client, history, ctx.controller.signal, previousSummary),
+        summarize: (history, previousSummary, onUsage) =>
+          summarizeConversation(
+            client,
+            history,
+            ctx.controller.signal,
+            previousSummary,
+            onUsage,
+          ),
         preTool: async (call, tool) => {
           const outcome = await hooks.beforeTool(call, tool, ctx.controller.signal)
           if (outcome.blocked) {
@@ -2140,6 +2196,14 @@ export class AgentRunner {
       if (storedMessages.length > 0) {
         messagesHandled = true
         await this.store.addMessages(sessionId, storedMessages)
+      }
+      // Persist the compaction summary for the next run. A run that never
+      // compacted has nothing to add, and the stored one is kept: it still
+      // describes work that is already out of the prompt.
+      if (review === null && result.summary) {
+        await this.store
+          .setContextSummary(sessionId, result.summary)
+          .catch(() => undefined)
       }
       await this.store.finishRun(workspacePath, ctx.runId, {
         status: finalStatus,

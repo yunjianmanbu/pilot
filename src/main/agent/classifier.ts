@@ -1,4 +1,5 @@
 import type { AgentMessage, ToolCall } from '../../shared/types'
+import { isUserTaskTurn } from './context'
 import type { ModelClient } from './loop'
 
 export type ClassifierDecision = 'allow' | 'ask' | 'deny'
@@ -45,8 +46,15 @@ function transcriptForClassifier(messages: AgentMessage[]): string {
   const recent = messages.slice(-CLASSIFIER_TRANSCRIPT_WINDOW)
   const lines: string[] = []
   for (const message of recent) {
-    if (message.role === 'user' && message.content.trim()) {
-      lines.push(`USER: ${snippet(message.content, 2_000)}`)
+    if (message.role === 'user') {
+      // Only real instructions speak as the user. Continuation prompts, run
+      // reminders and folded-turn digests are written by the loop, and a
+      // classifier that reads them as `USER:` can accept a task the operator
+      // never gave. They stay visible, but labelled as the loop's own words so
+      // they cannot be attributed to the user.
+      if (!message.content.trim()) continue
+      if (isUserTaskTurn(message)) lines.push(`USER: ${snippet(message.content, 2_000)}`)
+      else lines.push(`INTERNAL: ${snippet(message.content, 600)}`)
     } else if (message.role === 'assistant') {
       if (message.content.trim()) lines.push(`ASSISTANT: ${snippet(message.content, 1_200)}`)
       for (const call of message.toolCalls ?? []) {

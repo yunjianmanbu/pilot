@@ -1,5 +1,5 @@
 import type { AgentToolDefinition } from '../../shared/types'
-import { truncateMiddle } from './context'
+import { toolOutputCharsFor, truncateMiddle } from './context'
 import { runAgentLoop, type ModelClient } from './loop'
 import {
   executePilotTool,
@@ -29,7 +29,6 @@ export const EXPLORE_TOOL_NAMES = [
 
 const ALLOWED = new Set<string>(EXPLORE_TOOL_NAMES)
 const MAX_SUMMARY_CHARS = 14_000
-
 export function selectExploreTools(tools: AgentToolDefinition[] = pilotTools): AgentToolDefinition[] {
   return tools.filter((tool) => ALLOWED.has(tool.name) && tool.risk === 'read')
 }
@@ -90,6 +89,11 @@ export async function runExploreSubagent(options: ExploreOptions): Promise<Explo
   }
 
   const maxSteps = Math.max(3, Math.min(12, Math.round(options.maxSteps ?? 8)))
+  // The explorer reads whole files to cite them, so one result must never be
+  // able to fill the window it is reading into. 16k chars of tool output is a
+  // sixth of a 200k window and twice the whole budget of an 8k-token one.
+  const maxToolOutputChars = toolOutputCharsFor(options.maxContextTokens, 16_000)
+  const summaryCap = toolOutputCharsFor(options.maxContextTokens, MAX_SUMMARY_CHARS, 0.35)
   const result = await runAgentLoop({
     model: options.client,
     messages: [
@@ -109,7 +113,7 @@ export async function runExploreSubagent(options: ExploreOptions): Promise<Explo
     // Reserve the last two steps for synthesis instead of dying mid-search.
     wrapUpAt: Math.max(2, maxSteps - 2),
     ...(options.maxContextTokens ? { maxContextTokens: options.maxContextTokens } : {}),
-    maxToolOutputChars: 16_000,
+    maxToolOutputChars,
     temperature: 0.1,
     workspaceRoot: options.workspacePath,
     ...(options.signal ? { signal: options.signal } : {}),
@@ -143,5 +147,5 @@ export async function runExploreSubagent(options: ExploreOptions): Promise<Explo
       : result.status === 'token_limit'
         ? '\n\n[探索达到 token 上限，以上为部分结论]'
         : ''
-  return { summary: truncateMiddle(`${summary}${suffix}`, MAX_SUMMARY_CHARS), steps: result.steps }
+  return { summary: truncateMiddle(`${summary}${suffix}`, summaryCap), steps: result.steps }
 }

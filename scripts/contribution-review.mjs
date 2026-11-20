@@ -22,7 +22,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
-const defaultRoot = resolve(scriptDir, '..', 'client')
+const defaultRoot = resolve(scriptDir, '..', 'pilot')
 
 const FORMAT = 'pilot-contribution/v1'
 const MAX_BUNDLE_BYTES = 64 * 1024 * 1024

@@ -96,6 +96,55 @@ async function run(previousContent: string, output: string, isError = false) {
   return { model, result, executions }
 }
 
+describe('same-run read dedupe visibility', () => {
+  it('does not point at a read result that already left the working set', async () => {
+    const model = scripted([
+      response('', [call('r1', 'read_file', { path: 'a.ts' })]),
+      response('', [
+        call('r2', 'read_file', { path: 'b.ts' }),
+        call('r3', 'read_file', { path: 'c.ts' }),
+      ]),
+      response('', [call('r4', 'read_file', { path: 'a.ts' })]),
+      response('done'),
+    ])
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'read a.ts twice' }],
+      tools,
+      maxSteps: 6,
+      // Two newer tool results push the first read out of the working set, so
+      // "use the result above" would point at content that is no longer sent.
+      keepRecentToolResults: 2,
+      verificationGate: false,
+      policy: () => 'auto',
+      executeTool: async ({ call: current }) => ({ ok: true, output: `${current.id}: a.ts` }),
+    })
+
+    const duplicate = producedToolMessage(result.produced, 'r4')
+    expect(duplicate?.content).not.toContain('[重复读取已省略]')
+    expect(duplicate?.content).toContain('r4: a.ts')
+  })
+
+  it('still reuses an identical read while its result is visible', async () => {
+    const model = scripted([
+      response('', [call('r1', 'read_file', { path: 'a.ts' })]),
+      response('', [call('r2', 'read_file', { path: 'a.ts' })]),
+      response('done'),
+    ])
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'read a.ts twice' }],
+      tools,
+      maxSteps: 6,
+      verificationGate: false,
+      policy: () => 'auto',
+      executeTool: async ({ call: current }) => ({ ok: true, output: `${current.id}: a.ts` }),
+    })
+
+    expect(producedToolMessage(result.produced, 'r2')?.content).toContain('[重复读取已省略]')
+  })
+})
+
 describe('cross-run read dedupe', () => {
   it('reuses an earlier identical read instead of sending the same content twice', async () => {
     const content = 'const one = 1\nconst two = 2\n'

@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -16,6 +17,20 @@ import {
 
 const run = promisify(execFile)
 const temporary: string[] = []
+/**
+ * `contribution-review.mjs` 在主仓库只存在于 pilot/scripts/，拆出去的独立仓库里
+ * 由 split-repos.mjs 带进仓库根的 scripts/。两种布局都要能跑，否则 CI 里是
+ * “找不到脚本”而不是断言失败。
+ */
+function contributionReviewScript(): string {
+  const candidates = [
+    resolve(__dirname, '..', '..', 'scripts', 'contribution-review.mjs'),
+    resolve(__dirname, '..', 'scripts', 'contribution-review.mjs'),
+  ]
+  const found = candidates.find((candidate) => existsSync(candidate))
+  if (!found) throw new Error(`contribution-review.mjs 不存在：${candidates.join(' / ')}`)
+  return found
+}
 const servers: Server[] = []
 
 afterEach(async () => {
@@ -232,7 +247,7 @@ describe('official contribution importer', () => {
     await write(official, 'src/main.ts', 'export const greeting = "official"\n')
     await write(official, 'src/old.ts', 'export const old = true\n')
 
-    const script = resolve(__dirname, '..', '..', 'scripts', 'contribution-review.mjs')
+    const script = contributionReviewScript()
     const inspect = await run(process.execPath, [script, 'inspect', record.path, '--root', official])
     expect(inspect.stdout).toContain('检查通过')
 
@@ -278,7 +293,7 @@ describe('official contribution importer', () => {
     const bundlePath = join(official, 'forged.pilot.json')
     await writeFile(bundlePath, JSON.stringify(bundle))
 
-    const script = resolve(__dirname, '..', '..', 'scripts', 'contribution-review.mjs')
+    const script = contributionReviewScript()
     await expect(
       run(process.execPath, [script, 'inspect', bundlePath, '--root', official]),
     ).rejects.toThrow(/secret/)
@@ -295,7 +310,7 @@ describe('official contribution importer', () => {
     await write(official, 'src/main.ts', 'export const greeting = "changed upstream"\n')
     await write(official, 'src/old.ts', 'export const old = true\n')
 
-    const script = resolve(__dirname, '..', '..', 'scripts', 'contribution-review.mjs')
+    const script = contributionReviewScript()
     await expect(
       run(process.execPath, [script, 'apply', record.path, '--yes', '--root', official]),
     ).rejects.toThrow(/refusing to apply|base hash mismatch/)

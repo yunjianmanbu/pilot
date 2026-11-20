@@ -102,7 +102,7 @@ mac:
   # built with the newest Electron that still starts on macOS 12: pass
   # -c.electronVersion=43.8.7 (already wired into `pnpm package:mac`), which makes
   # LSMinimumSystemVersion 12.0. Windows/Linux stay on the Electron version in
-  # client/package.json; app.asar is identical either way.
+  # pilot/package.json; app.asar is identical either way.
   artifactName: Pilot-${version}-mac-${arch}.${ext}
 
 linux:

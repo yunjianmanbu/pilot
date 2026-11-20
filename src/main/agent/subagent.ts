@@ -1,5 +1,5 @@
 import type { AgentToolDefinition } from '../../shared/types'
-import { truncateMiddle } from './context'
+import { toolOutputCharsFor, truncateMiddle } from './context'
 import { runAgentLoop, type ModelClient } from './loop'
 import { evaluatePermission } from './permissions'
 import {
@@ -173,7 +173,7 @@ function buildPrompt(
         : []),
       '- End your final message with up to three check lines the parent can execute directly, one per line, no blank text inside a line:',
       '  VERIFY| <program> <args> | <cwd relative to the workspace, or .> | <what passing means>',
-      '  Use the project\'s own script for the directory you touched (for example `VERIFY| pnpm test -- --run tests/foo.test.ts | pilot/client | 退出码 0`). The check must prove the change you made, and must be read-only or a test run.',
+      '  Use the project\'s own script for the directory you touched (for example `VERIFY| pnpm test -- --run tests/foo.test.ts | pilot/pilot | 退出码 0`). The check must prove the change you made, and must be read-only or a test run.',
       '- One command per line. No pipes, redirects, `&&`, `;`, `$`, globs or absolute paths: those lines are discarded, and a discarded check means your edit was never proven.',
       '- If the task needs a command or a decision outside your scope, stop and explain what the parent should do instead of guessing.',
     )
@@ -258,6 +258,14 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentRes
     mode === 'general' || mode === 'toolsmith'
       ? Math.max(4, Math.min(24, Math.round(options.maxSteps ?? 16)))
       : Math.max(3, Math.min(12, Math.round(options.maxSteps ?? 8)))
+  // A flat 16k/24k chars is a small slice of a 1M-token window and a quarter of
+  // the 8k-token one a subagent can be given, where a single large read would
+  // push the task out of the prompt. Size both the per-result cap and the final
+  // summary from the window the subagent actually has.
+  const toolOutputCap =
+    mode === 'general' || mode === 'toolsmith' ? 24_000 : 16_000
+  const maxToolOutputChars = toolOutputCharsFor(options.maxContextTokens, toolOutputCap)
+  const summaryCap = toolOutputCharsFor(options.maxContextTokens, 16_000, 0.35)
   const result = await runAgentLoop({
     model: options.client,
     messages: [
@@ -282,7 +290,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentRes
     // Keep the last two steps for writing the summary.
     wrapUpAt: Math.max(2, maxSteps - 2),
     ...(options.maxContextTokens ? { maxContextTokens: options.maxContextTokens } : {}),
-    maxToolOutputChars: mode === 'general' || mode === 'toolsmith' ? 24_000 : 16_000,
+    maxToolOutputChars,
     temperature: 0.1,
     workspaceRoot: options.workspacePath,
     // General mode can prove its own edit with run_check, so the same one-shot
@@ -419,7 +427,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentRes
     files.length > 0 ? `\n\n改动文件：${files.slice(0, 20).join('、')}` : ''
   const verifyLine = describeVerification(mode, summary, checkLog)
   return {
-    summary: truncateMiddle(`${summary}${suffix}${filesLine}${verifyLine}`, 16_000),
+    summary: truncateMiddle(`${summary}${suffix}${filesLine}${verifyLine}`, summaryCap),
     steps: result.steps,
     changedPaths: files,
   }

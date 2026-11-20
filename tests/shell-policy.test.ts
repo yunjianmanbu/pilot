@@ -303,17 +303,17 @@ describe('approval modes', () => {
   })
 
   it('does not mistake an inspection of a build config for a build', () => {
-    // Regression: a `cd ... && grep client/electron-builder.yml` task asked
+    // Regression: a `cd ... && grep pilot/electron-builder.yml` task asked
     // for approval in full-auto mode because the path contained
     // "electron-builder"; the user was away and the call timed out.
-    const transcriptCommand = String.raw`cd /e/code/agent/manbu-agent-workspace/pilot && echo "=== electron-builder 品牌字段 ===" && grep -n "productName\|appId\|executableName\|copyright" client/electron-builder.yml && echo && echo "=== app manifest 品牌 ===" && node -e "const m=require('./app/manifest.json');console.log(JSON.stringify({name:m.name,appid:m.appid,description:m.description,versionName:m.versionName},null,1))" && echo && echo "=== 站点域名/标题 ===" && (grep -rn "medpilot\|<title>\|og:site_name\|productName" site/*.html site/*.json 2>/dev/null | head -12)`
+    const transcriptCommand = String.raw`cd /e/code/agent/manbu-agent-workspace/pilot && echo "=== electron-builder 品牌字段 ===" && grep -n "productName\|appId\|executableName\|copyright" pilot/electron-builder.yml && echo && echo "=== app manifest 品牌 ===" && node -e "const m=require('./app/manifest.json');console.log(JSON.stringify({name:m.name,appid:m.appid,description:m.description,versionName:m.versionName},null,1))" && echo && echo "=== 站点域名/标题 ===" && (grep -rn "medpilot\|<title>\|og:site_name\|productName" site/*.html site/*.json 2>/dev/null | head -12)`
     expect(evaluate('auto', 'run_shell', { command: transcriptCommand }).action).toBe('allow')
     const readOnly = [
-      'grep -n "productName\\|appId" client/electron-builder.yml',
-      'cd /e/code/agent/manbu-agent-workspace/pilot && grep -n "productName" client/electron-builder.yml',
-      'cat client/electron-builder.yml',
-      'rg electron-builder client/src',
-      'sed -n "1,20p" client/electron-builder.yml',
+      'grep -n "productName\\|appId" pilot/electron-builder.yml',
+      'cd /e/code/agent/manbu-agent-workspace/pilot && grep -n "productName" pilot/electron-builder.yml',
+      'cat pilot/electron-builder.yml',
+      'rg electron-builder pilot/src',
+      'sed -n "1,20p" pilot/electron-builder.yml',
       'pnpm add -D electron-builder',
       'pnpm install',
       'pnpm test -- --grep electron-builder',

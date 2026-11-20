@@ -22,6 +22,20 @@ describe('summarizeConversation', () => {
     expect(excerpt).not.toContain('SECRET SYSTEM PROMPT')
   })
 
+  it('labels a loop-injected reminder apart from a real user turn', () => {
+    // Both are role 'user', but only one is a task the user asked for. The
+    // summarizer is told to write Goal from the last USER line, so an
+    // unlabelled reminder becomes the goal of the summary.
+    const messages: AgentMessage[] = [
+      { role: 'user', content: 'Fix the login bug' },
+      { role: 'user', content: '[运行反思] pause and review the failure', internal: true },
+    ]
+    const excerpt = transcriptExcerpt(messages)
+    expect(excerpt).toContain('USER: Fix the login bug')
+    expect(excerpt).toContain('RUNTIME: [运行反思]')
+    expect(excerpt).not.toContain('USER: [运行反思]')
+  })
+
   it('returns a trimmed model-written summary', async () => {
     const requests: ModelRequest[] = []
     const client: ModelClient = {
@@ -37,6 +51,51 @@ describe('summarizeConversation', () => {
     expect(summary).toBe('Goal: fix login\nNext: run tests')
     expect(requests).toHaveLength(1)
     expect(requests[0]?.tools).toEqual([])
+  })
+
+  it('asks for the newest task as Goal and older tasks as closed work', async () => {
+    const requests: ModelRequest[] = []
+    const client: ModelClient = {
+      async complete(request: ModelRequest): Promise<ModelResponse> {
+        requests.push(request)
+        return { content: 'Goal: newest\nClosed earlier tasks: first', toolCalls: [] }
+      },
+    }
+    await summarizeConversation(client, [
+      { role: 'user', content: 'first task' },
+      { role: 'assistant', content: 'doing the first task' },
+      { role: 'user', content: 'newest task' },
+    ])
+    const system = requests[0]?.messages[0]?.content ?? ''
+    const instruction = requests[0]?.messages.at(-1)?.content ?? ''
+    // The summary used to declare "the user's task and any later corrections"
+    // as Goal, so re-injecting it after the session moved on re-promoted the
+    // first instruction of the session to "the task".
+    expect(system).toContain('Goal: the newest user task only')
+    expect(system).toContain('Closed earlier tasks')
+    expect(system).not.toContain("Goal: the user's task and any later corrections")
+    expect(instruction).toContain('The transcript\'s last user message is the current task')
+  })
+
+  it('tells a merged summary to demote a Goal the newer turns replaced', async () => {
+    const requests: ModelRequest[] = []
+    const client: ModelClient = {
+      async complete(request: ModelRequest): Promise<ModelResponse> {
+        requests.push(request)
+        return { content: 'Goal: keep going', toolCalls: [] }
+      },
+    }
+    await summarizeConversation(
+      client,
+      [
+        { role: 'user', content: 'Keep going' },
+        { role: 'assistant', content: 'Reading the router' },
+      ],
+      undefined,
+      'Goal: fix login',
+    )
+    const instruction = requests[0]?.messages.at(-1)?.content ?? ''
+    expect(instruction).toContain('move it to Closed earlier tasks')
   })
 
   it('merges the previous summary instead of dropping it', async () => {

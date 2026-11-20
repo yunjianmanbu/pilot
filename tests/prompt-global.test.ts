@@ -63,6 +63,96 @@ describe('buildSystemPrompt turn boundary', () => {
     expect(text).toContain('Earlier turns are closed')
     expect(text).toContain('never resume them, repeat their findings')
     expect(text).toContain('ask before continuing it')
+    // A rule alone did not stop the drift: the model still followed older work
+    // that dominated the prompt. Naming the request up front and re-checking it
+    // per tool call is where the drift becomes visible.
+    expect(text).toContain("Name this turn's request in one line at the start of the answer")
+    expect(text).toContain('before each tool call check that the call serves it')
+  })
+
+  it('lets a continuation turn carry on the open task instead', () => {
+    const text = buildSystemPrompt({
+      root: 'E:\\work\\acme',
+      topLevel: 'src',
+      memory: [],
+      profile: null,
+      plan: null,
+      selfUpdate: false,
+      continuation: true,
+    })
+    // A resume or plan carry-on exists to finish the previous task, so sending
+    // "never resume them" with it contradicted its own reason to run.
+    expect(text).not.toContain('never resume them')
+    expect(text).toContain('This turn is an explicit continuation')
+    expect(text).toContain('Work that belongs to a different, finished task is still closed')
+  })
+})
+
+describe('buildSystemPrompt memory age', () => {
+  const base = {
+    root: 'E:\\work\\acme',
+    topLevel: 'src',
+    profile: null,
+    plan: null,
+    selfUpdate: false,
+  }
+
+  it('marks old entries with their age so they are re-verified, not trusted', () => {
+    const old = new Date(Date.now() - 90 * 86_400_000).toISOString()
+    const text = buildSystemPrompt({
+      ...base,
+      memory: [
+        {
+          id: 'm1',
+          content: '根目录没有 tsconfig.json',
+          source: 'reflection',
+          category: 'negative',
+          createdAt: old,
+        },
+      ],
+    })
+    expect(text).toContain('[negative/reflection · 90 天前]')
+    expect(text).toContain('Verify it against the workspace before acting on it')
+  })
+
+  it('leaves a fresh entry unmarked', () => {
+    const text = buildSystemPrompt({
+      ...base,
+      memory: [
+        {
+          id: 'm2',
+          content: '脚本入口在 pilot/scripts',
+          source: 'agent',
+          category: 'fact',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    })
+    expect(text).toContain('[fact/agent] 脚本入口在 pilot/scripts')
+  })
+})
+
+describe('buildSystemPrompt analysis gate', () => {
+  const base = {
+    root: 'E:\\work\\acme',
+    topLevel: 'src',
+    memory: [],
+    profile: null,
+    plan: null,
+    selfUpdate: false,
+  }
+
+  it('sends the read-only analysis rules only on an analysis turn', () => {
+    const analysis = buildSystemPrompt({ ...base, analysis: true })
+    const change = buildSystemPrompt({ ...base, analysis: false })
+    expect(analysis).toContain('Read-only analysis')
+    expect(analysis).toContain('Do not edit files')
+    expect(analysis).toContain('Target at most about 20 tool calls')
+    // A change request used to receive "Do not edit files" as well, which is
+    // how a one-line edit request came back as a code report.
+    expect(change).not.toContain('Do not edit files')
+    expect(change).not.toContain('Target at most about 20 tool calls')
+    expect(change).toContain('Request type comes from the newest user message alone')
   })
 })
 
@@ -134,8 +224,23 @@ describe('buildSystemPrompt delegation', () => {
     expect(text).toContain('Use the explore tool when')
     expect(text).toContain('isolated context')
     expect(text).toContain('Do not delegate a lookup whose file you already know')
-    expect(text).toContain('hand one narrow scope to explore')
-    expect(text).toContain('once you know the module, read it directly')
+  })
+
+  it('adds the analysis-specific discovery rule only on an analysis turn', () => {
+    // These two lines are part of the read-only analysis block, which a change
+    // request no longer receives; the general delegation rule above covers it.
+    expect(prompt()).not.toContain('hand one narrow scope to explore')
+    const analysis = buildSystemPrompt({
+      root: 'E:\\work\\acme',
+      topLevel: 'src',
+      memory: [],
+      profile: null,
+      plan: null,
+      selfUpdate: false,
+      analysis: true,
+    })
+    expect(analysis).toContain('hand one narrow scope to explore')
+    expect(analysis).toContain('once you know the module, read it directly')
   })
 
   it('treats a subagent summary as a lead and keeps unproven work in the parent', () => {

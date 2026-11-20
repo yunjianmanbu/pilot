@@ -76,8 +76,8 @@ describe('Store project memory', () => {
 
   it('counts a re-derived lesson instead of storing it twice', async () => {
     const { store, workspacePath } = await setup()
-    const first = await store.addMemory(workspacePath, '必须在 pilot/client 下跑 tsc', 'reflection')
-    const second = await store.addMemory(workspacePath, '必须在 pilot/client 下跑 tsc', 'reflection')
+    const first = await store.addMemory(workspacePath, '必须在 pilot/pilot 下跑 tsc', 'reflection')
+    const second = await store.addMemory(workspacePath, '必须在 pilot/pilot 下跑 tsc', 'reflection')
     expect(second.id).toBe(first.id)
     expect(store.memory(workspacePath)).toHaveLength(1)
     expect(store.memory(workspacePath)[0]?.reinforced).toBe(1)

@@ -232,7 +232,7 @@ describe('evaluateModule', () => {
       id: 'm',
       name: 'm',
       files: [
-        fact('relay/server.mjs', 2, "console.log('listening')"),
+        fact('pilot-connector/server.mjs', 2, "console.log('listening')"),
         fact('src/main/ipc.ts', 2, "console.log('leaked arg')"),
       ],
     })

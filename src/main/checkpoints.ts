@@ -1293,6 +1293,10 @@ export class CheckpointService {
         if (
           previous &&
           previousMeta &&
+          // Only a `shell` snapshot may be relabelled: `prompt` marks a boundary
+          // the user asked for and `prerestore` guards a rollback, so collapsing
+          // either into the next command's snapshot would silently delete it.
+          previous.trigger === 'shell' &&
           state.dirty.size === 0 &&
           Date.now() - Date.parse(previous.createdAt) < CHECKPOINT_SHELL_REUSE_MS &&
           (await stat(previousMeta).catch(() => null))
@@ -1485,6 +1489,10 @@ export class CheckpointService {
         const previous = this.recentShellSnapshot.get(input.sessionId)
         if (
           previous &&
+          // A `prompt` or `prerestore` snapshot is never collapsed: checkpoints
+          // of those triggers are boundaries, and reusing one would leave the
+          // session with no snapshot for what actually happened there.
+          previous.trigger === 'shell' &&
           previous.label === label &&
           previous.manifestDigest === manifestDigest &&
           Date.now() - Date.parse(previous.createdAt) < CHECKPOINT_SHELL_REUSE_MS &&

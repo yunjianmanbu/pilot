@@ -42,10 +42,10 @@ describe('memory category vocabulary', () => {
   })
 
   it('infers a category from the wording', () => {
-    expect(inferMemoryCategory('根目录没有 tsconfig.json，必须在 pilot/client 下执行')).toBe(
+    expect(inferMemoryCategory('根目录没有 tsconfig.json，必须在 pilot/pilot 下执行')).toBe(
       'negative',
     )
-    expect(inferMemoryCategory('类型检查用 cd pilot/client && npx tsc -p tsconfig.node.json')).toBe(
+    expect(inferMemoryCategory('类型检查用 cd pilot/pilot && npx tsc -p tsconfig.node.json')).toBe(
       'verification',
     )
     expect(inferMemoryCategory('App.vue 与 styles.css 的色值必须同步，否则主题测试失败')).toBe(

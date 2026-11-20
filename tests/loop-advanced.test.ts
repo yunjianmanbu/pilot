@@ -263,6 +263,47 @@ describe('agent loop context summary', () => {
     expect(sent).toContain('SUMMARY OF EARLIER WORK')
     expect(sent).toContain('original task')
     expect(sent).toContain('较早对话摘要')
+    // The first message stays for the record but is labelled as finished work:
+    // an unlabelled head reads like a live instruction next to the summary.
+    expect(sent).toContain('[更早的任务 · 已完成，除非用户重提否则忽略]\noriginal task')
+  })
+
+  it('does not treat its own injected reminders as a newer user turn', async () => {
+    // The loop pushes internal reminders (in-run reflection, wrap-up, plan
+    // check) as role 'user'. They are the system talking to itself, not the
+    // user opening a new task, so a single-task run that hits a tool error must
+    // not have its own task re-labelled as finished work.
+    const model = scripted([
+      response('', [call('r1', 'read_file', { path: 'a.ts' })]),
+      response('done'),
+    ])
+    const history: AgentMessage[] = [
+      { role: 'system', content: 'You are Pilot.' },
+      { role: 'user', content: 'original task' },
+      ...Array.from({ length: 12 }, (_, index) => ({
+        role: 'assistant' as const,
+        content: `${index}:${'x'.repeat(2_000)}`,
+      })),
+    ]
+
+    await runAgentLoop({
+      model,
+      messages: history,
+      tools,
+      maxSteps: 3,
+      maxContextTokens: 2_000,
+      contextSummaryThreshold: 0.5,
+      reflectionAfterFailures: 1,
+      summarize: async () => 'SINGLE TASK SUMMARY',
+      policy: () => 'auto',
+      executeTool: async () => ({ ok: false, output: '', error: 'read failed' }),
+    })
+
+    const second = messagesFor(model.requests[1]!)
+    expect(second).toContain('[运行反思]')
+    expect(second).toContain('SINGLE TASK SUMMARY')
+    // Still one task: the reflection prompt did not hand the run a new one.
+    expect(second).not.toContain('[更早的任务 · 已完成，除非用户重提否则忽略]')
   })
 
   it('summarizes a long single-task run even without a later user turn', async () => {
@@ -290,7 +331,50 @@ describe('agent loop context summary', () => {
     const sent = messagesFor(model.requests[0]!)
     expect(sent).toContain('SINGLE TASK SUMMARY')
     expect(sent).toContain('original task')
+    // No later user message survived the cut, so that first message *is* the
+    // task being worked on. Labelling it "已完成，除非用户重提否则忽略" told the
+    // model to ignore the work it was in the middle of.
+    expect(sent).not.toContain('[更早的任务 · 已完成，除非用户重提否则忽略]')
     expect(sent.length).toBeLessThan(history.map((message) => message.content).join('\n').length)
+  })
+
+  it('keeps the live instruction when compacting leaves a tool-only tail', async () => {
+    // Reproduces the shape of a long single turn: the session's first task is
+    // far behind, the instruction being worked on is followed only by
+    // assistant/tool traffic. Compaction used to keep the first task bare and
+    // drop the live instruction, so the only user text left was the old task.
+    const model = scripted([response('done')])
+    const history: AgentMessage[] = [
+      { role: 'system', content: 'You are Pilot.' },
+      { role: 'user', content: '给出主题优化方案' },
+      { role: 'assistant', content: 'theme plan delivered' },
+      { role: 'user', content: '修复' },
+      ...Array.from({ length: 10 }, (_, index) => ({
+        role: 'assistant' as const,
+        content: `${index}:${'x'.repeat(2_000)}`,
+      })),
+    ]
+
+    await runAgentLoop({
+      model,
+      messages: history,
+      tools,
+      maxSteps: 2,
+      maxContextTokens: 2_000,
+      contextSummaryThreshold: 0.5,
+      summarize: async () => 'SUMMARY OF EARLIER WORK',
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+
+    const sent = messagesFor(model.requests[0]!)
+    // The old task is present for the record but labelled as finished work.
+    expect(sent).toContain('[更早的任务 · 已完成，除非用户重提否则忽略]\n给出主题优化方案')
+    // The live instruction is still there, restated as the newest user message.
+    expect(sent).toContain('[当前任务]\n修复')
+    const lastUser = [...model.requests[0]!.messages]
+      .reverse()
+      .find((message) => message.role === 'user' && !message.contextSummary)
+    expect(lastUser?.content).toContain('修复')
   })
 
   it('merges a second summary with the first instead of stacking copies', async () => {
@@ -333,6 +417,47 @@ describe('agent loop context summary', () => {
     expect(sent).toContain('MERGED EARLIER FACTS')
     // The stale copy must be gone: one summary message, not two.
     expect(sent.match(/较早对话摘要/g)).toHaveLength(1)
+  })
+
+  it('keeps a folded-turns digest as closed work through a later summary pass', async () => {
+    const model = scripted([response('done')])
+    const digest: AgentMessage = {
+      role: 'user',
+      content:
+        '[更早的任务 · 已完成，除非用户重提否则忽略]\n回合 1\n请求：给出主题优化方案',
+      earlierWork: true,
+    }
+    const history: AgentMessage[] = [
+      { role: 'system', content: 'You are Pilot.' },
+      digest,
+      { role: 'user', content: '指令编辑后 保存并重新生成没有生效' },
+      { role: 'assistant', content: '先看 regenerate 调用链' },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        role: 'assistant' as const,
+        content: `${index}:${'x'.repeat(2_000)}`,
+      })),
+      { role: 'user', content: '修复' },
+    ]
+
+    await runAgentLoop({
+      model,
+      messages: history,
+      tools,
+      maxSteps: 2,
+      maxContextTokens: 2_000,
+      contextSummaryThreshold: 0.5,
+      summarize: async () => 'SUMMARY OF EARLIER WORK',
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+
+    const sent = messagesFor(model.requests[0]!)
+    // The digest is the only trace of the folded turns, so compaction keeps it,
+    // and it is not re-labelled on top of its own header: one header for the
+    // digest, one for the first user message that is now background.
+    expect(sent.match(/请求：给出主题优化方案/g)).toHaveLength(1)
+    expect(sent.match(/已完成，除非用户重提否则忽略/g)).toHaveLength(2)
+    expect(sent).toContain('较早对话摘要')
+    expect(sent).toContain('修复')
   })
 
   it('skips a summary that is larger than the history it replaces', async () => {

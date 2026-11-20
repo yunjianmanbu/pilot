@@ -415,6 +415,19 @@ export interface AgentMessage {
   images?: string[]
   /** Internal model-written summary of earlier turns; never dropped by trimming. */
   contextSummary?: boolean
+  /**
+   * Internal digest that stands in for turns folded away at run start. It is
+   * labelled as closed work on its own first line and must never be re-framed
+   * (a later pass would strip that label and hand old tasks back as the task).
+   */
+  earlierWork?: boolean
+  /**
+   * A reminder the loop injected while running (reflection, wrap-up, plan
+   * check, verification, output continuation). It is role 'user' so the model
+   * reads it as an instruction, but the system wrote it: it is never a new task
+   * the user opened, so it must not close the task this run is working on.
+   */
+  internal?: boolean
 }
 
 /** A message as persisted and rendered. */
@@ -692,6 +705,13 @@ export interface Session extends SessionSummary {
   queue: QueuedTask[]
   todos: TodoItem[]
   plan: Plan | null
+  /**
+   * Last model-written compaction summary of this session. It is the only
+   * compact form of the turns a run folded away, so the next run re-injects it
+   * instead of paying for another summarizer call over the same transcript.
+   * Stored in the session shard, never sent to the renderer.
+   */
+  summary?: string
 }
 
 export interface WorkspaceSummary {
@@ -1360,7 +1380,7 @@ export interface SelfSourceSettings {
   gitUrl: string
   /** Branch or tag of the official remote; `main` when unset. */
   gitRef: string
-  /** Subdirectory inside the remote that holds this client (`pilot/client`). */
+  /** Subdirectory inside the remote that holds this client (`pilot/pilot`). */
   gitPath: string
   /** Absolute path of the user's own checkout when mode is `custom`. */
   customPath: string
@@ -1779,8 +1799,13 @@ export interface CompanionStatus {
   pairingRequest: CompanionPairRequest | null
   /** Public PWA URL shown in the app-download QR code. */
   appUrl: string | null
-  /** Cloud connector endpoint. Null when the client is LAN-only. */
+  /** Cloud connector endpoint, without any admission code. Null when LAN-only. */
   relayUrl: string | null
+  /**
+   * True when the stored connection string carries an L1 admission code
+   * (`#k=`). The code itself is never sent to the renderer.
+   */
+  relayAccess: boolean
   /** Where the active relay address came from. */
   relaySource: 'env' | 'settings' | 'none'
   /** Paired phones whose link goes through the cloud relay. */

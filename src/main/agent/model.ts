@@ -1,4 +1,5 @@
 import { isEmptyAssistant } from './message-guard'
+import { fitMessages, messagesTokens } from './context'
 import type { AgentMessage, AgentToolDefinition, AgentUsage, ToolCall } from '../../shared/types'
 import { effectiveOutputTokens } from '../../shared/modelLimits'
 import { providerLabel } from '../../shared/provider'
@@ -158,6 +159,14 @@ function friendlyHttpError(status: number, body: string, provider: string): stri
   if (status >= 500) return `${provider} is unavailable (${status}): ${detail}`
   return `${provider} request failed (${status}): ${detail}`
 }
+
+/**
+ * Provider wording for "the prompt does not fit the window". Matched on 400
+ * responses only, and narrowed to context/长度 phrasing so an ordinary bad
+ * request is never silently retried with a rewritten transcript.
+ */
+const CONTEXT_OVERFLOW_PATTERN =
+  /context[_ ]length|maximum context|context window|too many tokens|too long|prompt is too|reduce the length/i
 
 function isAbort(error: unknown, signal: AbortSignal | undefined): boolean {
   return Boolean(
@@ -361,14 +370,16 @@ export class DeepSeekClient implements ModelClient {
       calls: new Map(),
     }
     const maxOutputTokens = effectiveOutputTokens(this.config.maxOutputTokens, this.config.model)
-    const body: Record<string, unknown> = {
+    let requestMessages = request.messages
+    const buildBody = (messages: AgentMessage[]): Record<string, unknown> => ({
       model: this.config.model,
       stream: true,
       stream_options: { include_usage: true },
-      messages: toOpenAIMessages(request.messages),
+      messages: toOpenAIMessages(messages),
       ...(request.tools.length > 0 ? { tools: toOpenAITools(request.tools) } : {}),
       ...(maxOutputTokens > 0 ? { max_tokens: maxOutputTokens } : {}),
-    }
+    })
+    let body = buildBody(requestMessages)
     if (
       !this.config.model.toLowerCase().includes('reasoner') &&
       (request.temperature ?? this.config.temperature) !== undefined
@@ -379,22 +390,48 @@ export class DeepSeekClient implements ModelClient {
     let response: Response
     try {
       response = await postCompletion(this.config, body, request.signal)
-    } catch (error) {
+    } catch (firstError) {
+      const error = firstError
       // Some OpenAI-compatible endpoints reject image content parts. A
       // screenshot must not fail the whole run: retry once without images.
-      const hadImages = request.messages.some((message) => (message.images?.length ?? 0) > 0)
+      const hadImages = requestMessages.some((message) => (message.images?.length ?? 0) > 0)
       if (
         hadImages &&
         error instanceof ModelError &&
         error.status === 400 &&
         /image|vision|multimodal|image_url/i.test(error.message)
       ) {
-        const stripped = request.messages.map((message) =>
+        requestMessages = requestMessages.map((message) =>
           message.images ? { ...message, images: undefined } : message,
         )
         response = await postCompletion(
           this.config,
-          { ...body, messages: toOpenAIMessages(stripped) },
+          { ...body, messages: toOpenAIMessages(requestMessages) },
+          request.signal,
+        )
+      } else if (
+        error instanceof ModelError &&
+        error.status === 400 &&
+        CONTEXT_OVERFLOW_PATTERN.test(error.message)
+      ) {
+        // The provider says the prompt does not fit its window. Our own estimate
+        // can disagree (different tokenizer, tools or a smaller server-side
+        // limit), and failing the run here throws away a step we could still
+        // take. Force a hard fit and retry once; the caller's next step sees the
+        // compacted transcript as usual.
+        const before = messagesTokens(requestMessages)
+        const fitted = fitMessages(requestMessages, Math.max(500, Math.floor(before * 0.6)), {
+          keepRecentToolResults: 4,
+          compactAbove: 0,
+          maxAnswerChars: 2_000,
+        })
+        if (fitted.messages === requestMessages || messagesTokens(fitted.messages) >= before) {
+          throw error
+        }
+        requestMessages = fitted.messages
+        response = await postCompletion(
+          this.config,
+          { ...body, messages: toOpenAIMessages(requestMessages) },
           request.signal,
         )
       } else {

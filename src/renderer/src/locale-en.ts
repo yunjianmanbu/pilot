@@ -129,6 +129,9 @@ export const en: Record<string, string> = {
   "个工作区": " workspaces",
   "个工具": " tools",
   "个文件": " files",
+  "本轮改动 {v1} 个文件": "{v1} files changed this turn",
+  "本轮改动 1 个文件": "1 file changed this turn",
+  "查看更多": "View all",
   "中": "medium",
   "中断": "interrupted",
   "中继器连接中": "Connecting to relay",
@@ -366,8 +369,9 @@ export const en: Record<string, string> = {
   "地址由 PILOT_RELAY_URL 环境变量指定，界面中的修改不会生效。":
     "The URL comes from PILOT_RELAY_URL; changes in the UI have no effect.",
   "域名": "Domain",
-  "域名需已解析到这台服务器，并开放 80/443 端口。安装完成后把脚本输出的 wss:// 地址填到上方。只想手动部署时，可下载 Linux 包按包内 README 操作。":
-    "The domain must resolve to this server with ports 80/443 open. After installation, put the wss:// address printed by the script above. For a manual setup, download the Linux package and follow its README.",
+  "域名需已解析到这台服务器，并开放 80/443 端口。安装完成后把脚本输出的整条 wss:// 连接串（含 #k= 准入码）填到上方；准入码未强制时脚本会提示何时切换成强制。只想手动部署时，可下载 Linux 包按包内 README 操作。":
+    "The domain must resolve to this server with ports 80/443 open. After installation, paste the whole wss:// connection string printed by the script (including the #k= admission code) above; while the code is not enforced, the script tells you when to switch it on. For a manual setup, download the Linux package and follow its README.",
+  "· 已带准入码（#k=，不会显示在界面上）": "· Admission code present (#k=, never shown here)",
   "复制": "Copy",
   "复制环境": "Copy environment",
   "复制日志": "Copy logs",
@@ -466,6 +470,8 @@ export const en: Record<string, string> = {
   "已回退。检查工作区状态后继续任务。":
     "Rolled back. Check the workspace before continuing.",
   "已复制": "Copied",
+  "已把选中内容加入待办。": "Selection added to todos.",
+  "选中内容": "Selected text",
   "已安排": "Scheduled",
   "已恢复": "Restored",
   "已截断": "Truncated",
@@ -1402,8 +1408,8 @@ export const en: Record<string, string> = {
     "Repository root URL, for example https://…/Pilot.git. The built-in source is compared against commits from this repository.",
   "分支或标签": "Branch or tag",
   "仓库内路径": "Path inside the repository",
-  "填源码在仓库里的相对目录，例如 pilot/client；留空表示仓库根就是客户端源码。":
-    "Relative directory of this client inside the repository, for example pilot/client. Empty means the repository root is the client source.",
+  "填源码在仓库里的相对目录，例如 pilot/pilot；留空表示仓库根就是客户端源码。":
+    "Relative directory of this client inside the repository, for example pilot/pilot. Empty means the repository root is the client source.",
   "源码目录": "Source directory",
   "选择你自己的源码仓库（需含 .git）；个人版本会以该分支当前提交为基线。":
     "Pick your own checkout (it must contain .git); personal versions use that branch's current commit as the baseline.",

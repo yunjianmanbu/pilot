@@ -233,7 +233,7 @@ export function isCliEntry(path: string): boolean {
 }
 
 /**
- * 独立服务脚本（`relay/server.mjs` 这类）：它们的 stdout 就是运维日志，
+ * 独立服务脚本（`pilot-connector/server.mjs` 这类）：它们的 stdout 就是运维日志，
  * 进出场打一行不算调试残留；被前端/桌面打包进 `src/` 的代码才算。
  */
 export function isServiceScript(path: string): boolean {

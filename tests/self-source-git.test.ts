@@ -53,19 +53,19 @@ function git(cwd: string, ...args: string[]): string {
 
 /**
  * A throwaway "official" repository whose root holds the client, exactly the
- * shape `pilot/client` has inside this workspace.
+ * shape `pilot/pilot` has inside this workspace.
  */
 async function officialRepo(): Promise<{ repo: string; client: string }> {
   const repo = await tempDir('pilot-official-')
-  await mkdir(join(repo, 'pilot', 'client', 'src'), { recursive: true })
-  await writeFile(join(repo, 'pilot', 'client', 'package.json'), '{"version":"0.1.0"}\n')
-  await writeFile(join(repo, 'pilot', 'client', 'src', 'main.ts'), 'export const v = 1\n')
+  await mkdir(join(repo, 'pilot', 'pilot', 'src'), { recursive: true })
+  await writeFile(join(repo, 'pilot', 'pilot', 'package.json'), '{"version":"0.1.0"}\n')
+  await writeFile(join(repo, 'pilot', 'pilot', 'src', 'main.ts'), 'export const v = 1\n')
   git(repo, 'init', '--quiet', '--initial-branch=main')
   git(repo, 'config', 'user.email', 'test@example.test')
   git(repo, 'config', 'user.name', 'Pilot Test')
   git(repo, 'add', '.')
   git(repo, 'commit', '--quiet', '-m', 'official: initial')
-  return { repo, client: join(repo, 'pilot', 'client') }
+  return { repo, client: join(repo, 'pilot', 'pilot') }
 }
 
 function settings(overrides: Partial<SelfSourceSettings> = {}): SelfSourceSettings {
@@ -92,7 +92,7 @@ function context(
     settings: settings({
       mode: 'custom',
       customPath: repo,
-      gitPath: 'pilot/client',
+      gitPath: 'pilot/pilot',
       ...overrides,
     }),
   }
@@ -126,9 +126,9 @@ describe('source settings normalization', () => {
   })
 
   it('keeps repository paths relative and refuses escapes', () => {
-    expect(normalizeGitPath('pilot/client')).toBe('pilot/client')
-    expect(normalizeGitPath('/pilot/client/')).toBe('pilot/client')
-    expect(normalizeGitPath('pilot\\client')).toBe('pilot/client')
+    expect(normalizeGitPath('pilot/pilot')).toBe('pilot/pilot')
+    expect(normalizeGitPath('/pilot/pilot/')).toBe('pilot/pilot')
+    expect(normalizeGitPath('pilot\\pilot')).toBe('pilot/pilot')
     expect(normalizeGitPath('')).toBe('')
     expect(normalizeGitPath('../outside')).toBe('')
     expect(normalizeGitPath('pilot/../..')).toBe('')
@@ -147,14 +147,14 @@ describe('source settings normalization', () => {
       mode: 'custom',
       gitUrl: 'https://example.test/pilot.git',
       gitRef: 'dev',
-      gitPath: 'pilot/client',
+      gitPath: 'pilot/pilot',
       customPath: normalizeCustomPath('  D:\\code\\pilot  '),
     })
     expect(parsed).toEqual({
       mode: 'custom',
       gitUrl: 'https://example.test/pilot.git',
       gitRef: 'dev',
-      gitPath: 'pilot/client',
+      gitPath: 'pilot/pilot',
       customPath: 'D:\\code\\pilot',
     })
     expect(normalizeSelfSourceSettings({ mode: 'other' }).mode).toBe('builtin')
@@ -166,13 +166,13 @@ describe('source settings normalization', () => {
     const defaults = {
       gitUrl: 'https://example.test/pilot.git',
       gitRef: 'main',
-      gitPath: 'pilot/client',
+      gitPath: 'pilot/pilot',
     }
     expect(effectiveSettings(settings(), defaults)).toEqual({
       mode: 'builtin',
       gitUrl: 'https://example.test/pilot.git',
       gitRef: 'main',
-      gitPath: 'pilot/client',
+      gitPath: 'pilot/pilot',
       customPath: '',
     })
     const explicit = settings({ gitUrl: 'https://other.test/pilot.git', gitPath: '', gitRef: 'dev' })
@@ -180,7 +180,7 @@ describe('source settings normalization', () => {
       gitUrl: 'https://other.test/pilot.git',
       gitRef: 'dev',
       // An empty path cannot be distinguished from "unset", so it inherits.
-      gitPath: 'pilot/client',
+      gitPath: 'pilot/pilot',
     })
   })
 
@@ -265,14 +265,14 @@ describe('git baselines', { timeout: GIT_TIMEOUT }, () => {
     expect(revision).toMatch(/^[a-f0-9]{40}$/)
     const target = join(repo, '..', `base-${Date.now()}`)
     temporary.push(target)
-    const ok = await extractGitTree({ repo, revision, gitPath: 'pilot/client', target })
+    const ok = await extractGitTree({ repo, revision, gitPath: 'pilot/pilot', target })
     expect(ok).toEqual({ ok: true })
     // The subdirectory became the root, so the client's own files are top level.
     expect(existsSync(join(target, 'package.json'))).toBe(true)
     expect(await readFile(join(target, 'src', 'main.ts'), 'utf8')).toBe('export const v = 1' + (process.platform === 'win32' ? '\r\n' : '\n'))
     expect(existsSync(join(target, 'pilot'))).toBe(false)
     // A second call is a no-op, not a re-extraction.
-    expect(await extractGitTree({ repo, revision, gitPath: 'pilot/client', target })).toEqual({
+    expect(await extractGitTree({ repo, revision, gitPath: 'pilot/pilot', target })).toEqual({
       ok: true,
     })
   })
@@ -303,10 +303,10 @@ describe('git baselines', { timeout: GIT_TIMEOUT }, () => {
     git(repo, 'branch', '-f', 'origin/main', 'legacy')
     // Without path awareness the stale remote branch wins and yields no baseline.
     expect(resolveBaseRef(repo, 'main')).toBe('origin/main')
-    // With it, the branch that actually contains pilot/client is used.
-    expect(resolveBaseRef(repo, 'main', 'pilot/client')).toBe('main')
-    expect(treeHasPath(repo, gitRevision(repo, 'origin/main'), 'pilot/client')).toBe(false)
-    expect(treeHasPath(repo, gitRevision(repo, 'main'), 'pilot/client')).toBe(true)
+    // With it, the branch that actually contains pilot/pilot is used.
+    expect(resolveBaseRef(repo, 'main', 'pilot/pilot')).toBe('main')
+    expect(treeHasPath(repo, gitRevision(repo, 'origin/main'), 'pilot/pilot')).toBe(false)
+    expect(treeHasPath(repo, gitRevision(repo, 'main'), 'pilot/pilot')).toBe(true)
   })
 
   it('names the remote branches that do contain the client directory', async () => {
@@ -320,8 +320,8 @@ describe('git baselines', { timeout: GIT_TIMEOUT }, () => {
     const withoutClient = git(repo, 'rev-parse', 'HEAD')
     git(repo, 'update-ref', 'refs/remotes/origin/main', withoutClient)
     git(repo, 'update-ref', 'refs/remotes/origin/dev', withClient)
-    // Only the remote branch whose tree has pilot/client is worth naming.
-    expect(refsContainingPath(repo, 'pilot/client')).toEqual(['dev'])
+    // Only the remote branch whose tree has pilot/pilot is worth naming.
+    expect(refsContainingPath(repo, 'pilot/pilot')).toEqual(['dev'])
     expect(refsContainingPath(repo, 'nope/nothing')).toEqual([])
     expect(refsContainingPath(repo, '')).toEqual([])
   })
@@ -329,7 +329,7 @@ describe('git baselines', { timeout: GIT_TIMEOUT }, () => {
   it('resolves the official ref and counts commits behind', async () => {    const { repo, client } = await officialRepo()
     // No remote in the fixture, so the local branch is the best available ref.
     expect(resolveBaseRef(repo, 'main')).toBe('main')
-    expect(resolveBaseRef(repo, 'main', 'pilot/client')).toBe('main')
+    expect(resolveBaseRef(repo, 'main', 'pilot/pilot')).toBe('main')
     expect(resolveBaseRef(repo, 'main', 'nope/nothing')).toBe('')
     const first = gitRevision(repo, 'HEAD')
     await writeFile(join(client, 'src', 'main.ts'), 'export const v = 2\n')
@@ -360,7 +360,7 @@ describe('resolveSelfSource', { timeout: GIT_TIMEOUT }, () => {
     expect(resolved.provenance.closed).toBe(true)
     expect(resolved.provenance.revision).toMatch(/^[a-f0-9]{40}$/)
     // The editable copy is the client directory, not the repository root.
-    expect(resolved.sourcePath).toBe(join(repo, 'pilot', 'client'))
+    expect(resolved.sourcePath).toBe(join(repo, 'pilot', 'pilot'))
     expect(existsSync(join(resolved.basePath, 'package.json'))).toBe(true)
     expect(resolved.provenance.reason).toContain('闭环')
   })
@@ -413,7 +413,7 @@ describe('syncSelfSource', { timeout: GIT_TIMEOUT }, () => {
       appPath: join(userData, 'app'),
       resourcesPath: userData,
       userDataPath: userData,
-      settings: settings({ gitUrl: pathToFileURL(repo).href, gitPath: 'pilot/client' }),
+      settings: settings({ gitUrl: pathToFileURL(repo).href, gitPath: 'pilot/pilot' }),
     })
     expect(synced.error).toBeUndefined()
     expect(synced.closed).toBe(true)
@@ -424,7 +424,7 @@ describe('syncSelfSource', { timeout: GIT_TIMEOUT }, () => {
 
     const record = await readSelfSourceRecord(userData)
     expect(record?.revision).toBe(synced.revision)
-    expect(record?.gitPath).toBe('pilot/client')
+    expect(record?.gitPath).toBe('pilot/pilot')
   })
 
   it('marks the loop open when the official remote is unreachable', async () => {
@@ -434,7 +434,7 @@ describe('syncSelfSource', { timeout: GIT_TIMEOUT }, () => {
       appPath: join(userData, 'app'),
       resourcesPath: userData,
       userDataPath: userData,
-      settings: settings({ gitUrl: join(userData, 'no-such-repo'), gitPath: 'pilot/client' }),
+      settings: settings({ gitUrl: join(userData, 'no-such-repo'), gitPath: 'pilot/pilot' }),
     })
     expect(synced.closed).toBe(false)
     expect(synced.error).toBeTruthy()

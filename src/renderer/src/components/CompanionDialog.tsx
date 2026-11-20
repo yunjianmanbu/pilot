@@ -418,7 +418,7 @@ export function CompanionDialog({ open, onClose, onError }: CompanionDialogProps
                   className="text-input mono"
                   value={relayInput}
                   onChange={(event) => setRelayInput(event.target.value)}
-                  placeholder="wss://relay.example.com/connector"
+                  placeholder="wss://relay.example.com/c/9f3a2c7e…#k=home:7d1c9e04…"
                   disabled={relaySaving || status?.relaySource === 'env'}
                   spellCheck={false}
                 />
@@ -439,6 +439,10 @@ export function CompanionDialog({ open, onClose, onError }: CompanionDialogProps
               ) : status?.relayUrl ? (
                 <span>
                   {t("当前使用")}<code>{status.relayUrl}</code>
+                  {status.relayAccess ? (
+                    <span className="relay-access-note">
+                      {t("· 已带准入码（#k=，不会显示在界面上）")}</span>
+                  ) : null}
                 </span>
               ) : (
                 <span>
@@ -508,7 +512,7 @@ export function CompanionDialog({ open, onClose, onError }: CompanionDialogProps
                 </button>
               </div>
               <p className="relay-cloud-note">
-                {t("域名需已解析到这台服务器，并开放 80/443 端口。安装完成后把脚本输出的 wss:// 地址填到上方。只想手动部署时，可下载 Linux 包按包内 README 操作。")}</p>
+                {t("域名需已解析到这台服务器，并开放 80/443 端口。安装完成后把脚本输出的整条 wss:// 连接串（含 #k= 准入码）填到上方；准入码未强制时脚本会提示何时切换成强制。只想手动部署时，可下载 Linux 包按包内 README 操作。")}</p>
             </details>
           </section>
 

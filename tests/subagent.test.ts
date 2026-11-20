@@ -60,7 +60,7 @@ describe('parseVerificationSuggestions', () => {
     const { checks, rejected } = parseVerificationSuggestions(
       [
         'VERIFY| a | . | ok',
-        'VERIFY| b | pilot/client | ok',
+        'VERIFY| b | pilot/pilot | ok',
         'VERIFY| c | ./x/ | ok',
         'VERIFY| d | . | ok',
         'VERIFY| /usr/bin/rm | . | ok',
@@ -68,7 +68,7 @@ describe('parseVerificationSuggestions', () => {
       ].join('\n'),
     )
     expect(checks.map((check) => check.command)).toEqual(['a', 'b', 'c'])
-    expect(checks[1]?.cwd).toBe('pilot/client')
+    expect(checks[1]?.cwd).toBe('pilot/pilot')
     expect(checks[2]?.cwd).toBe('x')
     expect(rejected).toBe(3)
   })

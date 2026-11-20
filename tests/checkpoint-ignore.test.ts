@@ -97,7 +97,7 @@ describe('ephemeral directory defaults', () => {
   it('matches scratch and generated names at any depth, case-insensitively', () => {
     expect(ephemeralDirSegment('tmp/a.js')).toBe('tmp')
     expect(ephemeralDirSegment('.build/out/x.js')).toBe('.build')
-    expect(ephemeralDirSegment('pilot/client/Tmp/notes.md')).toBe('Tmp')
+    expect(ephemeralDirSegment('pilot/pilot/Tmp/notes.md')).toBe('Tmp')
     expect(ephemeralDirSegment('src/unpackage/app.js')).toBe('unpackage')
     expect(ephemeralDirSegment('src/a.ts')).toBeNull()
     expect(ephemeralDirSegment('template/a.ts')).toBeNull()
@@ -109,7 +109,7 @@ describe('ephemeral directory defaults', () => {
     expect(looksEphemeralDirPath('src/run-tmp')).toBe(true)
     expect(looksEphemeralDirPath('docs-cache')).toBe(true)
     expect(looksEphemeralDirPath('src/components')).toBe(false)
-    expect(looksEphemeralDirPath('pilot/client/tests')).toBe(false)
+    expect(looksEphemeralDirPath('pilot/pilot/tests')).toBe(false)
     // A false positive here would leave real source out of every rollback.
     expect(looksEphemeralDirPath('src/outbox')).toBe(false)
     expect(looksEphemeralDirPath('src/builders')).toBe(false)
