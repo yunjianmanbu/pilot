@@ -23,6 +23,7 @@ import {
   SearchIcon,
   SettingsIcon,
   SparkIcon,
+  TodoIcon,
   TrashIcon,
 } from '../icons'
 import { formatElapsedSince, formatRelative, type MainView } from '../ui'
@@ -76,6 +77,8 @@ interface SidebarProps {
   onRefreshSessions: () => void
   draftProfileCount: number
   memoryCount: number
+  /** 所有会话里还没发送的待办总数，显示在左下角「待办」按钮上。 */
+  todoCount: number
 }
 
 function pathKey(path: string): string {
@@ -178,6 +181,7 @@ export function Sidebar({
   onRefreshSessions,
   draftProfileCount,
   memoryCount,
+  todoCount,
 }: SidebarProps) {
   const [query, setQuery] = useState('')
   const [project, setProject] = useState('')
@@ -598,6 +602,18 @@ export function Sidebar({
         </div>
 
         <nav className="footer-nav" aria-label={t("Pilot 资源")}>
+          <button
+            type="button"
+            className={`footer-nav-item${view === 'todos' ? ' is-active' : ''}`}
+            title={t("全部待办：所有会话汇总")}
+            onClick={() => onView('todos')}
+          >
+            <TodoIcon width={16} height={16} />
+            <span className="footer-nav-label">
+              {t("待办")}
+              {todoCount > 0 ? <span className="footer-badge">{todoCount}</span> : null}
+            </span>
+          </button>
           <button
             type="button"
             className={`footer-nav-item${view === 'memory' ? ' is-active' : ''}`}

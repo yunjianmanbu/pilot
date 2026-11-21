@@ -38,7 +38,7 @@ import { copyText } from '../clipboard'
 import { FilePreviewBody } from './FilePreviewBody'
 import { Markdown } from './Markdown'
 import { formatRelative } from '../ui'
-import { t } from '../i18n'
+import { t, getLocale } from '../i18n'
 import { useEscapeClose } from './useEscapeClose'
 
 const PAIR_LIMIT = 60
@@ -71,6 +71,15 @@ function toolSourceLabel(tool: ToolCatalogEntry): string {
   if (tool.source === 'control') return t('控制')
   if (tool.source === 'mcp') return tool.server ? `MCP · ${tool.server}` : 'MCP'
   return t('自写')
+}
+
+/**
+ * 工具说明：中文界面用清单里的中文说明，英文界面与没有中文的条目用原文。
+ * 自写工具只有 Agent 写的一句说明，照样显示，不留空。
+ */
+function toolDescription(tool: ToolCatalogEntry): string {
+  if (getLocale() === 'en') return tool.description
+  return tool.descriptionZh || tool.description
 }
 
 /**
@@ -646,23 +655,27 @@ export function SessionResourcesPanel({
         {tools.map((tool) => (
           <button
             type="button"
-            className={`resource-row${tool.name === activeToolEntry?.name ? ' is-active' : ''}`}
+            className={`resource-row tool-row${tool.name === activeToolEntry?.name ? ' is-active' : ''}`}
             key={`${tool.source}:${tool.name}`}
             onClick={() => setActiveTool(tool.name)}
-            title={tool.description}
+            title={`${tool.name}\n${toolDescription(tool)}`}
           >
             <span className="file-icon tool">
               <WrenchIcon width={15} height={15} />
             </span>
             <span className="resource-row-main">
-              <span className="resource-row-title">{tool.name}</span>
-              <span className="resource-row-sub">
-                {toolSourceLabel(tool)}
-                {` · ${t('调用 {v1} 次', { v1: tool.calls ?? 0 })}`}
+              <span className="tool-row-head">
+                <span className="resource-row-title">{tool.name}</span>
+                <span className="resource-row-badge" title={toolSourceLabel(tool)}>
+                  {`${toolSourceLabel(tool)} · ${tool.calls ?? 0}`}
+                </span>
+                <span className={`resource-chip risk-${tool.risk}`} title={`risk: ${tool.risk}`}>
+                  {toolRiskLabel(tool.risk)}
+                </span>
               </span>
-            </span>
-            <span className={`resource-chip risk-${tool.risk}`} title={`risk: ${tool.risk}`}>
-              {toolRiskLabel(tool.risk)}
+              <span className="resource-row-desc">
+                {toolDescription(tool) || t('这个工具没有写说明。')}
+              </span>
             </span>
           </button>
         ))}
@@ -881,7 +894,7 @@ export function SessionResourcesPanel({
             </span>
           </span>
         </div>
-        <p className="resource-context">{tool.description || t('这个工具没有写说明。')}</p>
+        <p className="resource-context">{toolDescription(tool) || t('这个工具没有写说明。')}</p>
         {tool.targets && tool.targets.length > 0 ? (
           <div className="resource-section">
             <div className="resource-section-head">{t('可访问目标')}</div>

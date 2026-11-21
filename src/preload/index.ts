@@ -16,6 +16,7 @@ import type {
   SettingsUpdate,
   SelfSourceSettings,
   ThemeMode,
+  TodoPriority,
   UpdateState,
 } from '../shared/types'
 
@@ -195,10 +196,13 @@ const bridge: PilotBridge = {
     ipcRenderer.invoke('pilot:scheduled-to-todo', sessionId, taskId),
 
   listTodos: (sessionId: string) => ipcRenderer.invoke('pilot:todos-list', sessionId),
-  addTodo: (sessionId: string, text: string, clientId?: string) =>
-    ipcRenderer.invoke('pilot:todo-add', sessionId, text, clientId),
-  updateTodo: (sessionId: string, todoId: string, text: string) =>
-    ipcRenderer.invoke('pilot:todo-update', sessionId, todoId, text),
+  allTodos: () => ipcRenderer.invoke('pilot:todos-all'),
+  addTodo: (sessionId: string, text: string, clientId?: string, priority?: TodoPriority) =>
+    ipcRenderer.invoke('pilot:todo-add', sessionId, text, clientId, priority),
+  updateTodo: (sessionId: string, todoId: string, text: string, priority?: TodoPriority) =>
+    ipcRenderer.invoke('pilot:todo-update', sessionId, todoId, text, priority),
+  setTodoPriority: (sessionId: string, todoId: string, priority: TodoPriority) =>
+    ipcRenderer.invoke('pilot:todo-priority', sessionId, todoId, priority),
   removeTodo: (sessionId: string, todoId: string) =>
     ipcRenderer.invoke('pilot:todo-remove', sessionId, todoId),
   clearSentTodos: (sessionId: string) =>

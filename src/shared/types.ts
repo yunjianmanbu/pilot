@@ -501,17 +501,31 @@ export interface QueuedTask {
   createdAt: string
 }
 
+/** 待办优先级：只影响排序与标记，不改变发送后的审批与边界。 */
+export type TodoPriority = 'high' | 'normal' | 'low'
+
 export interface TodoItem {
   id: string
   sessionId: string
   text: string
   status: 'pending' | 'sent'
+  /** 缺省视为 normal，老数据不需要迁移。 */
+  priority?: TodoPriority
   /** Who created the item: the desktop user, the phone, or the agent itself. */
   source: 'user' | 'phone' | 'agent'
   clientId?: string
   createdAt: string
   sentAt?: string
   sentRunId?: string
+}
+
+/** 「全部待办」按会话分组：一个会话一组，空会话不返回。 */
+export interface TodoGroup {
+  sessionId: string
+  sessionTitle: string
+  workspacePath: string
+  sessionUpdatedAt: string
+  todos: TodoItem[]
 }
 
 export interface SessionArtifact {
@@ -543,7 +557,10 @@ export type ToolCatalogSource = 'builtin' | 'control' | 'mcp' | 'dynamic'
 /** One tool a run in this workspace could be offered, from any source. */
 export interface ToolCatalogEntry {
   name: string
+  /** English description written for the model; the fallback when no Chinese text exists. */
   description: string
+  /** 一句中文说明，面板在中文界面优先显示它；缺省时回落 description。 */
+  descriptionZh?: string
   risk: ToolRisk
   source: ToolCatalogSource
   /** MCP server the entry belongs to (`source: 'mcp'`). */
@@ -558,6 +575,8 @@ export interface ToolCatalogEntry {
   targets?: string[]
   /** Dynamic tools: declared input schema, shown in the preview pane. */
   inputSchema?: Record<string, unknown>
+  /** 当前会话里这个工具被真正调用的次数（0 表示还没用过）。 */
+  calls?: number
 }
 
 /** A message-content match returned by workspace-wide full-text search. */
@@ -2447,8 +2466,26 @@ export interface PilotBridge {
   convertScheduledTaskToTodo(sessionId: string, taskId: string): Promise<TodoItem>
 
   listTodos(sessionId: string): Promise<TodoItem[]>
-  addTodo(sessionId: string, text: string, clientId?: string): Promise<TodoItem>
-  updateTodo(sessionId: string, todoId: string, text: string): Promise<TodoItem>
+  /** 工作区里所有会话的待办，用于左侧「全部待办」面板。 */
+  allTodos(): Promise<TodoGroup[]>
+  addTodo(
+    sessionId: string,
+    text: string,
+    clientId?: string,
+    priority?: TodoPriority,
+  ): Promise<TodoItem>
+  updateTodo(
+    sessionId: string,
+    todoId: string,
+    text: string,
+    priority?: TodoPriority,
+  ): Promise<TodoItem>
+  /** 只改优先级，不动内容。 */
+  setTodoPriority(
+    sessionId: string,
+    todoId: string,
+    priority: TodoPriority,
+  ): Promise<TodoItem>
   removeTodo(sessionId: string, todoId: string): Promise<void>
   clearSentTodos(sessionId: string): Promise<void>
   sendTodo(sessionId: string, todoId: string): Promise<SendMessageResult & { todo: TodoItem }>

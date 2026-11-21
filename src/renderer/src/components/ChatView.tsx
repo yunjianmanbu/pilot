@@ -24,9 +24,11 @@ import type {
   SessionArtifact,
   SessionProcessSummary,
   TodoItem,
+  TodoPriority,
   WorkspaceSummary,
 } from '../../../shared/types'
 import { artifactsFromCalls, collectArtifactsByRun } from '../../../shared/artifacts'
+import { nextTodoPriority, normalizeTodoPriority, sortTodos } from '../../../shared/todos'
 import { copyText } from '../clipboard'
 import {
   BrainIcon,
@@ -742,6 +744,21 @@ function PlanPanel({
   )
 }
 
+function priorityLabel(priority: TodoPriority | undefined): string {
+  const value = normalizeTodoPriority(priority)
+  if (value === 'high') return t('高')
+  if (value === 'low') return t('低')
+  return t('中')
+}
+
+/** 完整说明用于悬停提示：点一下就切到下一档。 */
+function priorityTitle(priority: TodoPriority | undefined): string {
+  const value = normalizeTodoPriority(priority)
+  if (value === 'high') return t('高优先级 · 点击改为中')
+  if (value === 'low') return t('低优先级 · 点击改为高')
+  return t('中优先级 · 点击改为低')
+}
+
 function TodoPanel({
   todos,
   onAdd,
@@ -751,27 +768,35 @@ function TodoPanel({
   onSendAll,
   onClearSent,
   onSchedule,
+  onPriority,
 }: {
   todos: TodoItem[]
-  onAdd: (text: string) => Promise<void>
+  onAdd: (text: string, priority: TodoPriority) => Promise<void>
   onUpdate: (todoId: string, text: string) => Promise<void>
   onRemove: (todoId: string) => Promise<void>
   onSend: (todoId: string) => Promise<void>
   onSendAll: () => Promise<void>
   onClearSent: () => Promise<void>
   onSchedule: (todo: TodoItem) => void
+  onPriority: (todoId: string, priority: TodoPriority) => Promise<void>
 }) {
   const [draft, setDraft] = useState('')
+  const [draftPriority, setDraftPriority] = useState<TodoPriority>('normal')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
   const pending = todos.filter((todo) => todo.status === 'pending')
   const sent = todos.length - pending.length
+  // 未发送的按优先级排（高→中→低），已发送的沉到后面并保留原顺序。
+  const ordered = useMemo(
+    () => [...sortTodos(pending), ...todos.filter((todo) => todo.status !== 'pending')],
+    [todos, pending],
+  )
 
   const add = async () => {
     const text = draft.trim()
     if (!text) return
     setDraft('')
-    await onAdd(text)
+    await onAdd(text, draftPriority)
   }
 
   const commitEdit = async () => {
@@ -801,6 +826,15 @@ function TodoPanel({
       </summary>
       <div className="todo-body">
         <div className="todo-add-row">
+          <button
+            type="button"
+            className={`todo-priority priority-${draftPriority}`}
+            title={t("新待办优先级：点一下切换")}
+            aria-label={t("新待办优先级 {v1}", { v1: priorityLabel(draftPriority) })}
+            onClick={() => setDraftPriority((value) => nextTodoPriority(value))}
+          >
+            {priorityLabel(draftPriority)}
+          </button>
           <input
             className="todo-add-input"
             value={draft}
@@ -826,7 +860,7 @@ function TodoPanel({
         {todos.length > 0 ? (
           <>
             <div className="todo-list">
-              {todos.map((todo) => (
+              {ordered.map((todo) => (
                 <div className={`todo-item status-${todo.status}`} key={todo.id}>
                   <span className="todo-check">
                     {todo.status === 'sent' ? (
@@ -835,6 +869,18 @@ function TodoPanel({
                       <i className="plan-circle" />
                     )}
                   </span>
+                  {todo.status === 'pending' ? (
+                    <button
+                      type="button"
+                      className={`todo-priority priority-${normalizeTodoPriority(todo.priority)}`}
+                      title={priorityTitle(todo.priority)}
+                      onClick={() => {
+                        void onPriority(todo.id, nextTodoPriority(todo.priority))
+                      }}
+                    >
+                      {priorityLabel(todo.priority)}
+                    </button>
+                  ) : null}
                   {editing?.id === todo.id ? (
                     <input
                       className="todo-edit"
@@ -1243,6 +1289,7 @@ function Composer({
   onSendAllTodos,
   onClearSentTodos,
   onScheduleTodo,
+  onSetTodoPriority,
 }: {
   session: Session | null
   workspaces: WorkspaceSummary[]
@@ -1261,13 +1308,14 @@ function Composer({
   onStop: () => void
   onPause: () => void
   onOpenSettings: () => void
-  onAddTodo: (text: string) => Promise<void>
+  onAddTodo: (text: string, priority?: TodoPriority) => Promise<void>
   onUpdateTodo: (todoId: string, text: string) => Promise<void>
   onRemoveTodo: (todoId: string) => Promise<void>
   onSendTodo: (todoId: string) => Promise<void>
   onSendAllTodos: () => Promise<void>
   onClearSentTodos: () => Promise<void>
   onScheduleTodo: (todo: TodoItem) => void
+  onSetTodoPriority: (todoId: string, priority: TodoPriority) => Promise<void>
 }) {
   const [draft, setDraft] = useState(() => readComposerDraft(session?.id).text)
   const [delivery, setDelivery] = useState<MessageDelivery>('queue')
@@ -1592,6 +1640,7 @@ function Composer({
               onSendAll={onSendAllTodos}
               onClearSent={onClearSentTodos}
               onSchedule={onScheduleTodo}
+              onPriority={onSetTodoPriority}
             />
           ) : null}
           {session?.plan ? (
@@ -1818,7 +1867,7 @@ export interface ChatViewProps {
   onQuickStart: (text: string) => void
   onPickWorkspace: () => void
   onOpenSettings: () => void
-  onAddTodo: (text: string) => Promise<void>
+  onAddTodo: (text: string, priority?: TodoPriority) => Promise<void>
   /** 选中正文后「添加待办」：与输入框加待办分开，因为这里要额外提示一次。 */
   onAddSelectedTodo: (text: string) => Promise<void>
   onUpdateTodo: (todoId: string, text: string) => Promise<void>
@@ -1827,6 +1876,8 @@ export interface ChatViewProps {
   onSendAllTodos: () => Promise<void>
   onClearSentTodos: () => Promise<void>
   onScheduleTodo: (todo: TodoItem) => void
+  /** 待办优先级循环：高→中→低，列表会按优先级重排。 */
+  onSetTodoPriority: (todoId: string, priority: TodoPriority) => Promise<void>
   /** Open one file from the answer's change bar (preview inside the files area). */
   onOpenArtifact: (artifact: SessionArtifact) => void
   /** 「查看更多」：open the session's files area. */
@@ -1880,6 +1931,7 @@ export function ChatView({
   onSendAllTodos,
   onClearSentTodos,
   onScheduleTodo,
+  onSetTodoPriority,
   onOpenArtifact,
   onOpenArtifacts,
 }: ChatViewProps) {
@@ -2366,6 +2418,7 @@ export function ChatView({
           onSendAllTodos={onSendAllTodos}
           onClearSentTodos={onClearSentTodos}
           onScheduleTodo={onScheduleTodo}
+          onSetTodoPriority={onSetTodoPriority}
         />
       </div>
     </div>

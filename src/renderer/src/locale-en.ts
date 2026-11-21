@@ -2083,7 +2083,6 @@ export const en: Record<string, string> = {
     "API key not set · click to open settings",
   "已连接": "Connected",
   "未连接": "Not connected",
-  "调用 {v1} 次": "Called {v1} times",
   "当前会话调用 {v1} 次": "Called {v1} times in this session",
   "在内置浏览器打开": "Open in the built-in browser",
   "交给系统默认浏览器": "Open in the system browser",

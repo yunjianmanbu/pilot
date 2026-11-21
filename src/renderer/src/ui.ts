@@ -10,6 +10,7 @@ import { t } from './i18n'
 
 export type MainView =
   | 'chat'
+  | 'todos'
   | 'memory'
   | 'evolution'
   | 'plugins'

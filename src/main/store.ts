@@ -6,9 +6,10 @@ import { normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
 import { normalizeModelTag } from '../shared/model-label'
 import type { BillingAccount } from './billing'
 import { isLocaleSetting, resolveLocale, AppLocale } from '../shared/i18n'
-import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionState, JudgeProvider, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResource, ModelResourceInput, ModelSettingsView, MessageSearchFilter, MessageSearchHit, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileStrategy, ProfileVersion, QualityCandidate, QualityState, QuickCommand, QuickCommandInput, ReviewReport, ReviewScope, RunFeedback, RunRecord, ScheduleKind, ScheduledTask, ScheduledTaskInput, Session, SessionKind, SessionSummary, SettingsUpdate, SettingsView, StoredMessage, TodoItem, WorkspaceDetail, WorkspaceSummary } from '../shared/types'
+import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionState, JudgeProvider, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResource, ModelResourceInput, ModelSettingsView, MessageSearchFilter, MessageSearchHit, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileStrategy, ProfileVersion, QualityCandidate, QualityState, QuickCommand, QuickCommandInput, ReviewReport, ReviewScope, RunFeedback, RunRecord, ScheduleKind, ScheduledTask, ScheduledTaskInput, Session, SessionKind, SessionSummary, SettingsUpdate, SettingsView, StoredMessage, TodoGroup, TodoItem, TodoPriority, WorkspaceDetail, WorkspaceSummary } from '../shared/types'
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, SETTING_CONTEXT_MAX, SETTING_CONTEXT_MIN, SETTING_OUTPUT_MAX, SETTING_OUTPUT_MIN } from '../shared/modelLimits'
 import { normalizeRelayUrl } from '../shared/relay'
+import { normalizeTodoPriority } from '../shared/todos'
 import { evolutionPolicyKey } from '../shared/evolution'
 import { normalizeQualityPublishTarget, sanitizeCandidate, sanitizeQualityState } from '../shared/quality'
 import { pruneProfiles } from '../core/profile-archive'
@@ -1697,6 +1698,23 @@ export class Store {
     return this.state.sessions.find((entry) => entry.id === sessionId)?.todos ?? []
   }
 
+  /**
+   * 所有会话的待办，按「有未发送待办 → 会话最近更新」排序。
+   * 左侧面板用它一次取全量，避免逐会话去问。
+   */
+  allTodos(): TodoGroup[] {
+    return this.state.sessions
+      .filter((session) => session.todos.length > 0)
+      .map((session) => ({
+        sessionId: session.id,
+        sessionTitle: session.title,
+        workspacePath: session.workspacePath,
+        sessionUpdatedAt: session.updatedAt,
+        todos: session.todos,
+      }))
+      .sort((a, b) => b.sessionUpdatedAt.localeCompare(a.sessionUpdatedAt))
+  }
+
   todo(sessionId: string, todoId: string): TodoItem | null {
     return this.todos(sessionId).find((todo) => todo.id === todoId) ?? null
   }
@@ -1706,6 +1724,7 @@ export class Store {
     text: string,
     source: TodoItem['source'] = 'user',
     clientId?: string,
+    priority: TodoPriority = 'normal',
   ): Promise<TodoItem> {
     const session = this.state.sessions.find((entry) => entry.id === sessionId)
     if (!session) throw new Error('Session not found')
@@ -1721,6 +1740,7 @@ export class Store {
       sessionId,
       text: cleaned,
       status: 'pending',
+      priority: normalizeTodoPriority(priority),
       source,
       ...(dedupeId ? { clientId: dedupeId } : {}),
       createdAt: now(),
@@ -1732,7 +1752,12 @@ export class Store {
     return todo
   }
 
-  async updateTodo(sessionId: string, todoId: string, text: string): Promise<TodoItem> {
+  async updateTodo(
+    sessionId: string,
+    todoId: string,
+    text: string,
+    priority?: TodoPriority,
+  ): Promise<TodoItem> {
     const session = this.state.sessions.find((entry) => entry.id === sessionId)
     const todo = session?.todos.find((entry) => entry.id === todoId)
     if (!session || !todo) throw new Error('待办不存在')
@@ -1740,6 +1765,22 @@ export class Store {
     const cleaned = text.replace(/\s+/g, ' ').trim().slice(0, 4_000)
     if (!cleaned) throw new Error('待办内容不能为空')
     todo.text = cleaned
+    if (priority) todo.priority = normalizeTodoPriority(priority)
+    session.updatedAt = now()
+    await this.save()
+    return todo
+  }
+
+  /** 只改优先级：不动内容，也不会因文字校验失败而拒绝。 */
+  async setTodoPriority(
+    sessionId: string,
+    todoId: string,
+    priority: TodoPriority,
+  ): Promise<TodoItem> {
+    const session = this.state.sessions.find((entry) => entry.id === sessionId)
+    const todo = session?.todos.find((entry) => entry.id === todoId)
+    if (!session || !todo) throw new Error('待办不存在')
+    todo.priority = normalizeTodoPriority(priority)
     session.updatedAt = now()
     await this.save()
     return todo

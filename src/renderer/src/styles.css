@@ -876,7 +876,6 @@ a:hover {
   flex: none;
   display: grid;
   place-items: center;
-  border: 1px solid var(--sidebar-line);
   border-radius: 8px;
   background: var(--sidebar-field);
   color: var(--sidebar-text);
@@ -980,7 +979,7 @@ a:hover {
   justify-content: space-between;
   gap: 6px;
   padding: 0 9px;
-  border: 1px solid var(--select-line);
+  border: 1px solid transparent;
   border-radius: 8px;
   background: var(--select-bg);
   color: var(--select-text);
@@ -1355,8 +1354,9 @@ a:hover {
 }
 
 .session-item.is-active {
+  /* 选中态靠填充色认，不再额外描一圈边：侧栏里的线越少，列表越像一列
+     可以点的条目，而不是一堆小卡片。 */
   background: var(--sidebar-accent-soft);
-  border-color: var(--sidebar-accent-line);
 }
 
 .session-main {
@@ -1636,7 +1636,6 @@ button.status-line:hover {
   justify-content: space-between;
   gap: 12px;
   padding: 0 14px 0 22px;
-  border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(10px);
   z-index: 10;
@@ -2670,7 +2669,6 @@ button.header-title:hover {
 
 .file-change-bar {
   margin-top: 10px;
-  border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-2);
   overflow: hidden;
@@ -2733,7 +2731,6 @@ button.header-title:hover {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 2px 4px 4px;
-  border-top: 1px solid var(--line);
 }
 
 .file-change-row {
@@ -2787,7 +2784,6 @@ button.header-title:hover {
 .selection-menu-preview {
   margin: 2px 4px 4px;
   padding-bottom: 6px;
-  border-bottom: 1px solid var(--line);
   color: var(--faint);
   font-size: calc(11px * var(--font-scale));
   line-height: 1.45;
@@ -3009,12 +3005,13 @@ button.header-title:hover {
   margin: 0.85em 0;
 }
 
+/* 代码块靠 --code-bg 与页面底色分层，不再描一圈 --code-border：
+   深色下那圈灰线比代码本身还显眼，浅色下又把块切成小格子。 */
 .code-wrap pre {
   margin: 0;
   padding: 13px 15px;
   overflow-x: auto;
-  border: 1px solid var(--code-border);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--code-bg);
   color: var(--code-text);
   font-family: var(--mono);
@@ -3247,7 +3244,6 @@ button.header-title:hover {
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  border-top: 1px solid var(--line);
   background: var(--blue-soft);
   color: var(--blue);
   font-size: calc(10.5px * var(--font-scale));
@@ -3523,7 +3519,6 @@ button.header-title:hover {
 }
 
 .tool-body {
-  border-top: 1px solid var(--line);
   background: var(--bg-elev);
   padding: 9px 10px 10px;
 }
@@ -3557,9 +3552,8 @@ button.header-title:hover {
   max-height: 260px;
   overflow: auto;
   margin: 0;
-  padding: 8px 9px;
-  border: 1px solid var(--code-border);
-  border-radius: 6px;
+  padding: 9px 10px;
+  border-radius: 8px;
   background: var(--code-bg);
   color: var(--code-text);
   font-family: var(--mono);
@@ -3591,8 +3585,7 @@ button.header-title:hover {
   overflow: auto;
   margin: 0;
   padding: 8px 0;
-  border: 1px solid var(--code-border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--code-bg);
   font-family: var(--mono);
   font-size: calc(11px * var(--font-scale));
@@ -3757,7 +3750,9 @@ button.header-title:hover {
 }
 
 .composer {
-  border: 1px solid var(--line-strong);
+  /* 静态时不画线：靠 --panel 与页面底色分层；状态色仍走 border-color，
+     所以留一条透明占位边，聚焦/运行时由下面两条规则显色。 */
+  border: 1px solid transparent;
   border-radius: 12px;
   background: var(--panel);
   box-shadow: var(--shadow-soft);
@@ -4183,7 +4178,6 @@ button.header-title:hover {
 }
 
 .queue-panel[open] .queue-head {
-  border-bottom: 1px solid var(--line);
 }
 
 .queue-chevron {
@@ -4448,9 +4442,8 @@ button.queue-content {
   max-height: 130px;
   overflow: auto;
   margin: 7px 0 0;
-  padding: 7px 9px;
-  border: 1px solid var(--code-border);
-  border-radius: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
   background: var(--code-bg);
   color: var(--code-text);
   font-family: var(--mono);
@@ -4610,7 +4603,6 @@ button.queue-content {
   justify-content: space-between;
   gap: 18px;
   padding: 19px 22px 16px;
-  border-bottom: 1px solid var(--line);
   flex: none;
 }
 
@@ -4667,7 +4659,6 @@ button.queue-content {
   justify-content: space-between;
   gap: 14px;
   padding: 14px 22px;
-  border-top: 1px solid var(--line);
   background: var(--panel-2);
 }
 
@@ -4687,7 +4678,6 @@ button.queue-content {
 
 .settings-section {
   padding-bottom: 22px;
-  border-bottom: 1px solid var(--line);
 }
 
 .settings-section:last-of-type {
@@ -5041,7 +5031,6 @@ button.queue-content {
   align-items: baseline;
   gap: 10px;
   padding: 7px 12px;
-  border-top: 1px solid var(--line);
   font-size: calc(11px * var(--font-scale));
 }
 
@@ -5860,7 +5849,6 @@ button.queue-content {
   justify-content: space-between;
   gap: 18px;
   padding: 14px 15px 12px;
-  border-bottom: 1px solid var(--line);
 }
 
 .companion-section-head h3 {
@@ -5890,7 +5878,6 @@ button.queue-content {
   align-items: center;
   gap: 8px;
   padding: 12px 15px;
-  border-bottom: 1px solid var(--line);
 }
 
 .relay-download-note {
@@ -5980,7 +5967,6 @@ button.queue-content {
 
 .relay-cloud {
   padding: 11px 15px 14px;
-  border-top: 1px solid var(--line);
 }
 
 .relay-cloud summary {
@@ -6151,7 +6137,6 @@ button.queue-content {
   align-items: center;
   gap: 11px;
   padding: 11px 14px;
-  border-bottom: 1px solid var(--line);
 }
 
 .companion-device:last-child {
@@ -6452,7 +6437,6 @@ button.queue-content {
   justify-content: space-between;
   gap: 30px;
   padding-bottom: 24px;
-  border-bottom: 1px solid var(--line);
   margin-bottom: 24px;
 }
 
@@ -6596,7 +6580,6 @@ button.queue-content {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 10px 9px 13px;
-  border-top: 1px solid var(--line);
   background: var(--panel-2);
 }
 
@@ -7155,7 +7138,6 @@ button.queue-content {
   margin: 10px 0;
   padding: 12px 13px;
   border-radius: 8px;
-  border: 1px solid var(--line);
   background: var(--panel-2);
   font-size: calc(13px * var(--font-scale));
   line-height: 1.65;
@@ -7524,7 +7506,6 @@ button.queue-content {
   overflow: auto;
   margin: 0;
   padding: 9px 11px;
-  border-top: 1px solid var(--line);
   background: var(--code-bg);
   color: var(--code-text);
   font-family: var(--mono);
@@ -7534,15 +7515,13 @@ button.queue-content {
   word-break: break-word;
 }
 
+/* 指标格不再靠 1px 网格线拼出来：改成小卡片 + 间隙，格子之间用底色差
+   和圆角分隔，外圈也不描边，整块看起来是一片数据而不是一张表格。 */
 .evidence-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
-  gap: 1px;
+  gap: 4px;
   margin: 10px 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--line);
-  overflow: hidden;
 }
 
 .evidence-grid > div {
@@ -7551,6 +7530,7 @@ button.queue-content {
   align-items: center;
   gap: 1px;
   padding: 8px 4px;
+  border-radius: 7px;
   background: var(--panel-2);
 }
 
@@ -7687,7 +7667,6 @@ button.queue-content {
 .benchmark-card {
   margin-top: 8px;
   padding: 8px 10px;
-  border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--hover);
   display: flex;
@@ -7884,21 +7863,17 @@ button.queue-content {
   display: none;
 }
 
-.retired-list {
-  border-top: 1px solid var(--line);
-}
-
 .retired-row {
   display: flex;
   align-items: center;
   gap: 9px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--line);
+  border-radius: 6px;
   font-size: calc(11px * var(--font-scale));
 }
 
-.retired-row:last-child {
-  border-bottom: 0;
+.retired-row:hover {
+  background: var(--hover);
 }
 
 .retired-rationale {
@@ -7928,7 +7903,6 @@ button.queue-content {
 
 .runs-head {
   background: var(--panel-2);
-  border-bottom: 1px solid var(--line);
   color: var(--faint);
   font-size: calc(10px * var(--font-scale));
   font-weight: 600;
@@ -7937,13 +7911,9 @@ button.queue-content {
 }
 
 .runs-row {
-  border-bottom: 1px solid var(--line);
+  border-radius: 6px;
   font-size: calc(10.5px * var(--font-scale));
   color: var(--text-soft);
-}
-
-.runs-row:last-child {
-  border-bottom: 0;
 }
 
 .runs-row:hover {
@@ -8029,7 +7999,6 @@ button.queue-content {
   justify-content: space-between;
   gap: 12px;
   padding: 15px 16px 12px;
-  border-bottom: 1px solid var(--line);
 }
 
 .drawer-eyebrow {
@@ -8062,7 +8031,6 @@ button.queue-content {
   align-items: center;
   gap: 1px;
   padding: 7px 12px;
-  border-bottom: 1px solid var(--line);
   overflow-x: auto;
   background: var(--panel);
   scrollbar-width: none;
@@ -8221,7 +8189,6 @@ button.queue-content {
   align-items: center;
   gap: 6px;
   padding: 5px 10px;
-  border-bottom: 1px solid var(--line);
   background: var(--panel);
 }
 
@@ -8409,7 +8376,6 @@ button.queue-content {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
   background: var(--panel);
 }
 
@@ -8432,7 +8398,6 @@ button.queue-content {
   align-items: center;
   gap: 10px;
   padding: 6px 12px;
-  border-bottom: 1px solid var(--line);
   background: var(--panel);
   color: var(--faint);
   font-family: var(--mono);
@@ -8499,7 +8464,6 @@ button.queue-content {
 .drawer-foot {
   flex: none;
   padding: 8px 14px;
-  border-top: 1px solid var(--line);
   color: var(--faint);
   font-size: calc(10px * var(--font-scale));
   background: var(--panel);
@@ -8535,7 +8499,6 @@ button.queue-content {
   gap: 2px;
   padding: 7px 8px;
   overflow-x: auto;
-  border-bottom: 1px solid var(--line);
   scrollbar-width: none;
 }
 
@@ -8600,9 +8563,10 @@ button.queue-content {
   width: 320px;
   min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--line);
 }
 
+/* 预览区是一张浮在抽屉上的卡片：去掉了原来那条竖向分隔线，改用
+   底色档 + 圆角 + 8px 内缩来分层，两侧贴边时也不会看起来像两个表格拼在一起。 */
 .resources-preview {
   flex: 1;
   min-width: 0;
@@ -8610,6 +8574,8 @@ button.queue-content {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  margin: 6px 8px 8px 0;
+  border-radius: 12px;
   background: var(--bg-elev);
 }
 
@@ -8691,6 +8657,55 @@ button.queue-content {
   color: var(--faint);
   font-family: var(--mono);
   font-size: calc(10px * var(--font-scale));
+  white-space: nowrap;
+}
+
+/* 工具行的一句中说明：标题行右侧放来源与风险，描述占满整行宽度最多两行，
+   列表里能直接读到「这个工具做什么」，不必逐条点开右侧预览。 */
+.resource-row-desc {
+  color: var(--faint);
+  font-size: calc(10.5px * var(--font-scale));
+  line-height: 1.45;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tool-row.is-tool,
+.tool-row {
+  align-items: flex-start;
+}
+
+.tool-row .resource-row-main {
+  gap: 3px;
+}
+
+.tool-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tool-row-head .resource-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tool-row-head .resource-chip {
+  flex: none;
+}
+
+.tool-row .resource-row-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .file-icon.link {
@@ -8785,7 +8800,6 @@ button.queue-content {
 .resource-url {
   display: block;
   padding: 7px 9px;
-  border: 1px solid var(--code-border);
   border-radius: 7px;
   background: var(--code-bg);
   color: var(--code-text);
@@ -8875,7 +8889,6 @@ button.queue-content {
   margin: 0;
   max-height: 260px;
   padding: 9px 10px;
-  border: 1px solid var(--code-border);
   border-radius: 7px;
   background: var(--code-bg);
   color: var(--code-text);
@@ -8926,11 +8939,12 @@ button.queue-content {
     width: 100%;
     flex: 1 1 45%;
     border-right: 0;
-    border-bottom: 1px solid var(--line);
   }
 
   .resources-preview {
     flex: 1 1 55%;
+    margin: 6px 8px 8px;
+    border-radius: 12px;
   }
 }
 
@@ -9432,7 +9446,6 @@ button.queue-content {
   gap: 8px;
   flex-wrap: wrap;
   padding: 9px 13px;
-  border-bottom: 1px solid var(--line);
   background: var(--panel-2);
 }
 
@@ -9461,7 +9474,8 @@ button.queue-content {
 .all-todos-list {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  /* 行之间不再画分隔线，用 3px 间隙 + 行自身圆角区分。 */
+  gap: 3px;
   padding: 5px 11px 7px;
 }
 
@@ -9690,7 +9704,6 @@ button.queue-content {
   flex: none;
   height: 32px;
   padding: 0 9px;
-  border: 1px solid var(--sidebar-line);
   border-radius: 8px;
   background: var(--sidebar-field);
   color: var(--sidebar-muted);
@@ -9704,7 +9717,6 @@ button.queue-content {
 }
 
 .filter-running.is-active {
-  border-color: var(--sidebar-accent-line);
   background: var(--sidebar-accent-soft);
   color: var(--sidebar-accent);
 }
@@ -10088,7 +10100,6 @@ button.queue-content {
   align-items: center;
   gap: 10px;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--line);
   background: var(--panel-2);
   font-size: calc(11px * var(--font-scale));
   color: var(--muted);
@@ -10190,10 +10201,9 @@ button.queue-content {
   flex: 1;
   max-height: 150px;
   margin: 0;
-  padding: 8px 9px;
+  padding: 9px 10px;
   overflow: auto;
-  border: 1px solid var(--code-border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--code-bg);
   color: var(--code-text);
   font-size: calc(11px * var(--font-scale));
@@ -10657,7 +10667,6 @@ button.queue-content {
   max-height: 240px;
   overflow-y: auto;
   padding-bottom: 6px;
-  border-bottom: 1px solid var(--line);
 }
 
 .change-row {
@@ -10980,7 +10989,6 @@ button.queue-content {
   align-items: center;
   gap: 12px;
   padding: 9px 18px;
-  border-bottom: 1px solid var(--line);
   background: linear-gradient(90deg, var(--violet-soft), transparent 72%);
 }
 
@@ -11158,7 +11166,6 @@ button.queue-content {
   flex-direction: column;
   gap: 8px;
   padding-top: 16px;
-  border-top: 1px solid var(--line);
 }
 
 .review-report-section ul {
@@ -11340,7 +11347,6 @@ button.queue-content {
   gap: 10px;
   padding: 0 14px;
   height: 46px;
-  border: 1px solid var(--line-strong);
   border-radius: 12px;
   background: var(--panel);
   color: var(--faint);
@@ -11492,7 +11498,6 @@ button.queue-content {
   gap: 12px;
   padding: 11px 14px;
   background: var(--panel-2);
-  border-bottom: 1px solid var(--line);
 }
 
 .knowledge-group-main {
@@ -11544,16 +11549,12 @@ button.queue-content {
   width: 100%;
   padding: 10px 14px;
   border: 0;
-  border-bottom: 1px solid var(--line);
+  border-radius: 8px;
   background: transparent;
   color: var(--text-soft);
   font: inherit;
   text-align: left;
   cursor: pointer;
-}
-
-.knowledge-hit:last-child {
-  border-bottom: 0;
 }
 
 .knowledge-hit:hover {
@@ -11612,16 +11613,12 @@ button.queue-content {
   width: 100%;
   padding: 12px 15px;
   border: 0;
-  border-bottom: 1px solid var(--line);
+  border-radius: 8px;
   background: transparent;
   color: var(--text-soft);
   font: inherit;
   text-align: left;
   cursor: pointer;
-}
-
-.knowledge-session:last-child {
-  border-bottom: 0;
 }
 
 .knowledge-session:hover {
@@ -11982,7 +11979,6 @@ button.queue-content {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   margin: 14px 0 0;
   padding: 12px 0 0;
-  border-top: 1px solid var(--line);
 }
 
 .self-source-facts div {
@@ -12136,7 +12132,6 @@ button.queue-content {
 .personal-contributions {
   margin-top: 16px;
   padding-top: 14px;
-  border-top: 1px solid var(--line);
 }
 
 .personal-contributions h3 {
@@ -12348,7 +12343,6 @@ button.queue-content {
   gap: 6px;
   margin: 16px 0 18px;
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--line);
 }
 
 .plugins-tab {
@@ -12561,7 +12555,6 @@ button.queue-content {
 .plugins-keys {
   margin-top: 6px;
   padding-top: 16px;
-  border-top: 1px solid var(--line);
 }
 
 .plugins-keys h3 {
@@ -12586,13 +12579,13 @@ button.queue-content {
   list-style: none;
 }
 
+/* 列表项已有 8px 间隙，边界靠底色 + 圆角表达，不再每行描一圈。 */
 .plugins-key-list li {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
 }
@@ -12643,7 +12636,6 @@ button.queue-content {
   display: flex;
   gap: 10px;
   padding: 12px 13px;
-  border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
 }
@@ -13178,7 +13170,6 @@ button.queue-content {
 
 .module-check-section {
   padding: 18px 0 4px;
-  border-bottom: 1px solid var(--line);
 }
 
 .module-check-section:last-of-type {
@@ -13462,7 +13453,6 @@ button.queue-content {
   overflow: auto;
   margin: 8px 0 0;
   padding: 12px;
-  border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-2);
   color: var(--text-soft);
@@ -13519,7 +13509,6 @@ button.queue-content {
 }
 
 .self-check-item {
-  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px 12px;
   background: var(--panel);

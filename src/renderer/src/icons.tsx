@@ -240,6 +240,16 @@ export const ArrowUpRightIcon = (props: IconProps) => (
   </Base>
 )
 
+/** 待办：三行清单，前两行打勾、第三行仍是圈，一眼看出"还有没做＂。 */
+export const TodoIcon = (props: IconProps) => (
+  <Base {...props}>
+    <path d="M10 6h10M10 12h10M10 18h10" />
+    <path d="M4 6l1.5 1.5L8 5" />
+    <path d="M4 12l1.5 1.5L8 11" />
+    <circle cx="5.6" cy="18" r="1.6" />
+  </Base>
+)
+
 /** 弹窗：外框 + 从框内指向右上的箭头，用来表示「在独立窗口打开」。 */
 export const PopoutIcon = (props: IconProps) => (
   <Base {...props}>

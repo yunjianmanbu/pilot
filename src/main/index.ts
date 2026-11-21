@@ -48,6 +48,7 @@ import type {
   ThemeMode,
   ContrastPreference,
   SaturationPreference,
+  TodoPriority,
   UpdateState,
 } from '../shared/types'
 import { applyContrastColor } from '../shared/theme'
@@ -57,7 +58,7 @@ import { AgentRunner } from './agent/runner'
 import { dialoguePage, runMessages } from './session-page'
 import { filterLearningTools, pilotTools, RUN_SHELL } from './agent/tools'
 import { resolveLearningPolicy } from './agent/learning'
-import { buildToolCatalog } from '../shared/tools-catalog'
+import { buildToolCatalog, countToolCalls } from '../shared/tools-catalog'
 import { collectSessionLinks } from '../shared/session-links'
 import { MAX_IMAGE_DATA_URL_CHARS, sanitizeImages } from './agent/attachments'
 import { DynamicToolRegistry } from './agent/toolsmith'
@@ -1630,6 +1631,8 @@ function registerIpc(): void {
       dynamic: await (await toolRegistryFor(session.workspacePath)).list().catch(() => []),
       mcpServers: Object.keys(servers),
       mcpEnabled: settings.mcpEnabled === true,
+      // 「按调用次数排序」用的就是这次会话的记录，不跨会话累加。
+      calls: countToolCalls(session.messages),
     })
   })
   handle('pilot:session-transcript', (sessionId: string): string => {
@@ -1915,16 +1918,31 @@ function registerIpc(): void {
     broadcast({ type: 'session.changed', sessionId })
   }
   handle('pilot:todos-list', (sessionId: string) => store.todos(sessionId))
-  handle('pilot:todo-add', async (sessionId: string, text: string, clientId?: string) => {
-    const todo = await store.addTodo(sessionId, text, 'user', clientId)
-    emitTodos(sessionId)
-    return todo
-  })
-  handle('pilot:todo-update', async (sessionId: string, todoId: string, text: string) => {
-    const todo = await store.updateTodo(sessionId, todoId, text)
-    emitTodos(sessionId)
-    return todo
-  })
+  handle('pilot:todos-all', () => store.allTodos())
+  handle(
+    'pilot:todo-add',
+    async (sessionId: string, text: string, clientId?: string, priority?: TodoPriority) => {
+      const todo = await store.addTodo(sessionId, text, 'user', clientId, priority)
+      emitTodos(sessionId)
+      return todo
+    },
+  )
+  handle(
+    'pilot:todo-update',
+    async (sessionId: string, todoId: string, text: string, priority?: TodoPriority) => {
+      const todo = await store.updateTodo(sessionId, todoId, text, priority)
+      emitTodos(sessionId)
+      return todo
+    },
+  )
+  handle(
+    'pilot:todo-priority',
+    async (sessionId: string, todoId: string, priority: TodoPriority) => {
+      const todo = await store.setTodoPriority(sessionId, todoId, priority)
+      emitTodos(sessionId)
+      return todo
+    },
+  )
   handle('pilot:todo-remove', async (sessionId: string, todoId: string) => {
     await store.removeTodo(sessionId, todoId)
     emitTodos(sessionId)

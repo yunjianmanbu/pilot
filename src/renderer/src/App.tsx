@@ -19,6 +19,7 @@ import type {
   SessionSummary,
   SettingsView,
   TodoItem,
+  TodoPriority,
   UpdateState,
   WorkspaceDetail,
   WorkspaceSummary,
@@ -34,6 +35,7 @@ import { EvolutionPanel } from './components/EvolutionPanel'
 import { SessionResourcesPanel } from './components/SessionResourcesPanel'
 import { QualityBell } from './components/QualityBell'
 import { ResourceMeters } from './components/ResourceMeters'
+import { AllTodosPanel } from './components/AllTodosPanel'
 import { MemoryPanel } from './components/MemoryPanel'
 import { ModuleCheckPanel } from './components/ModuleCheckPanel'
 import { SelfCheckPanel } from './components/SelfCheckPanel'
@@ -362,6 +364,8 @@ export function App() {
   const [checkpointsOpen, setCheckpointsOpen] = useState(false)
   const [scheduleOpen, setScheduleOpen] = useState(false)
   const [scheduleRevision, setScheduleRevision] = useState(0)
+  /** 全量待办视图的刷新信号：任何会话的待办变化都会自增。 */
+  const [todosRevision, setTodosRevision] = useState(0)
   const [scheduleSeed, setScheduleSeed] = useState<{ content: string; todoId?: string } | null>(
     null,
   )
@@ -1118,6 +1122,7 @@ export function App() {
         case 'todos.changed': {
           const sessionId = event.sessionId
           const todoCount = event.todos.filter((todo) => todo.status === 'pending').length
+          setTodosRevision((value) => value + 1)
           setSessions((previous) =>
             previous.map((entry) =>
               entry.id === sessionId ? { ...entry, todoCount } : entry,
@@ -1545,6 +1550,19 @@ export function App() {
     [applyBootstrap, loadSession, pushToast, setSessionHasMoreBoth],
   )
 
+  /** 全量待办里点会话标题：按 id 找到列表里的会话再切过去。 */
+  const openSessionById = useCallback(
+    (sessionId: string) => {
+      const target = sessions.find((entry) => entry.id === sessionId)
+      if (!target) {
+        pushToast(t("这个会话已不在列表里，可能被删除了。"), 'warn')
+        return
+      }
+      selectSession(target)
+    },
+    [pushToast, selectSession, sessions],
+  )
+
   const deleteSession = useCallback(
     async (target: SessionSummary) => {
       if (
@@ -1905,11 +1923,11 @@ export function App() {
   const todoSession = useCallback((): string | null => activeSessionRef.current, [])
 
   const addTodo = useCallback(
-    async (text: string) => {
+    async (text: string, priority: TodoPriority = 'normal') => {
       const sessionId = todoSession()
       if (!sessionId) return
       try {
-        await window.pilot.addTodo(sessionId, text)
+        await window.pilot.addTodo(sessionId, text, undefined, priority)
       } catch (error) {
         pushToast(errorMessage(error), 'error')
       }
@@ -1982,6 +2000,21 @@ export function App() {
       }
     },
     [pushToast, todoSession],
+  )
+
+  const setTodoPriority = useCallback(
+    async (todoId: string, priority: TodoPriority) => {
+      const sessionId = todoSession()
+      if (!sessionId) return
+      try {
+        await window.pilot.setTodoPriority(sessionId, todoId, priority)
+        // 优先级会改变列表顺序，重新拉一次会话以便面板立刻重排。
+        await loadSession(sessionId)
+      } catch (error) {
+        pushToast(errorMessage(error), 'error')
+      }
+    },
+    [loadSession, pushToast, todoSession],
   )
 
   const sendTodo = useCallback(
@@ -2627,22 +2660,6 @@ export function App() {
     (settings?.modelResources ?? []).some((item) => item.id === session.sessionModelId)
       ? session.sessionModelId
       : ''
-  /**
-   * 顶栏右侧的模型名称：只读配置里的真实资源，不再用 `deepseek-chat` 这种
-   * 写死的占位名充数。资源还没有用户可见的名字（label 为空且模型仍是占位）时
-   * 返回空串，按钮只剩状态点。
-   */
-  const topbarModelName = useMemo(() => {
-    const resources = settings?.modelResources ?? []
-    const preferredId =
-      session?.kind === 'review'
-        ? settings?.reviewModelId
-        : session?.sessionModelId || settings?.sessionModelId
-    const resource =
-      resources.find((item) => item.id === preferredId) ??
-      (session?.kind === 'review' ? undefined : resources[0])
-    return modelResourceName(resource)
-  }, [settings, session])
   const live = activeSessionId ? liveRuns[activeSessionId] : undefined
   const running = Boolean(
     activeSessionId && (activeRuns[activeSessionId] || session?.running),
@@ -2773,6 +2790,7 @@ export function App() {
           onPickWorkspace={() => void pickWorkspace()}
           onNewSession={(workspacePath) => void newSession(workspacePath)}
           onNewReview={openReview}
+          todoCount={sessions.reduce((sum, entry) => sum + entry.todoCount, 0)}
           onSelectSession={selectSession}
           onDeleteSession={(target) => void deleteSession(target)}
           onOpenSearchHit={openSearchHit}
@@ -2814,7 +2832,9 @@ export function App() {
                     ? t("项目记忆")
                     : view === 'module-check'
                       ? t("模块自检")
-                      : view === 'self-check'
+                      : view === 'todos'
+                        ? t("全部待办")
+                        : view === 'self-check'
                         ? t("内视")
                         : view === 'plugins'
                           ? t("插件")
@@ -2836,6 +2856,54 @@ export function App() {
                   maxListWidth={320}
                 />
               ) : null}
+
+              {/* 模型服务状态：只说连没连，模型名称由左边的下拉负责。 */}
+              <button
+                type="button"
+                className="topbar-model"
+                onClick={() => openSettings()}
+                title={
+                  settings?.hasKey
+                    ? t("模型服务已连接 · 点击打开设置")
+                    : t("尚未配置 API Key · 点击打开设置")
+                }
+              >
+                <span className={`key-dot${settings?.hasKey ? ' ok' : ''}`} />
+                <span className="topbar-model-state">
+                  {settings?.hasKey ? t("已连接") : t("未连接")}
+                </span>
+              </button>
+
+              {update.status === 'available' ||
+              update.status === 'downloading' ||
+              update.status === 'ready' ? (
+                <button
+                  type="button"
+                  className={`topbar-update ${update.status}`}
+                  onClick={() => setUpdateOpen(true)}
+                  title={
+                    update.status === 'available'
+                      ? t("发现新版本 v{v1}，点击查看", { v1: update.release?.version ?? '' })
+                      : update.status === 'downloading'
+                        ? t("正在后台下载更新 {v1}%，不影响当前会话", { v1: Math.round(update.progress * 100) })
+                        : t("更新已下载，点击查看安装")
+                  }
+                >
+                  {update.status === 'downloading' ? (
+                    <DownloadIcon width={14} height={14} />
+                  ) : (
+                    <UpdateIcon width={14} height={14} />
+                  )}
+                  <span>
+                    {update.status === 'available'
+                      ? `v${update.release?.version ?? ''}`
+                      : update.status === 'downloading'
+                        ? `${Math.round(update.progress * 100)}%`
+                        : t("待安装")}
+                  </span>
+                </button>
+              ) : null}
+
               {view === 'chat' && session && session.kind !== 'review' ? (
                 <SelectMenu
                   className="approval-menu"
@@ -2875,52 +2943,6 @@ export function App() {
                 onEvaluate={onQualityEvaluate}
                 onTune={onQualityTune}
               />
-
-              <button
-                type="button"
-                className="topbar-model"
-                onClick={() => openSettings()}
-                title={
-                  topbarModelName
-                    ? `${t("模型服务已连接")} · ${topbarModelName}`
-                    : settings?.hasKey
-                      ? t("模型服务已连接")
-                      : t("尚未配置 API Key")
-                }
-              >
-                <span className={`key-dot${settings?.hasKey ? ' ok' : ''}`} />
-                {topbarModelName ? <span className="topbar-model-name">{topbarModelName}</span> : null}
-              </button>
-
-              {update.status === 'available' ||
-              update.status === 'downloading' ||
-              update.status === 'ready' ? (
-                <button
-                  type="button"
-                  className={`topbar-update ${update.status}`}
-                  onClick={() => setUpdateOpen(true)}
-                  title={
-                    update.status === 'available'
-                      ? t("发现新版本 v{v1}，点击查看", { v1: update.release?.version ?? '' })
-                      : update.status === 'downloading'
-                        ? t("正在后台下载更新 {v1}%，不影响当前会话", { v1: Math.round(update.progress * 100) })
-                        : t("更新已下载，点击查看安装")
-                  }
-                >
-                  {update.status === 'downloading' ? (
-                    <DownloadIcon width={14} height={14} />
-                  ) : (
-                    <UpdateIcon width={14} height={14} />
-                  )}
-                  <span>
-                    {update.status === 'available'
-                      ? `v${update.release?.version ?? ''}`
-                      : update.status === 'downloading'
-                        ? `${Math.round(update.progress * 100)}%`
-                        : t("待安装")}
-                  </span>
-                </button>
-              ) : null}
 
               <button
                 type="button"
@@ -3022,6 +3044,7 @@ export function App() {
                 onSendAllTodos={sendAllTodos}
                 onClearSentTodos={clearSentTodos}
                 onScheduleTodo={scheduleTodo}
+                onSetTodoPriority={setTodoPriority}
                 onOpenArtifact={openArtifact}
                 onOpenArtifacts={openArtifacts}
                 />
@@ -3037,6 +3060,13 @@ export function App() {
               onDelete={async (memoryId) => {
                 await deleteMemory(memoryId)
               }}
+            />
+          ) : view === 'todos' ? (
+            <AllTodosPanel
+              revision={todosRevision}
+              onOpenSession={openSessionById}
+              onError={showError}
+              onNotice={(message) => pushToast(message, 'info')}
             />
           ) : view === 'self-check' ? (
             <SelfCheckPanel onError={showError} />

@@ -47,6 +47,7 @@ import { DESKTOP_CAPABILITIES, type HostCapabilities } from '../../shared/capabi
 import { sortRisks, type ModuleCheckSummary } from '../../shared/module-check'
 import type { SelfCheckReport } from '../../shared/self-check'
 import { normalizeRelayUrl, splitRelayUrl } from '../../shared/relay'
+import { isTodoPriority } from '../../shared/todos'
 import { handlePluginHttp } from '../plugins/bridge'
 import { PLUGIN_HTTP_PREFIX } from '../plugins/manifest'
 import { PluginHost } from '../plugins/runtime'
@@ -2499,7 +2500,14 @@ export class CompanionServer {
         const text = requireString(params['text'], '待办', 4_000)
         const clientId =
           typeof params['clientId'] === 'string' ? params['clientId'].slice(0, 120) : undefined
-        const todo = await this.options.store.addTodo(sessionId, text, 'phone', clientId)
+        const priority = isTodoPriority(params['priority']) ? params['priority'] : undefined
+        const todo = await this.options.store.addTodo(
+          sessionId,
+          text,
+          'phone',
+          clientId,
+          priority,
+        )
         this.emitTodos(sessionId)
         return { todo }
       }
@@ -2507,7 +2515,20 @@ export class CompanionServer {
         const sessionId = requireString(params['sessionId'], '会话', 80)
         const todoId = requireString(params['todoId'], '待办', 80)
         const text = requireString(params['text'], '待办', 4_000)
-        const todo = await this.options.store.updateTodo(sessionId, todoId, text)
+        const priority = isTodoPriority(params['priority']) ? params['priority'] : undefined
+        const todo = await this.options.store.updateTodo(sessionId, todoId, text, priority)
+        this.emitTodos(sessionId)
+        return { todo }
+      }
+      case 'todos.priority': {
+        const sessionId = requireString(params['sessionId'], '会话', 80)
+        const todoId = requireString(params['todoId'], '待办', 80)
+        if (!isTodoPriority(params['priority'])) throw new Error('优先级不合法')
+        const todo = await this.options.store.setTodoPriority(
+          sessionId,
+          todoId,
+          params['priority'],
+        )
         this.emitTodos(sessionId)
         return { todo }
       }
@@ -3223,6 +3244,8 @@ export class CompanionServer {
         tool.description.length > PHONE_TOOL_DESCRIPTION_CHARS
           ? `${tool.description.slice(0, PHONE_TOOL_DESCRIPTION_CHARS)}…`
           : tool.description,
+      // 手机端中文界面用这一句，缺省时回落到上面的英文原文。
+      ...(tool.descriptionZh ? { descriptionZh: tool.descriptionZh } : {}),
       risk: tool.risk,
       source: tool.source,
       // 内置工具没有 enabled 字段，出现即代表可用。
