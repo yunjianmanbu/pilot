@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -32,6 +33,18 @@ import { createKeyPair, decryptPayload, derivePairKeys } from '../src/main/compa
  */
 
 const CODE = 'home:0123456789abcdef0123456789abcdef'
+
+/**
+ * The relay source sits in the sibling pilot-connector checkout. In the monorepo
+ * that is two levels up; in the split repositories the pilot repo has no copy,
+ * so these end-to-end cases are skipped instead of failing on a missing file.
+ */
+const CONNECTOR = [
+  new URL('../../pilot-connector/server.mjs', import.meta.url),
+  new URL('../pilot-connector/server.mjs', import.meta.url),
+]
+  .map((url) => fileURLToPath(url))
+  .find((file) => existsSync(file))
 const cleanups: Array<() => Promise<void> | void> = []
 
 afterEach(async () => {
@@ -66,7 +79,7 @@ async function startStrictConnector(): Promise<{ url: string; child: ChildProces
   const port = await freePort()
   const child = spawn(
     process.execPath,
-    [fileURLToPath(new URL('../../pilot-connector/server.mjs', import.meta.url))],
+    [CONNECTOR as string],
     {
       env: {
         ...process.env,
@@ -190,7 +203,7 @@ async function createServer(relayUrl: string): Promise<{
   return { server, status, stored: () => settings.relayUrl }
 }
 
-describe('L1 admission code', () => {
+describe.skipIf(!CONNECTOR)('L1 admission code', () => {
   it('carries the code from the connection string through pairing to the relay', async () => {
     const connector = await startStrictConnector()
     // Exactly what install.sh prints, pasted as-is into the dialog.

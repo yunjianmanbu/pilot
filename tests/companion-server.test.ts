@@ -1783,9 +1783,11 @@ describe('CompanionServer plugin surface', () => {
     const pluginDir = join(workspace, '.pilot', 'plugins', 'pilot-auth')
     await mkdir(pluginDir, { recursive: true })
     const example = fileURLToPath(
-      existsSync(fileURLToPath(new URL('../../examples/plugins/pilot-auth/', import.meta.url)))
-        ? new URL('../../examples/plugins/pilot-auth/', import.meta.url)
-        : new URL('../../../examples/plugins/pilot-auth/', import.meta.url),
+      [
+        new URL('../../examples/plugins/pilot-auth/', import.meta.url),
+        new URL('../examples/plugins/pilot-auth/', import.meta.url),
+      ].find((url) => existsSync(fileURLToPath(url))) ??
+        new URL('../../examples/plugins/pilot-auth/', import.meta.url),
     )
     for (const file of ['plugin.json', 'index.mjs']) {
       await writeFile(join(pluginDir, file), await readFile(join(example, file), 'utf8'))

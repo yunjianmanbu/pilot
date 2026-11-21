@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -29,6 +30,18 @@ import {
   encryptPayload,
   tokenProof,
 } from '../src/main/companion/crypto'
+
+/**
+ * The relay source sits in the sibling pilot-connector checkout. In the monorepo
+ * that is two levels up; in the split repositories the pilot repo has no copy,
+ * so the cases that boot the connector are skipped instead of failing.
+ */
+const CONNECTOR = [
+  new URL('../../pilot-connector/server.mjs', import.meta.url),
+  new URL('../pilot-connector/server.mjs', import.meta.url),
+]
+  .map((url) => fileURLToPath(url))
+  .find((file) => existsSync(file))
 
 interface PairPayload {
   v: number
@@ -179,7 +192,7 @@ async function startConnector(
   extraEnv: Record<string, string> = {},
 ): Promise<{ url: string; child: ChildProcess }> {
   const port = await freePort()
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../../pilot-connector/server.mjs', import.meta.url))], {
+  const child = spawn(process.execPath, [CONNECTOR as string], {
     env: {
       ...process.env,
       PORT: String(port),
@@ -247,7 +260,7 @@ async function createServer(relayUrl: string): Promise<{
   return { server, status }
 }
 
-describe('cloud connector', () => {
+describe.skipIf(!CONNECTOR)('cloud connector', () => {
   it('pairs and serves encrypted requests through the blind relay', async () => {
     const connector = await startConnector()
     const { server, status } = await createServer(connector.url)
@@ -357,7 +370,7 @@ describe('cloud connector', () => {
   }, 30_000)
 })
 
-describe('host reconnect grace', () => {
+describe.skipIf(!CONNECTOR)('host reconnect grace', () => {
   const room = 'roomgrace0123456789'
   const key = 'roomkeygrace0123456789'
 

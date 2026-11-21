@@ -44,9 +44,10 @@ async function installAuthPlugin(root: string): Promise<void> {
   const dir = join(root, '.pilot', 'plugins', 'pilot-auth')
   await mkdir(dir, { recursive: true })
   // The example lives inside the repo (examples/plugins/pilot-auth); in the
-  // monorepo it sits one level up, so resolve both layouts.
+  // monorepo it sits one level up, so resolve every layout the checkout can use.
   const candidates = [
     join(__dirname, 'examples', 'plugins', 'pilot-auth'),
+    join(__dirname, '..', 'examples', 'plugins', 'pilot-auth'),
     join(__dirname, '..', '..', 'examples', 'plugins', 'pilot-auth'),
   ]
   const source = candidates.find((dir) => existsSync(join(dir, 'plugin.json')))
