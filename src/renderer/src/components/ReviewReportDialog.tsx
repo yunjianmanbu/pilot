@@ -3,6 +3,7 @@ import { useState } from 'react'
 import type { ReviewFinding, ReviewReport, ReviewSeverity, Session } from '../../../shared/types'
 import { CheckIcon, PlusIcon, SparkIcon, XIcon } from '../icons'
 import { t } from '../i18n'
+import { useEscapeClose } from './useEscapeClose'
 
 const VERDICT_LABEL: Record<ReviewReport['verdict'], string> = {
   pass: t("通过"),
@@ -40,6 +41,9 @@ export function ReviewReportDialog({
   // after the main process persisted the todo.
   const [added, setAdded] = useState<Record<string, true>>({})
   const [adding, setAdding] = useState<string | null>(null)
+
+  // 交接/待办进行中不响应 Escape，避免关掉正在等返回的弹框。
+  useEscapeClose(onClose, !handingOff)
 
   const addTodo = async (finding: ReviewFinding, key: string) => {
     setAdding(key)

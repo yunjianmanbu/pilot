@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { QuickCommand } from '../../../shared/types'
 import { ListCheckIcon, PlusIcon, RefreshIcon, TrashIcon, XIcon } from '../icons'
 import { t } from '../i18n'
+import { useEscapeClose } from './useEscapeClose'
 
 const MAX_COMMANDS = 8
 
@@ -24,6 +25,7 @@ export function QuickCommandsDialog({
   const [drafts, setDrafts] = useState<Draft[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  useEscapeClose(onClose)
   const [error, setError] = useState('')
   const nextKey = useRef(0)
   const addRow = useRef<HTMLTextAreaElement | null>(null)
@@ -66,14 +68,6 @@ export function QuickCommandsDialog({
     // The dialog fetches the authoritative list once when it opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  useEffect(() => {
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
 
   const update = (key: string, content: string): void => {
     setDrafts((previous) =>

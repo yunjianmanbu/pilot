@@ -36,8 +36,20 @@ function renderReasoning(part: ProcessPart & { kind: 'reasoning' }, index: numbe
   )
 }
 
-function ProcessBoxRow({ process }: { process: ProcessMessage }) {
-  const [expanded, setExpanded] = useState(false)
+function ProcessBoxRow({
+  process,
+  onLoadSteps,
+  initialExpanded = false,
+}: {
+  process: ProcessMessage
+  /** Fetch one run's steps when its page did not carry them. */
+  onLoadSteps?: ((runId: string) => Promise<boolean>) | undefined
+  /** Re-opens the box after its placeholder was replaced by the loaded run. */
+  initialExpanded?: boolean
+}) {
+  const [expanded, setExpanded] = useState(initialExpanded)
+  const [loading, setLoading] = useState(false)
+  const pending = process.pending
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const stackRef = useRef<HTMLDivElement | null>(null)
   const stickRef = useRef(true)
@@ -50,24 +62,42 @@ function ProcessBoxRow({ process }: { process: ProcessMessage }) {
   const hidden = expanded ? 0 : windowed.hidden
   const visible = expanded ? parts : windowed.parts
   const waiting = process.tools.some((tool) => tool.status === 'waiting')
-  const status = process.error
-    ? 'error'
-    : failures > 0
+  const status = pending
+    ? pending.failed > 0
       ? 'warn'
-      : running
-        ? 'running'
-        : 'ok'
-  const statusText = process.error
-    ? t("运行失败")
-    : waiting
-      ? t("等待批准")
-      : running
-        ? t("执行中")
-        : failures > 0
-          ? t("{v1} 个工具失败", { v1: failures })
-          : t("执行完成")
+      : 'idle'
+    : process.error
+      ? 'error'
+      : failures > 0
+        ? 'warn'
+        : running
+          ? 'running'
+          : 'ok'
+  const statusText = pending
+    ? loading
+      ? t("载入中…")
+      : t("未加载")
+    : process.error
+      ? t("运行失败")
+      : waiting
+        ? t("等待批准")
+        : running
+          ? t("执行中")
+          : failures > 0
+            ? t("{v1} 个工具失败", { v1: failures })
+            : t("执行完成")
 
   const lastKey = visible.at(-1)?.key ?? ''
+
+  /** Fetch this run's steps; the parent swaps the placeholder for the real box. */
+  const loadSteps = useCallback(() => {
+    if (!process.runId || !onLoadSteps) return
+    setLoading(true)
+    void onLoadSteps(process.runId).then((loaded) => {
+      setLoading(false)
+      if (loaded) setExpanded(true)
+    })
+  }, [onLoadSteps, process.runId])
 
   // Follow the newest step: the window is only five entries tall, so the box
   // stays pinned to the bottom unless the reader scrolled up.
@@ -179,6 +209,8 @@ function ProcessBoxRow({ process }: { process: ProcessMessage }) {
           // Re-opening the box starts from the newest step again.
           stickRef.current = true
           setExpanded((value) => !value)
+          // A placeholder loads its steps only when the reader opens it.
+          if (!expanded && pending && !loading) loadSteps()
         }}
         aria-expanded={expanded}
       >
@@ -187,7 +219,9 @@ function ProcessBoxRow({ process }: { process: ProcessMessage }) {
         </span>
         <span className="process-title">{t("执行过程")}</span>
         <span className="process-meta">
-          {process.tools.length} {t("个工具")}{process.reasoning.length > 0 ? t(" · 含思考") : ''}
+          {pending
+            ? t("{v1} 项步骤", { v1: pending.stepCount })
+            : `${process.tools.length} ${t("个工具")}${process.reasoning.length > 0 ? t(" · 含思考") : ''}`}
         </span>
         <span className={`process-status text-${status}`}>{statusText}</span>
         <span className="process-expand">{expanded ? t("收起") : t("展开")}</span>
@@ -224,6 +258,21 @@ function ProcessBoxRow({ process }: { process: ProcessMessage }) {
         }}
       >
         <div className="process-stack" ref={stackRef}>
+          {pending && nodes.length === 0 ? (
+            <div className="process-pending">
+              <span>
+                {loading
+                  ? t("正在载入执行过程…")
+                  : t("这一轮的执行过程尚未载入，展开即可查看。")}
+              </span>
+              {!loading ? (
+                <button type="button" className="button ghost small" onClick={loadSteps}>
+                  {t("载入执行过程")}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
           {nodes}
 
           {process.error ? (

@@ -22,6 +22,7 @@ import type {
   RunRecord,
   Session,
   SessionArtifact,
+  SessionProcessSummary,
   TodoItem,
   WorkspaceSummary,
 } from '../../../shared/types'
@@ -60,6 +61,7 @@ import {
   riskLabel,
   stripIpcWrapper,
   summarizeTool,
+  withPendingProcesses,
   type LiveRun,
   type UIMessage,
 } from '../ui'
@@ -1788,6 +1790,9 @@ export interface ChatViewProps {
   /** A prompt inserted by another panel; `key` makes repeated seeds distinct. */
   composerSeed: { key: number; text: string } | null
   onLoadEarlier: () => Promise<boolean>
+  /** Execution runs the loaded pages skipped; each expands into its own steps. */
+  pendingProcesses: SessionProcessSummary[]
+  onLoadProcess: (runId: string) => Promise<boolean>
   onSend: (
     text: string,
     delivery: MessageDelivery,
@@ -1845,6 +1850,8 @@ export function ChatView({
   focusMessageId,
   composerSeed,
   onLoadEarlier,
+  pendingProcesses,
+  onLoadProcess,
   onSend,
   onStop,
   onPause,
@@ -1885,6 +1892,19 @@ export function ChatView({
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(null)
   // null = never customized; the welcome screen then shows the built-in prompts.
   const [quickCommands, setQuickCommands] = useState<QuickCommand[] | null>(null)
+  /** Runs whose box stayed open across the placeholder → loaded swap. */
+  const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(() => new Set())
+
+  /** Load a run and keep its box open; the placeholder is replaced on success. */
+  const loadProcessSteps = useCallback(
+    async (runId: string): Promise<boolean> => {
+      const loaded = await onLoadProcess(runId)
+      if (!loaded) return false
+      setExpandedRuns((previous) => new Set(previous).add(runId))
+      return true
+    },
+    [onLoadProcess],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -1900,8 +1920,8 @@ export function ChatView({
   }, [])
 
   const transcript = useMemo(
-    () => (session ? buildTranscript(session.messages) : []),
-    [session],
+    () => (session ? withPendingProcesses(buildTranscript(session.messages), pendingProcesses) : []),
+    [session, pendingProcesses],
   )
   const runsById = useMemo(
     () => new Map(runs.map((run) => [run.id, run])),
@@ -2173,7 +2193,14 @@ export function ChatView({
               )
             }
             if (message.kind === 'process') {
-              return <ProcessBox process={message} key={message.id} />
+              return (
+                <ProcessBox
+                  process={message}
+                  onLoadSteps={loadProcessSteps}
+                  initialExpanded={message.runId ? expandedRuns.has(message.runId) : false}
+                  key={message.id}
+                />
+              )
             }
             const files = filesForRun(message.runId)
             return (
@@ -2195,7 +2222,13 @@ export function ChatView({
             )
           })}
 
-          {process ? <ProcessBox process={process} /> : null}
+          {process ? (
+            <ProcessBox
+              process={process}
+              onLoadSteps={loadProcessSteps}
+              initialExpanded={process.runId ? expandedRuns.has(process.runId) : false}
+            />
+          ) : null}
 
           {live?.error && !process ? (
             <div className="run-error-card">

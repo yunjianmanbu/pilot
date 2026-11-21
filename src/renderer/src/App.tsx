@@ -15,6 +15,7 @@ import type {
   Session,
   SessionArtifact,
   SessionPage,
+  SessionProcessSummary,
   SessionSummary,
   SettingsView,
   TodoItem,
@@ -22,7 +23,7 @@ import type {
   WorkspaceDetail,
   WorkspaceSummary,
 } from '../../shared/types'
-import { modelOptionLabel } from '../../shared/model-label'
+import { modelOptionLabel, modelResourceName, normalizeModelTag } from '../../shared/model-label'
 import { copyText } from './clipboard'
 import { ChangeReviewPanel } from './components/ChangeReviewPanel'
 import { ChatView } from './components/ChatView'
@@ -30,20 +31,18 @@ import { CheckpointDialog } from './components/CheckpointDialog'
 import { CompanionDialog } from './components/CompanionDialog'
 import { PairRequestDialog } from './components/PairRequestDialog'
 import { EvolutionPanel } from './components/EvolutionPanel'
-import { FilesPanel } from './components/FilesPanel'
+import { SessionResourcesPanel } from './components/SessionResourcesPanel'
 import { QualityBell } from './components/QualityBell'
 import { ResourceMeters } from './components/ResourceMeters'
-import { KnowledgePanel } from './components/KnowledgePanel'
 import { MemoryPanel } from './components/MemoryPanel'
 import { ModuleCheckPanel } from './components/ModuleCheckPanel'
 import { SelfCheckPanel } from './components/SelfCheckPanel'
-import { ToolsPanel } from './components/ToolsPanel'
 import { PluginsPanel } from './components/PluginsPanel'
 import { ReviewDialog } from './components/ReviewDialog'
 import { ReviewReportDialog } from './components/ReviewReportDialog'
 import { ScheduleDialog } from './components/ScheduleDialog'
 import { SelectMenu } from './components/SelectMenu'
-import { SessionFilesPanel } from './components/SessionFilesPanel'
+import type { ResourceTab } from './session-resources'
 import { FeedbackDialog } from './components/FeedbackDialog'
 import { SettingsDialog, type SettingsFocus } from './components/SettingsDialog'
 import { Sidebar } from './components/Sidebar'
@@ -64,17 +63,16 @@ import {
   MoonIcon,
   PhoneIcon,
   PilotLogo,
-  SearchIcon,
   SunIcon,
   UpdateIcon,
   XIcon,
 } from './icons'
-import { knowledgeScopeLabel, type KnowledgeScope } from './knowledge'
 import { transcriptUsage } from './tokens'
 import {
   createToolView,
   emptyLiveRun,
   inferRisk,
+  insertProcessMessages,
   stripIpcWrapper,
   type LiveRun,
   type MainView,
@@ -348,15 +346,16 @@ export function App() {
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
   const [toasts, setToasts] = useState<Toast[]>([])
   const [view, setView] = useState<MainView>('chat')
-  const [knowledgeScope, setKnowledgeScope] = useState<KnowledgeScope>('global')
-  const [knowledgeSessionId, setKnowledgeSessionId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [settingsFocus, setSettingsFocus] = useState<SettingsFocus>(null)
   const [updateOpen, setUpdateOpen] = useState(false)
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
-  const [filesOpen, setFilesOpen] = useState(false)
-  const [artifactsOpen, setArtifactsOpen] = useState(false)
+  /**
+   * 会话资源抽屉：null 表示关闭，否则是当前分类。工作区文件、相关链接、可用
+   * 工具、会话知识库和本次产出的文件共用这一个抽屉，切换分类不用另开面板。
+   */
+  const [resourcesTab, setResourcesTab] = useState<ResourceTab | null>(null)
   /** File the抽屉 should preview right away, set by an answer's change bar. */
   const [artifactSeed, setArtifactSeed] = useState<{ path: string; key: number } | null>(null)
   const artifactSeedKey = useRef(0)
@@ -368,6 +367,8 @@ export function App() {
   )
   const [composerSeed, setComposerSeed] = useState<{ key: number; text: string } | null>(null)
   const [sessionHasMore, setSessionHasMore] = useState(false)
+  /** Runs whose steps a dialogue page left out; each loads when its box opens. */
+  const [pendingProcesses, setPendingProcesses] = useState<SessionProcessSummary[]>([])
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const [continuing, setContinuing] = useState(false)
   const [companionOpen, setCompanionOpen] = useState(false)
@@ -390,6 +391,7 @@ export function App() {
   const activeWorkspaceRef = useRef<string | null>(null)
   const composerSeedKeyRef = useRef(0)
   const sessionRef = useRef<Session | null>(null)
+  const pendingProcessesRef = useRef<SessionProcessSummary[]>([])
   const sessionHasMoreRef = useRef(false)
   const sessionSeq = useRef<Record<string, number>>({})
   const detailSeq = useRef(0)
@@ -407,6 +409,10 @@ export function App() {
   useEffect(() => {
     sessionRef.current = session
   }, [session])
+
+  useEffect(() => {
+    pendingProcessesRef.current = pendingProcesses
+  }, [pendingProcesses])
 
   const setSessionHasMoreBoth = useCallback((value: boolean) => {
     sessionHasMoreRef.current = value
@@ -433,13 +439,18 @@ export function App() {
    */
   const openArtifacts = useCallback(() => {
     setArtifactSeed(null)
-    setArtifactsOpen(true)
+    setResourcesTab('artifacts')
   }, [])
 
   const openArtifact = useCallback((artifact: SessionArtifact) => {
     artifactSeedKey.current += 1
     setArtifactSeed({ path: artifact.path, key: artifactSeedKey.current })
-    setArtifactsOpen(true)
+    setResourcesTab('artifacts')
+  }, [])
+
+  /** 顶栏与侧栏是同一个入口：再点一次收起，和其他抽屉的手感一致。 */
+  const toggleResources = useCallback((tab: ResourceTab) => {
+    setResourcesTab((current) => (current === tab ? null : tab))
   }, [])
 
   /**
@@ -535,6 +546,8 @@ export function App() {
           } else {
             setSession(next)
             setSessionHasMoreBoth(page?.hasMore ?? false)
+            // A different session must not inherit the previous one's pending runs.
+            setPendingProcesses([])
           }
           setSessionLoading(false)
         }
@@ -562,10 +575,13 @@ export function App() {
     if (!first) return false
     setLoadingEarlier(true)
     try {
+      // Dialogue only: execution steps are huge and rarely why someone scrolls
+      // back. Each skipped run comes back as a summary the box can expand into.
       const page: SessionPage | null = await window.pilot.getSessionPage(
         current.id,
         first.id,
         SESSION_PAGE_SIZE,
+        { dialogue: true },
       )
       if (!page) return false
       if (sessionRef.current?.id !== current.id) return false
@@ -575,8 +591,16 @@ export function App() {
         const older = page.session.messages.filter((message) => !existing.has(message.id))
         return { ...previous, messages: [...older, ...previous.messages] }
       })
+      const skipped = page.processes ?? []
+      if (skipped.length > 0) {
+        setPendingProcesses((previous) => {
+          const seen = new Set(previous.map((entry) => entry.runId))
+          const fresh = skipped.filter((entry) => !seen.has(entry.runId))
+          return fresh.length === 0 ? previous : [...fresh, ...previous]
+        })
+      }
       setSessionHasMoreBoth(page.hasMore)
-      return page.session.messages.length > 0
+      return page.session.messages.length > 0 || skipped.length > 0
     } catch (caught) {
       pushToast(errorMessage(caught), 'error')
       return false
@@ -584,6 +608,37 @@ export function App() {
       setLoadingEarlier(false)
     }
   }, [loadingEarlier, pushToast, setSessionHasMoreBoth])
+
+  /** Load one run's execution steps when its placeholder expands. */
+  const loadProcess = useCallback(
+    async (runId: string): Promise<boolean> => {
+      const current = sessionRef.current
+      if (!current) return false
+      try {
+        const messages = await window.pilot.getSessionProcess(current.id, runId)
+        if (sessionRef.current?.id !== current.id) return false
+        if (messages.length === 0) {
+          pushToast(t('这一轮的执行过程已经不在会话记录里了。'), 'warn')
+          return false
+        }
+        const afterId = pendingProcessesRef.current.find((entry) => entry.runId === runId)?.afterId
+        setSession((previous) =>
+          previous && previous.id === current.id
+            ? {
+                ...previous,
+                messages: insertProcessMessages(previous.messages, messages, afterId),
+              }
+            : previous,
+        )
+        setPendingProcesses((previous) => previous.filter((entry) => entry.runId !== runId))
+        return true
+      } catch (caught) {
+        pushToast(errorMessage(caught), 'error')
+        return false
+      }
+    },
+    [pushToast],
+  )
 
   const loadDetail = useCallback(async (workspacePath: string): Promise<void> => {
     const seq = ++detailSeq.current
@@ -1596,7 +1651,7 @@ export function App() {
         const resource = settings?.modelResources.find((item) => item.id === modelId)
         const label = resource
           ? modelOptionLabel(
-              resource.label.trim() || resource.model.trim() || t("未命名模型"),
+              modelResourceName(resource) || t("未命名模型"),
               resource.tag,
             )
           : ''
@@ -1803,24 +1858,6 @@ export function App() {
     (hit: MessageSearchHit) => openMessage(hit.sessionId, hit.messageId),
     [openMessage],
   )
-
-  const openKnowledge = useCallback(
-    (scope: KnowledgeScope, sessionId?: string | null) => {
-      setKnowledgeScope(scope)
-      if (scope === 'session') {
-        setKnowledgeSessionId(sessionId ?? activeSessionRef.current)
-      }
-      setView('knowledge')
-    },
-    [],
-  )
-
-  const changeKnowledgeScope = useCallback((scope: KnowledgeScope) => {
-    setKnowledgeScope(scope)
-    if (scope === 'session') {
-      setKnowledgeSessionId((current) => current ?? activeSessionRef.current)
-    }
-  }, [])
 
   const forkSession = useCallback(async () => {
     const sessionId = activeSessionRef.current
@@ -2559,25 +2596,29 @@ export function App() {
   )
 
   // 任务级模型：只在任务会话里选。空值表示跟随全局会话模型。
+  // 触发器只放名称（顶栏很窄），模型名和标签只在展开的列表里出现。
   const sessionModelOptions = useMemo(() => {
     const resources = settings?.modelResources ?? []
-    const labelFor = (resource: (typeof resources)[number]): string => {
-      const title = modelOptionLabel(
-        resource.label.trim() || resource.model.trim() || t("未命名模型"),
-        resource.tag,
-      )
-      return resource.model.trim() ? `${title} · ${resource.model.trim()}` : title
-    }
+    const nameFor = (resource: (typeof resources)[number]): string =>
+      modelResourceName(resource) || t("未命名模型")
     const inherited =
       resources.find((item) => item.id === settings?.sessionModelId) ?? resources[0]
     return [
       {
         value: '',
         label: inherited
-          ? t("跟随全局（{v1}）", { v1: labelFor(inherited) })
+          ? t("跟随全局（{v1}）", { v1: nameFor(inherited) })
           : t("跟随全局会话模型"),
+        triggerLabel: t("跟随全局"),
+        detail: inherited?.model.trim() || undefined,
+        note: inherited ? normalizeModelTag(inherited.tag) || undefined : undefined,
       },
-      ...resources.map((resource) => ({ value: resource.id, label: labelFor(resource) })),
+      ...resources.map((resource) => ({
+        value: resource.id,
+        label: nameFor(resource),
+        detail: resource.model.trim() || undefined,
+        note: normalizeModelTag(resource.tag) || undefined,
+      })),
     ]
   }, [settings])
 
@@ -2586,6 +2627,22 @@ export function App() {
     (settings?.modelResources ?? []).some((item) => item.id === session.sessionModelId)
       ? session.sessionModelId
       : ''
+  /**
+   * 顶栏右侧的模型名称：只读配置里的真实资源，不再用 `deepseek-chat` 这种
+   * 写死的占位名充数。资源还没有用户可见的名字（label 为空且模型仍是占位）时
+   * 返回空串，按钮只剩状态点。
+   */
+  const topbarModelName = useMemo(() => {
+    const resources = settings?.modelResources ?? []
+    const preferredId =
+      session?.kind === 'review'
+        ? settings?.reviewModelId
+        : session?.sessionModelId || settings?.sessionModelId
+    const resource =
+      resources.find((item) => item.id === preferredId) ??
+      (session?.kind === 'review' ? undefined : resources[0])
+    return modelResourceName(resource)
+  }, [settings, session])
   const live = activeSessionId ? liveRuns[activeSessionId] : undefined
   const running = Boolean(
     activeSessionId && (activeRuns[activeSessionId] || session?.running),
@@ -2618,11 +2675,12 @@ export function App() {
       onSelect: () => void copyTranscript(),
     })
     sessionMenuItems.push({
-      key: 'session-knowledge',
-      label: t("会话知识库"),
-      hint: t("会话知识库：检索这个会话的提问与回复"),
-      icon: <SearchIcon width={15} height={15} />,
-      onSelect: () => openKnowledge('session', session.id),
+      key: 'session-resources',
+      label: t("会话资源"),
+      hint: t("会话资源：工作区文件、相关链接、可用工具、会话知识库、新增修改文件"),
+      icon: <FilesIcon width={15} height={15} />,
+      active: resourcesTab !== null,
+      onSelect: () => toggleResources(resourcesTab ?? 'files'),
     })
     if (session.kind !== 'review') {
       sessionMenuItems.push({
@@ -2639,14 +2697,6 @@ export function App() {
         icon: <HistoryIcon width={15} height={15} />,
         active: checkpointsOpen,
         onSelect: () => setCheckpointsOpen(true),
-      })
-      sessionMenuItems.push({
-        key: 'artifacts',
-        label: t("本次会话产出的文件"),
-        icon: <FileIcon width={15} height={15} />,
-        active: artifactsOpen,
-        dividerBefore: true,
-        onSelect: () => setArtifactsOpen((value) => !value),
       })
       sessionMenuItems.push({
         key: 'changes',
@@ -2702,6 +2752,8 @@ export function App() {
           </span>
         </div>
         <div className="titlebar-path">{workspace?.path ?? ''}</div>
+        {/* 本机负载常驻在窗口最上边这条栏：切到任何视图都能看。 */}
+        <ResourceMeters workspacePath={detail?.workspace.path ?? activeWorkspace ?? undefined} />
       </div>
 
       <div className="app-shell">
@@ -2714,7 +2766,7 @@ export function App() {
           settings={settings}
           settingsOpen={settingsOpen}
           feedbackOpen={feedbackOpen}
-          filesOpen={filesOpen}
+          resourcesOpen={resourcesTab !== null}
           version={version}
           update={update}
           updateOpen={updateOpen}
@@ -2724,11 +2776,8 @@ export function App() {
           onSelectSession={selectSession}
           onDeleteSession={(target) => void deleteSession(target)}
           onOpenSearchHit={openSearchHit}
-          onView={(next) => {
-            if (next === 'knowledge') openKnowledge('global')
-            else setView(next)
-          }}
-          onOpenFiles={() => setFilesOpen((value) => !value)}
+          onView={setView}
+          onOpenResources={() => toggleResources(resourcesTab ?? 'files')}
           onOpenSettings={openSettings}
           onOpenFeedback={() => setFeedbackOpen(true)}
           onOpenUpdate={openUpdates}
@@ -2763,17 +2812,13 @@ export function App() {
                 <span className="header-title static">
                   {view === 'memory'
                     ? t("项目记忆")
-                    : view === 'knowledge'
-                      ? knowledgeScopeLabel(knowledgeScope)
-                      : view === 'tools'
-                        ? t("工具")
-                        : view === 'module-check'
-                          ? t("模块自检")
-                          : view === 'self-check'
-                            ? t("内视")
-                            : view === 'plugins'
-                              ? t("插件")
-                            : t("自我进化")}
+                    : view === 'module-check'
+                      ? t("模块自检")
+                      : view === 'self-check'
+                        ? t("内视")
+                        : view === 'plugins'
+                          ? t("插件")
+                          : t("自我进化")}
                 </span>
               )}
             </div>
@@ -2819,10 +2864,6 @@ export function App() {
               {/* 分隔线把「当前会话的模式与操作」与「全局的铃铛/模型/主题/连接」分开。 */}
               {view === 'chat' && session ? <span className="topbar-split" /> : null}
 
-              {/* 本机负载常驻在最右侧全局区，切到任何视图都能看。 */}
-              <ResourceMeters workspacePath={detail?.workspace.path ?? activeWorkspace ?? undefined} />
-              <span className="topbar-split resource-meters-split" />
-
               {/* 小铃铛：评估模型认为有更优版本时亮起，批准前不会打包。 */}
               <QualityBell
                 workspacePath={detail?.workspace.path ?? activeWorkspace}
@@ -2839,12 +2880,16 @@ export function App() {
                 type="button"
                 className="topbar-model"
                 onClick={() => openSettings()}
-                title={settings?.hasKey ? t("模型服务已连接") : t("尚未配置 API Key")}
+                title={
+                  topbarModelName
+                    ? `${t("模型服务已连接")} · ${topbarModelName}`
+                    : settings?.hasKey
+                      ? t("模型服务已连接")
+                      : t("尚未配置 API Key")
+                }
               >
                 <span className={`key-dot${settings?.hasKey ? ' ok' : ''}`} />
-                {session?.kind === 'review'
-                  ? settings?.reviewModel.trim() || settings?.model || 'deepseek-chat'
-                  : settings?.model ?? 'deepseek-chat'}
+                {topbarModelName ? <span className="topbar-model-name">{topbarModelName}</span> : null}
               </button>
 
               {update.status === 'available' ||
@@ -2902,9 +2947,10 @@ export function App() {
               </button>
               <button
                 type="button"
-                className={`topbar-icon${filesOpen ? ' is-active' : ''}`}
-                onClick={() => setFilesOpen((value) => !value)}
-                title={t("工作区文件")}
+                className={`topbar-icon${resourcesTab ? ' is-active' : ''}`}
+                onClick={() => toggleResources(resourcesTab ?? 'files')}
+                title={t("会话资源")}
+                aria-label={t("会话资源")}
               >
                 <FilesIcon width={16} height={16} />
               </button>
@@ -2944,6 +2990,8 @@ export function App() {
                 focusMessageId={focusMessageId}
                 composerSeed={composerSeed}
                 onLoadEarlier={loadEarlier}
+                pendingProcesses={pendingProcesses}
+                onLoadProcess={loadProcess}
                 onSend={sendMessage}
                 onStop={() => void stopRun()}
                 onPause={() => void pauseRun()}
@@ -2990,8 +3038,6 @@ export function App() {
                 await deleteMemory(memoryId)
               }}
             />
-          ) : view === 'tools' ? (
-            <ToolsPanel workspace={workspace} />
           ) : view === 'self-check' ? (
             <SelfCheckPanel onError={showError} />
           ) : view === 'module-check' ? (
@@ -3003,21 +3049,6 @@ export function App() {
             />
           ) : view === 'plugins' ? (
             <PluginsPanel workspace={workspace} />
-          ) : view === 'knowledge' ? (
-            <KnowledgePanel
-              workspaces={workspaces}
-              sessions={sessions}
-              activeWorkspace={activeWorkspace}
-              activeSessionId={activeSessionId}
-              scope={knowledgeScope}
-              sessionId={knowledgeSessionId}
-              onScopeChange={changeKnowledgeScope}
-              onSessionChange={setKnowledgeSessionId}
-              onOpenHit={openSearchHit}
-              onOpenMessage={openMessage}
-              onOpenSession={selectSession}
-              onError={showError}
-            />
           ) : (
             <EvolutionPanel
               workspace={workspace}
@@ -3063,24 +3094,25 @@ export function App() {
         </main>
       </div>
 
-      {filesOpen ? (
-        <FilesPanel
+      {resourcesTab ? (
+        <SessionResourcesPanel
           workspace={workspace}
-          onClose={() => setFilesOpen(false)}
-          onError={showError}
-        />
-      ) : null}
-
-      {artifactsOpen ? (
-        <SessionFilesPanel
           session={session}
-          workspace={workspace}
-          openSeed={artifactSeed}
+          tab={resourcesTab}
+          onTabChange={setResourcesTab}
+          artifactSeed={artifactSeed}
+          onOpenMessage={openMessage}
+          onOpenChanges={() => {
+            setResourcesTab(null)
+            setArtifactSeed(null)
+            setChangesOpen(true)
+          }}
           onClose={() => {
-            setArtifactsOpen(false)
+            setResourcesTab(null)
             setArtifactSeed(null)
           }}
           onError={showError}
+          onNotice={(message) => pushToast(message, 'info')}
         />
       ) : null}
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CompanionPairing, CompanionStatus } from '../../../shared/types'
 import { RELAY_DOWNLOADS } from '../../../shared/relay'
 import { copyText } from '../clipboard'
+import { useEscapeClose } from './useEscapeClose'
 import {
   CopyIcon,
   DownloadIcon,
@@ -41,6 +42,7 @@ function initial(name: string): string {
 }
 
 export function CompanionDialog({ open, onClose, onError }: CompanionDialogProps) {
+  useEscapeClose(onClose, open)
   const [status, setStatus] = useState<CompanionStatus | null>(null)
   const [pairing, setPairing] = useState<CompanionPairing | null>(null)
   const [appQr, setAppQr] = useState<{ url: string; qrDataUrl: string } | null>(null)

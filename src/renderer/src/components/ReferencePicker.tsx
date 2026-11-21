@@ -1,7 +1,7 @@
-import { useEffect } from 'react'
 import type { WorkspaceSummary } from '../../../shared/types'
 import { XIcon } from '../icons'
 import { t } from '../i18n'
+import { useEscapeClose } from './useEscapeClose'
 
 function samePath(left: string, right: string): boolean {
   const normalize = (value: string): string => value.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -26,13 +26,7 @@ export function ReferencePicker({
   onClose: () => void
   onToggle: (path: string) => void
 }) {
-  useEffect(() => {
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  useEscapeClose(onClose)
 
   const others = workspaces.filter((workspace) => !samePath(workspace.path, workspacePath))
 

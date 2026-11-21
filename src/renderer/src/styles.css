@@ -1052,6 +1052,25 @@ a:hover {
   right: 0;
 }
 
+/*
+ * 下拉列表被 portal 到 body 上时脱离了 .select-menu 的变量作用域，这里补回默认
+ * 配色；层级要高于弹框遮罩（100）与提示条（240），否则弹框里展开会看不见。
+ */
+.select-list.is-floating {
+  --select-line: var(--line);
+  --select-line-strong: var(--line-strong);
+  --select-bg: var(--panel-2);
+  --select-bg-hover: var(--panel-3);
+  --select-text: var(--text);
+  --select-muted: var(--faint);
+  --select-focus: var(--accent);
+  --select-list-bg: var(--surface);
+  --select-active: var(--hover);
+  --select-selected: var(--accent);
+  --select-scroll: var(--hover-strong);
+  z-index: 260;
+}
+
 .select-list.drop-up {
   top: auto;
   bottom: calc(100% + 6px);
@@ -1116,6 +1135,38 @@ a:hover {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* 两行选项：第一行名称，第二行模型名；右侧短标签单独占位。 */
+.select-option-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.select-option-main .select-option-label {
+  flex: none;
+}
+
+.select-option-detail {
+  color: var(--select-muted);
+  font-size: calc(11px * var(--font-scale));
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.select-option-note {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--select-line);
+  border-radius: 4px;
+  color: var(--select-muted);
+  font-size: calc(10.5px * var(--font-scale));
+  line-height: 1.5;
+  white-space: nowrap;
 }
 
 .select-check {
@@ -1500,36 +1551,6 @@ button.status-line:hover {
   color: var(--sidebar-accent);
 }
 
-/* Resources with a stable meaning keep their own color even when the accent
-   changes: knowledge is teal, files are blue. */
-.footer-nav-item.footer-nav-knowledge {
-  color: var(--knowledge);
-}
-
-.footer-nav-item.footer-nav-knowledge:hover {
-  background: color-mix(in srgb, var(--knowledge) 12%, transparent);
-  color: var(--knowledge);
-}
-
-.footer-nav-item.footer-nav-knowledge.is-active {
-  background: var(--knowledge-soft);
-  color: var(--knowledge);
-}
-
-.footer-nav-item.footer-nav-files {
-  color: var(--file);
-}
-
-.footer-nav-item.footer-nav-files:hover {
-  background: var(--file-soft);
-  color: var(--file);
-}
-
-.footer-nav-item.footer-nav-files.is-active {
-  background: var(--file-soft);
-  color: var(--file);
-}
-
 .footer-nav-label {
   display: flex;
   align-items: center;
@@ -1742,16 +1763,33 @@ button.header-title:hover {
   flex: none;
 }
 
-/* ── 顶栏资源条 ─────────────────────────────────────────────────────────
-   三条迷你进度条（CPU / 内存 / 磁盘）。宽度固定、数字在条尾，所以数值变化只让
-   填充条伸缩，不会把右侧的铃铛和图标推来推去。占用正常时是中性灰，过 80% 转
-   琥珀色、过 92% 转红色，扫一眼就知道哪一项要管。 */
+/* ── 标题栏资源条 ─────────────────────────────────────────────────────────
+   三条迷你进度条（CPU / 内存 / 磁盘）常驻 Electron 窗口最上边那条 titlebar，
+   与会话内的 .topbar 无关。宽度固定、数字在条尾，所以数值变化只让填充条伸缩，
+   不会把左侧的工作区路径推来推去。占用正常时是中性灰，过 80% 转琥珀色、
+   过 92% 转红色，扫一眼就知道哪一项要管。 */
 .resource-meters {
   display: flex;
   align-items: center;
   gap: 10px;
   flex: none;
   margin-right: 2px;
+}
+
+/* titlebar 整条是拖拽区：条本身不接收点击，但要能弹出读数提示，所以退成 no-drag。 */
+.titlebar .resource-meters {
+  -webkit-app-region: no-drag;
+  margin-left: 4px;
+  margin-right: 0;
+  gap: 12px;
+}
+
+.titlebar .resource-meter {
+  font-size: calc(10px * var(--font-scale));
+}
+
+.titlebar .resource-meter-track {
+  width: 34px;
 }
 
 .resource-meter {
@@ -1822,6 +1860,22 @@ button.header-title:hover {
   .resource-meters {
     gap: 8px;
   }
+
+  /* 窗口变窄时先让工作区路径退让，负载条优先留到最后一档。 */
+  .titlebar-path {
+    max-width: 26%;
+  }
+}
+
+@media (max-width: 1100px) {
+  .titlebar-path {
+    display: none;
+  }
+
+  /* 路径消失后，把资源条自己顶到右侧，否则它会跟着品牌挤到左边。 */
+  .titlebar .resource-meters {
+    margin-left: auto;
+  }
 }
 
 .approval-menu {
@@ -1880,6 +1934,11 @@ button.header-title:hover {
 .topbar-model:hover {
   background: var(--hover);
   color: var(--muted);
+}
+
+/* 状态文字用界面字体：这里只写「已连接」，不走等宽字体。 */
+.topbar-model-state {
+  font-family: inherit;
 }
 
 .topbar-icon {
@@ -3126,6 +3185,11 @@ button.header-title:hover {
   background: var(--red);
 }
 
+/* A run whose steps have not been fetched yet. */
+.text-idle {
+  color: var(--muted);
+}
+
 .process-title {
   font-size: calc(12px * var(--font-scale));
   font-weight: 650;
@@ -3257,6 +3321,24 @@ button.header-title:hover {
 
 .process-error strong {
   font-size: calc(11.5px * var(--font-scale));
+}
+
+/* A run whose page skipped its steps: expanding the box loads them. */
+.process-pending {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 9px 11px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--font-scale));
+}
+
+.process-pending button {
+  margin-left: auto;
 }
 
 /* ── Tool cards ────────────────────────────────────────────────────────── */
@@ -4573,6 +4655,8 @@ button.queue-content {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* 滚到弹框尽头时不要把滚动传给背后的列表页。 */
+  overscroll-behavior: contain;
   padding: 20px 22px;
 }
 
@@ -7953,7 +8037,7 @@ button.queue-content {
   align-items: center;
   gap: 5px;
   margin-bottom: 3px;
-  color: var(--file);
+  color: var(--muted);
   font-size: calc(10px * var(--font-scale));
   font-weight: 700;
   letter-spacing: 0.11em;
@@ -8073,14 +8157,17 @@ button.queue-content {
   color: var(--faint);
 }
 
+/* 列表里的分类图标统一用中性灰：形状（文件夹 / 文档 / 链接 / 扳手 / 时钟）
+   已经足够区分类型，再叠一层分类色会让本来就窄的一列发花，也与界面其余
+   图标不一致。 */
 .file-icon.dir {
-  color: var(--amber);
-  background: var(--amber-soft);
+  color: var(--muted);
+  background: var(--hover);
 }
 
 .file-icon.file {
-  color: var(--file);
-  background: var(--file-soft);
+  color: var(--muted);
+  background: var(--hover);
 }
 
 .file-name {
@@ -8418,6 +8505,435 @@ button.queue-content {
   background: var(--panel);
 }
 
+/* ── 会话资源抽屉 ───────────────────────────────────────────────────────
+   一个抽屉装五类资源（工作区文件 / 相关链接 / 可用工具 / 会话知识库 /
+   新增修改文件），左列是列表、右列是预览。所以它比文件抽屉宽得多：预览里
+   常常是代码与表格，430px 装不下。窄窗口退回上下分栏。 */
+.resources-drawer {
+  width: min(920px, calc(100vw - 56px));
+  max-width: none;
+}
+
+/* 展开态：铺满整个窗口（含顶部栏），只留抽屉自己的头部当标题栏。 */
+.resources-drawer.is-expanded {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  border-radius: 0;
+  animation: none;
+}
+
+.resources-drawer.is-expanded .resources-list {
+  width: 380px;
+}
+
+.resources-tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 7px 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: none;
+}
+
+.resources-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.resources-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--font-scale));
+  white-space: nowrap;
+}
+
+.resources-tab:hover {
+  background: var(--hover);
+  color: var(--text-soft);
+}
+
+.resources-tab.is-active {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.resources-tab-count {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--hover-strong);
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: calc(9.5px * var(--font-scale));
+  font-variant-numeric: tabular-nums;
+}
+
+.resources-tab.is-active .resources-tab-count {
+  background: var(--panel-3);
+  color: var(--text-soft);
+}
+
+.resources-body {
+  /* 它同时带 drawer-body：那个类把方向设成 column，这里显式改回左右分栏。 */
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.resources-list {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+}
+
+.resources-preview {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-elev);
+}
+
+.resources-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 6px 0;
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--faint);
+}
+
+.resources-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: calc(11.5px * var(--font-scale));
+  outline: none;
+}
+
+.resources-empty {
+  margin: 14px 8px;
+}
+
+/* 列表行：图标 + 两行文字 + 可选的尾部徽标。整行一个按钮，和文件列表一致。 */
+.resource-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-soft);
+  text-align: left;
+  font-size: calc(11.5px * var(--font-scale));
+}
+
+.resource-row:hover {
+  background: var(--hover);
+}
+
+.resource-row.is-active {
+  background: var(--accent-soft);
+}
+
+.resource-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.resource-row-title,
+.resource-row-sub {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.resource-row-title {
+  color: var(--text);
+}
+
+.resource-row-sub {
+  color: var(--faint);
+  font-size: calc(10.5px * var(--font-scale));
+}
+
+.resource-row-badge {
+  flex: none;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: calc(10px * var(--font-scale));
+}
+
+.file-icon.link {
+  color: var(--muted);
+  background: var(--hover);
+}
+
+.file-icon.tool {
+  color: var(--muted);
+  background: var(--hover);
+}
+
+.file-icon.knowledge {
+  color: var(--muted);
+  background: var(--hover);
+}
+
+/* 预览里的行内徽标：来源、风险等级、是否开放。 */
+.resource-chip {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--hover-strong);
+  color: var(--muted);
+  font-size: calc(10px * var(--font-scale));
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.resource-chip.risk-read {
+  color: var(--ok);
+  background: var(--green-soft);
+}
+
+.resource-chip.risk-write {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.resource-chip.risk-exec {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.resource-chip.risk-control {
+  color: var(--violet);
+  background: var(--violet-soft);
+}
+
+.resource-chip.ok {
+  color: var(--ok);
+  background: var(--green-soft);
+}
+
+.resource-chip.warn {
+  color: var(--warn);
+  background: var(--amber-soft);
+}
+
+.resource-detail {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 18px;
+  overflow: auto;
+}
+
+.resource-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.resource-detail-title {
+  min-width: 0;
+  font-size: calc(13px * var(--font-scale));
+  font-weight: 620;
+  word-break: break-all;
+}
+
+.resource-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.resource-url {
+  display: block;
+  padding: 7px 9px;
+  border: 1px solid var(--code-border);
+  border-radius: 7px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-family: var(--mono);
+  font-size: calc(11px * var(--font-scale));
+  word-break: break-all;
+}
+
+.resource-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--faint);
+  font-size: calc(10.5px * var(--font-scale));
+}
+
+.resource-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.resource-section-head {
+  color: var(--faint);
+  font-size: calc(10px * var(--font-scale));
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.resource-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.resource-kv-pair {
+  display: flex;
+  gap: 8px;
+}
+
+.resource-kv dt {
+  flex: none;
+  min-width: 62px;
+  color: var(--faint);
+  font-size: calc(11px * var(--font-scale));
+}
+
+.resource-kv dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: calc(11px * var(--font-scale));
+  word-break: break-all;
+}
+
+.resource-kv dd.mono {
+  font-family: var(--mono);
+}
+
+.resource-context {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: calc(11.5px * var(--font-scale));
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.resource-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.resource-targets code {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: calc(10.5px * var(--font-scale));
+}
+
+.resource-code {
+  margin: 0;
+  max-height: 260px;
+  padding: 9px 10px;
+  border: 1px solid var(--code-border);
+  border-radius: 7px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-family: var(--mono);
+  font-size: calc(10.5px * var(--font-scale));
+  overflow: auto;
+}
+
+.resource-note {
+  padding-left: 8px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--faint);
+  font-size: calc(10.5px * var(--font-scale));
+  line-height: 1.5;
+}
+
+/* 动态工具的启停 / 提升 / 删除排成一行，用中键距与正文分开。 */
+.resource-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.resource-hint {
+  margin: auto;
+  padding: 28px 18px;
+  color: var(--faint);
+  font-size: calc(11.5px * var(--font-scale));
+  text-align: center;
+}
+
+/* 知识库预览是两段正文，让它自己滚而不是整列跟着滚。 */
+.knowledge-preview .preview-doc {
+  max-height: none;
+}
+
+@media (max-width: 860px) {
+  .resources-drawer {
+    width: 100vw;
+  }
+
+  .resources-body {
+    flex-direction: column;
+  }
+
+  .resources-list {
+    width: 100%;
+    flex: 1 1 45%;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .resources-preview {
+    flex: 1 1 55%;
+  }
+}
+
 /* ── Toasts ────────────────────────────────────────────────────────────── */
 
 .toast-stack {
@@ -8577,9 +9093,8 @@ button.queue-content {
     display: none;
   }
 
-  /* 窗口只剩几百像素时，顶栏让位给会话标题与操作按钮。 */
-  .resource-meters,
-  .resource-meters-split {
+  /* 窗口只剩几百像素时，标题栏让位给品牌与窗口控制按钮。 */
+  .resource-meters {
     display: none;
   }
 
@@ -8716,6 +9231,39 @@ button.queue-content {
   outline: none;
 }
 
+/* 优先级小标签：新建与已有待办共用，点一下切到下一档。宽度固定，
+   避免「高/中/低」切换时整行文字左右跳动。 */
+.todo-priority {
+  flex: none;
+  min-width: 26px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: calc(10px * var(--font-scale));
+  font-weight: 600;
+  line-height: 1;
+}
+
+.todo-priority:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.todo-priority.priority-high {
+  border-color: color-mix(in srgb, var(--red) 38%, transparent);
+  background: color-mix(in srgb, var(--red) 9%, var(--panel));
+  color: var(--red);
+}
+
+.todo-priority.priority-low {
+  border-color: color-mix(in srgb, var(--line-strong) 70%, transparent);
+  background: var(--panel-2);
+  color: var(--faint);
+}
+
 .todo-add-input:focus {
   border-color: var(--line-strong);
 }
@@ -8839,6 +9387,129 @@ button.queue-content {
   gap: 12px;
   padding-top: 4px;
   font-size: calc(10.5px * var(--font-scale));
+}
+
+/* ── All todos page ────────────────────────────────────────────────────── */
+
+/* 左下角「待办」打开的汇总页：按会话分组，组内按优先级排序。 */
+.all-todos-page {
+  max-width: 900px;
+}
+
+.all-todos-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.all-todos-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--font-scale));
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.all-todos-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.all-todos-group {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.all-todos-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.all-todos-session {
+  min-width: 0;
+  font-size: calc(12.5px * var(--font-scale));
+  font-weight: 600;
+}
+
+.all-todos-workspace {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: calc(10px * var(--font-scale));
+}
+
+.all-todos-meta {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: calc(10.5px * var(--font-scale));
+  font-variant-numeric: tabular-nums;
+}
+
+.all-todos-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 11px 7px;
+}
+
+.all-todos-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.all-todos-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 34px 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--muted);
+  text-align: center;
+  font-size: calc(11.5px * var(--font-scale));
+  line-height: 1.6;
+}
+
+.all-todos-empty svg {
+  color: var(--faint);
+}
+
+.all-todos-empty strong {
+  color: var(--text-soft);
+  font-size: calc(13px * var(--font-scale));
+}
+
+.all-todos-empty span {
+  max-width: 420px;
+}
+
+.all-todos-foot {
+  margin-top: 18px;
+  color: var(--faint);
+  font-size: calc(10.5px * var(--font-scale));
+  line-height: 1.6;
+}
+
+@media (max-width: 720px) {
+  .all-todos-meta {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
 }
 
 .continue-bar {
@@ -12922,6 +13593,77 @@ button.queue-content {
 }
 
 /* ── Text size ─────────────────────────────────────────────────────────── */
+
+/*
+ * 弹框在窄窗口 / 矮窗口下的适配。
+ *
+ * 必须放在文件末尾：各弹框自己的 `width: min(680px, calc(100vw - 48px))`、
+ * `max-width: 760px` 都写在本文件后面，同一个特异性下后来居上，写在弹框基础样式
+ * 旁边的媒体查询会被它们覆盖掉（实测 620px 窗口下仍然按 calc(100vw - 48px) 算）。
+ * 这里用 `.modal-backdrop .modal` 提高一层特异性，免得以后调整顺序又失效。
+ *
+ * 窄屏只改外围：减小遮罩内边距、压缩头/身/脚，**不改各弹框自己的 width / max-width**。
+ * 遮罩 padding 降到 12px 后，最宽的 `min(680px, calc(100vw - 48px))` 也落在容器内
+ * （620 窗口：容器 596 > 弹框 572）；反之如果在这里写 `width: 100%; max-width: 100%`，
+ * 会把本该只有 460px 的配对确认框拉成满屏。
+ */
+@media (max-width: 720px) {
+  .modal-backdrop {
+    padding: 12px;
+  }
+
+  .modal-backdrop .modal {
+    max-height: calc(100vh - 24px);
+    border-radius: 10px;
+  }
+
+  .modal-backdrop .modal-head {
+    gap: 12px;
+    padding: 15px 16px 12px;
+  }
+
+  .modal-backdrop .modal-head h2 {
+    font-size: calc(16px * var(--font-scale));
+  }
+
+  .modal-backdrop .modal-body {
+    padding: 16px;
+  }
+
+  .modal-backdrop .modal-footer {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 16px;
+  }
+
+  .modal-backdrop .modal-footer .modal-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
+
+/* 矮窗口：标题、正文、按钮各收一档，保证正文至少还剩半屏可滚。 */
+@media (max-height: 700px) {
+  .modal-backdrop {
+    padding: 12px;
+  }
+
+  .modal-backdrop .modal {
+    max-height: calc(100vh - 24px);
+  }
+
+  .modal-backdrop .modal-head {
+    padding: 14px 20px 11px;
+  }
+
+  .modal-backdrop .modal-body {
+    padding: 14px 20px;
+  }
+
+  .modal-backdrop .modal-footer {
+    padding: 11px 20px;
+  }
+}
 
 :root[data-font-size='large'] {
   --font-scale: 1.12;

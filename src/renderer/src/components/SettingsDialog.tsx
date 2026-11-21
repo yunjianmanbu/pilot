@@ -27,6 +27,7 @@ import { copyText } from '../clipboard'
 import { applyLocaleSetting, t } from '../i18n'
 import { BillingPanel, balanceSummary } from './BillingPanel'
 import { SelectMenu } from './SelectMenu'
+import { useEscapeClose } from './useEscapeClose'
 
 const MAX_MODEL_RESOURCES = 12
 const MAX_EVALUATION_MODELS = 6
@@ -187,6 +188,7 @@ export function SettingsDialog({
   const [maxSteps, setMaxSteps] = useState(String(settings.maxSteps))
   const [maxTokens, setMaxTokens] = useState(String(settings.maxTokens))
   const [maxContextTokens, setMaxContextTokens] = useState(String(settings.maxContextTokens))
+  useEscapeClose(onClose)
   const [maxOutputTokens, setMaxOutputTokens] = useState(String(settings.maxOutputTokens))
   const [temperature, setTemperature] = useState(String(settings.temperature))
   const [resources, setResources] = useState<ResourceDraft[]>(() =>
@@ -283,14 +285,6 @@ export function SettingsDialog({
     if (focusSection !== 'reviewers') return
     reviewersRef.current?.scrollIntoView({ block: 'start' })
   }, [focusSection])
-
-  useEffect(() => {
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
 
   // Preview the appearance while the dialog is open. Cancel restores the saved
   // values; saving updates `settings` and the parent effect takes over.

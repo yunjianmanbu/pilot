@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { ReviewSessionScope, Session } from '../../../shared/types'
 import { FolderIcon, SparkIcon, TrashIcon, XIcon } from '../icons'
 import { t } from '../i18n'
+import { useEscapeClose } from './useEscapeClose'
 
 interface RootRow {
   name: string
@@ -29,6 +30,8 @@ export function ReviewDialog({
   const [objective, setObjective] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  useEscapeClose(onClose, !saving)
 
   const addFolder = async () => {
     if (roots.length >= 8) {

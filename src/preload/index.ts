@@ -75,8 +75,14 @@ const bridge: PilotBridge = {
 
   listSessions: (workspacePath: string) => ipcRenderer.invoke('pilot:sessions-list', workspacePath),
   getSession: (sessionId: string) => ipcRenderer.invoke('pilot:session-get', sessionId),
-  getSessionPage: (sessionId: string, before?: string, limit?: number) =>
-    ipcRenderer.invoke('pilot:session-page', sessionId, before, limit),
+  getSessionPage: (
+    sessionId: string,
+    before?: string,
+    limit?: number,
+    options?: { dialogue?: boolean },
+  ) => ipcRenderer.invoke('pilot:session-page', sessionId, before, limit, options),
+  getSessionProcess: (sessionId: string, runId: string, limit?: number) =>
+    ipcRenderer.invoke('pilot:session-process', sessionId, runId, limit),
   getSessionAround: (sessionId: string, messageId: string, limit?: number) =>
     ipcRenderer.invoke('pilot:session-around', sessionId, messageId, limit),
   searchMessages: (query: string, limit?: number, filter?: MessageSearchFilter) =>

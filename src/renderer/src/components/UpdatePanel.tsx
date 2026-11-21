@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { UpdateState } from '../../../shared/types'
 import { DownloadIcon, RefreshIcon, UpdateIcon, XIcon } from '../icons'
 import { t } from '../i18n'
+import { useEscapeClose } from './useEscapeClose'
 
 const UPDATE_LABELS: Record<UpdateState['status'], string> = {
   disabled: t("不可用"),
@@ -50,6 +51,8 @@ export function UpdatePanel({
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
 
+  useEscapeClose(onClose)
+
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target
@@ -58,14 +61,9 @@ export function UpdatePanel({
       if (target instanceof Element && target.closest('.update-trigger')) return
       onClose()
     }
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
     document.addEventListener('pointerdown', onPointerDown, true)
-    window.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, true)
-      window.removeEventListener('keydown', onKey)
     }
   }, [onClose])
 

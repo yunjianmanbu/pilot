@@ -7,6 +7,7 @@ import type {
 } from '../../../shared/types'
 import { ClockIcon, PlusIcon, TrashIcon, XIcon } from '../icons'
 import { SelectMenu } from './SelectMenu'
+import { useEscapeClose } from './useEscapeClose'
 import { t } from '../i18n'
 
 const KIND_LABELS: Record<ScheduleKind, string> = {
@@ -61,6 +62,7 @@ export function ScheduleDialog({
   const [tasks, setTasks] = useState<ScheduledTask[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
+  useEscapeClose(onClose)
   const [content, setContent] = useState('')
   const [kind, setKind] = useState<ScheduleKind>('once')
   const [delayMinutes, setDelayMinutes] = useState('10')
@@ -122,14 +124,6 @@ export function ScheduleDialog({
       cancelled = true
     }
   }, [session.id, revision])
-
-  useEffect(() => {
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
 
   const add = async () => {
     setError('')

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { WorkspaceSummary } from '../../../shared/types'
 import {
   CheckIcon,
@@ -10,6 +10,7 @@ import {
 } from '../icons'
 import { formatRelative } from '../ui'
 import { t } from '../i18n'
+import { useEscapeClose } from './useEscapeClose'
 
 export function WorkspaceDialog({
   workspaces,
@@ -32,13 +33,7 @@ export function WorkspaceDialog({
 }) {
   const [busy, setBusy] = useState<string | null>(null)
 
-  useEffect(() => {
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  useEscapeClose(onClose)
 
   const open = async (path: string) => {
     if (path === activeWorkspace) return

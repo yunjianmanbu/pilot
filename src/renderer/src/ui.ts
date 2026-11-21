@@ -1,5 +1,6 @@
 import type {
   Plan,
+  SessionProcessSummary,
   StoredMessage,
   ToolCall,
   ToolResult,
@@ -11,8 +12,6 @@ export type MainView =
   | 'chat'
   | 'memory'
   | 'evolution'
-  | 'knowledge'
-  | 'tools'
   | 'plugins'
   | 'module-check'
   | 'self-check'
@@ -77,6 +76,8 @@ export type UIMessage =
       compacted?: string
       error?: string
       live?: boolean
+      /** Steps this box has not loaded yet; expanding it fetches them. */
+      pending?: { stepCount: number; toolCount: number; failed: number }
     }
 
 export interface LiveRun {
@@ -310,6 +311,62 @@ export function buildTranscript(messages: StoredMessage[]): UIMessage[] {
       entry.text.some((part) => part.trim()) ||
       entry.reasoning.some((part) => part.trim()),
   )
+}
+
+/**
+ * Put the execution runs a dialogue page skipped back into the timeline as
+ * collapsed placeholders. A placeholder carries only counts, so an old run
+ * costs a few bytes until the reader expands it.
+ */
+export function withPendingProcesses(
+  blocks: UIMessage[],
+  processes: SessionProcessSummary[],
+): UIMessage[] {
+  if (processes.length === 0) return blocks
+  const loaded = new Set<string>()
+  for (const block of blocks) {
+    if (block.kind === 'process' && block.runId && !block.pending) loaded.add(block.runId)
+  }
+  const pending = processes.filter((entry) => !loaded.has(entry.runId))
+  if (pending.length === 0) return blocks
+  const out = [...blocks]
+  // Newest first while splicing so runs that share one anchor keep their order.
+  for (const summary of [...pending].reverse()) {
+    const anchor = summary.afterId ? out.findIndex((block) => block.id === summary.afterId) : -1
+    out.splice(anchor >= 0 ? anchor + 1 : 0, 0, {
+      kind: 'process',
+      id: `pending-${summary.runId}`,
+      runId: summary.runId,
+      text: [],
+      reasoning: [],
+      tools: [],
+      parts: [],
+      pending: {
+        stepCount: summary.stepCount,
+        toolCount: summary.toolCount,
+        failed: summary.failed,
+      },
+    })
+  }
+  return out
+}
+
+/**
+ * Insert one run's stored steps after the dialogue message they follow. The
+ * dialogue page holds only user/answer messages, so the steps are spliced back
+ * in instead of replacing the transcript.
+ */
+export function insertProcessMessages(
+  messages: StoredMessage[],
+  incoming: StoredMessage[],
+  afterId?: string,
+): StoredMessage[] {
+  const existing = new Set(messages.map((message) => message.id))
+  const fresh = incoming.filter((message) => !existing.has(message.id))
+  if (fresh.length === 0) return messages
+  const anchor = afterId ? messages.findIndex((message) => message.id === afterId) : -1
+  const index = anchor >= 0 ? anchor + 1 : 0
+  return [...messages.slice(0, index), ...fresh, ...messages.slice(index)]
 }
 
 /** Plain-text transcript for copying the whole conversation. */

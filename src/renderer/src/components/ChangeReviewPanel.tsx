@@ -9,6 +9,7 @@ import {
   XIcon,
 } from '../icons'
 import { t } from '../i18n'
+import { useEscapeClose } from './useEscapeClose'
 
 const STATUS_LABELS: Record<SessionChange['status'], string> = {
   modified: t("修改"),
@@ -66,13 +67,7 @@ export function ChangeReviewPanel({
   const [selected, setSelected] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
 
-  useEffect(() => {
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  useEscapeClose(onClose)
 
   useEffect(() => {
     let cancelled = false

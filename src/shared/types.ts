@@ -699,6 +699,28 @@ export interface SessionPage {
   hasMore: boolean
   /** Set when the page was centered on an older message and newer messages exist. */
   hasNewer?: boolean
+  /**
+   * Set by a dialogue-only page: the execution runs it left out, so the reader
+   * can load one run's steps by expanding its box instead of paging everything.
+   */
+  processes?: SessionProcessSummary[]
+}
+
+/** How one paged read of a transcript should behave. */
+export interface SessionPageOptions {
+  /** Page on dialogue messages only; execution runs come back as summaries. */
+  dialogue?: boolean
+}
+
+/** One run's execution steps that a page did not load. */
+export interface SessionProcessSummary {
+  runId: string
+  /** Dialogue message the steps follow; absent when the run opens the page. */
+  afterId?: string
+  /** Reasoning, note and tool-result entries the box can show. */
+  stepCount: number
+  toolCount: number
+  failed: number
 }
 
 export interface SessionSummary {
@@ -2264,7 +2286,9 @@ export interface PilotBridge {
 
   listSessions(workspacePath: string): Promise<SessionSummary[]>
   getSession(sessionId: string): Promise<Session | null>
-  getSessionPage(sessionId: string, before?: string, limit?: number): Promise<SessionPage | null>
+  getSessionPage(sessionId: string, before?: string, limit?: number, options?: SessionPageOptions): Promise<SessionPage | null>
+  /** Execution steps of one run, for a box whose page skipped them. */
+  getSessionProcess(sessionId: string, runId: string, limit?: number): Promise<StoredMessage[]>
   getSessionAround(
     sessionId: string,
     messageId: string,

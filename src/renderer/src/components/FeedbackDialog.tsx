@@ -15,6 +15,7 @@ import {
   type FeedbackRecord,
 } from '../../../shared/feedback'
 import { copyText } from '../clipboard'
+import { useEscapeClose } from './useEscapeClose'
 import { CheckIcon, FeedbackIcon, FolderIcon, XIcon } from '../icons'
 import { t } from '../i18n'
 
@@ -80,6 +81,9 @@ export function FeedbackDialog({
   const [error, setError] = useState('')
   const [saved, setSaved] = useState<FeedbackRecord | null>(null)
   const [copied, setCopied] = useState(false)
+
+  // 提交中不关算：写盘和复制环境信息都在进行，半途关掉会留下不完整的反馈。
+  useEscapeClose(onClose, !saving)
 
   const submit = async (): Promise<void> => {
     setError('')

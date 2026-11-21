@@ -42,6 +42,7 @@ import type {
   ScheduledTaskInput,
   Session,
   SessionPage,
+  SessionPageOptions,
   SettingsUpdate,
   StoredMessage,
   ThemeMode,
@@ -53,6 +54,7 @@ import { applyContrastColor } from '../shared/theme'
 import { normalizeEnvFields, type FeedbackDraft } from '../shared/feedback'
 import type { ModuleCheckSettings } from '../shared/module-check'
 import { AgentRunner } from './agent/runner'
+import { dialoguePage, runMessages } from './session-page'
 import { filterLearningTools, pilotTools, RUN_SHELL } from './agent/tools'
 import { resolveLearningPolicy } from './agent/learning'
 import { buildToolCatalog } from '../shared/tools-catalog'
@@ -1567,9 +1569,25 @@ function registerIpc(): void {
   handle('pilot:session-get', (sessionId: string) => store.session(sessionId))
   handle(
     'pilot:session-page',
-    (sessionId: string, before?: string, limit?: number): SessionPage | null => {
+    (
+      sessionId: string,
+      before?: string,
+      limit?: number,
+      options?: SessionPageOptions,
+    ): SessionPage | null => {
       const session = store.session(sessionId)
-      return session ? sessionPage(session, before, limit) : null
+      if (!session) return null
+      // A dialogue page leaves execution steps out; the reader loads a run on
+      // demand instead of dragging every old tool call into the window.
+      return options?.dialogue ? dialoguePage(session, before, limit) : sessionPage(session, before, limit)
+    },
+  )
+  handle(
+    'pilot:session-process',
+    (sessionId: string, runId: string, limit?: number): StoredMessage[] => {
+      const session = store.session(sessionId)
+      if (!session) return []
+      return runMessages(session.messages, runId, limit)
     },
   )
   handle(

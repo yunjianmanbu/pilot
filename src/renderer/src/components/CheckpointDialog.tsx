@@ -6,6 +6,7 @@ import type {
 } from '../../../shared/types'
 import { CheckIcon, RefreshIcon, XIcon } from '../icons'
 import { t } from '../i18n'
+import { useEscapeClose } from './useEscapeClose'
 
 const TRIGGER_LABELS: Record<Checkpoint['trigger'], string> = {
   prompt: t("发送前"),
@@ -54,6 +55,7 @@ export function CheckpointDialog({
   const [working, setWorking] = useState('')
   const [label, setLabel] = useState('')
   const [error, setError] = useState('')
+  useEscapeClose(onClose)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -72,14 +74,6 @@ export function CheckpointDialog({
   useEffect(() => {
     void load()
   }, [load])
-
-  useEffect(() => {
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
 
   const snapshot = async () => {
     setWorking('create')

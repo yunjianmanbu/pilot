@@ -20,7 +20,6 @@ export const en: Record<string, string> = {
   "5 分钟": "5 minutes",
   "Ctrl+Enter 保存 · 敏感信息（Key、Token）不会被保存":
     "Ctrl+Enter to save · secrets (keys, tokens) are not saved",
-  "模型服务已连接": "Model service connected",
   "模型服务已连接，点击查看设置": "Model service connected · click to open settings",
   "Enter 发送 · Shift+Enter 换行 · 可附图/参照":
     "Enter to send · Shift+Enter for a new line · attach images/references",
@@ -175,14 +174,11 @@ export const en: Record<string, string> = {
   "优先级最高，不能被允许规则覆盖": "Highest priority; allow rules cannot override it",
   "会话": "Session",
   "会话不存在，可能已被删除": "Session not found; it may have been deleted",
-  "会话产出文件": "Session output files",
   "会话已删除。": "Session deleted.",
   "会话排序": "Session order",
   "会话操作": "Session actions",
   "更多会话操作": "More session actions",
   "会话知识库": "Session knowledge",
-  "会话知识库：检索这个会话的提问与回复":
-    "Session knowledge: search this session's questions and replies",
   "低": "Low",
   "你写入": "You",
   "例如：检查项目测试结果，失败则修复并重新运行":
@@ -248,6 +244,7 @@ export const en: Record<string, string> = {
   "写入一条长期记忆，例如：这个项目使用 pnpm，不要用 npm；提交前必须运行 pnpm typecheck。":
     "Add a long-term memory, e.g. this project uses pnpm, not npm; run pnpm typecheck before committing.",
   "写入记忆": "Add memory",
+  "写文件": "Write files",
   "分析中…": "Analyzing…",
   "切换到浅色模式": "Switch to light mode",
   "切换到深色模式": "Switch to dark mode",
@@ -383,6 +380,7 @@ export const en: Record<string, string> = {
   "复制失败": "Copy failed",
   "剪贴板不可用": "Clipboard is unavailable",
   "运行环境": "Runtime environment",
+  "运行命令": "Run commands",
   "系统": "System",
   "内存": "Memory",
   "磁盘": "Disk",
@@ -542,8 +540,6 @@ export const en: Record<string, string> = {
   "恢复": "Restore",
   "我": "Me",
   "我的提问": "My questions",
-  "或者内容都被 .gitignore 中的常见目录规则隐藏了。":
-    "or the content is hidden by common .gitignore rules.",
   "所有会话的快照合计上限（MB）；超过后按时间淘汰最旧的回退点，每个会话至少保留一个":
     "Total snapshot budget (MB) across sessions; past it, the oldest checkpoints are evicted, keeping at least one per session",
   "所有工作区": "All workspaces",
@@ -618,6 +614,7 @@ export const en: Record<string, string> = {
   "排队": "Queued",
   "排队中的任务": "Queued tasks",
   "控制": "Control",
+  "控制设备": "Control device",
   "描述任务，Pilot 会读取工作区并自主执行…":
     "Describe a task; Pilot reads the workspace and works on its own…",
   "提升为全局候选": "Promote to global candidate",
@@ -704,8 +701,6 @@ export const en: Record<string, string> = {
   "本工作区的新运行会使用这个版本的提示词与策略。":
     "New runs in this workspace use this version's prompt and strategy.",
   "本机预览": "Local preview",
-  "本次会话产出": "Session output",
-  "本次会话产出的文件": "Files produced in this session",
   "本次命令使用的 Shell 解释器": "Shell interpreter used for this command",
   "本轮任务": "This task",
   "本轮计划": "This plan",
@@ -722,7 +717,6 @@ export const en: Record<string, string> = {
   "查看报告": "View report",
   "查看提示词增补": "View prompt additions",
   "根因：": "Root cause:",
-  "根目录": "Root directory",
   "桌面通知": "Desktop notifications",
   "检查中": "Checking",
   "检查中…": "Checking…",
@@ -741,6 +735,8 @@ export const en: Record<string, string> = {
   "这个任务已跟随全局会话模型":
     "This task follows the global session model again.",
   "跟随全局（{v1}）": "Follow global ({v1})",
+  "跟随全局": "Follow global",
+  "看差异": "View diff",
   "跟随全局会话模型": "Follow the global session model",
   "模型基于证据提出提示词增补和策略调整，而不是随意改写代码。":
     "The model proposes prompt additions and strategy changes from evidence, not arbitrary code rewrites.",
@@ -770,6 +766,7 @@ export const en: Record<string, string> = {
   "第五评估": "Fifth evaluator",
   "第六评估": "Sixth evaluator",
   "未命名模型": "Unnamed model",
+  "未选择模型": "No model selected",
   "至少保留一个模型资源。": "Keep at least one model resource.",
   "至少启用一个模型资源。": "Keep at least one model resource enabled.",
   "会话模型不能使用已停用的模型资源。":
@@ -994,6 +991,14 @@ export const en: Record<string, string> = {
   "软件更新": "Software update",
   "载入中…": "Loading…",
   "载入会话…": "Loading session…",
+  "载入执行过程": "Load execution steps",
+  "这一轮的执行过程尚未载入，展开即可查看。":
+    "This run's execution steps are not loaded yet; expand to fetch them.",
+  "正在载入执行过程…": "Loading execution steps…",
+  "这一轮的执行过程已经不在会话记录里了。":
+    "This run's execution steps are no longer in the session record.",
+  "未加载": "Not loaded",
+  "{v1} 项步骤": "{v1} steps",
   "输出": "Output",
   "边界：": "Boundaries:",
   "达到步数上限": "Step limit reached",
@@ -1974,4 +1979,115 @@ export const en: Record<string, string> = {
   "疑似凭据": "Suspected secret",
   "重复文件": "Duplicate file",
   "缺少验证脚本": "Missing verification script",
+
+  // 会话资源抽屉（工作区文件 / 相关链接 / 可用工具 / 会话知识库 / 产出文件）
+  "会话资源": "Session resources",
+  "资源": "Resources",
+  "会话资源：工作区文件、相关链接、可用工具、会话知识库、新增修改文件":
+    "Session resources: workspace files, related links, tools, session knowledge and changed files",
+  "会话资源分类": "Session resource categories",
+  "相关链接": "Links",
+  "可用工具": "Tools",
+  "新增/修改文件": "Changed files",
+  "内置": "Built-in",
+  "自写": "Custom",
+  "独立窗口打开": "Open in window",
+  "搜索这个会话的问答": "Search this session's Q&A",
+  "也可能是内容都被忽略规则隐藏了。":
+    "Or everything here is hidden by the ignore rules.",
+  "选择会话后，这里会列出对话里出现过的链接。":
+    "Pick a session and the links its transcript mentions appear here.",
+  "正在收集链接…": "Collecting links…",
+  "这个会话还没有链接": "No links in this session yet",
+  "对话里出现 http(s) 链接后，会自动汇总到这里。":
+    "Once an http(s) link shows up in the transcript it is collected here.",
+  "选择会话后，这里会列出这次运行可用的工具。":
+    "Pick a session to see the tools its run could use.",
+  "这个会话还没有可用工具": "No tools for this session yet",
+  "内置、MCP 与自写工具一旦对这次运行开放，就会出现在这里。":
+    "Built-in, MCP and custom tools appear here once the run can use them.",
+  "选择会话后，这里会按轮次整理提问与回复。":
+    "Pick a session to see its instructions and replies, round by round.",
+  "正在整理轮次…": "Assembling rounds…",
+  "没有匹配的轮次": "No matching rounds",
+  "这个会话还没有问答": "This session has no Q&A yet",
+  "完成一轮问答后，这里会列出「我的指令 → Pilot 回复」。":
+    "After one round it lists your instruction and Pilot's reply.",
+  "第 {v1} 轮": "Round {v1}",
+  "第 {v1} 轮 · {v2} 条回复": "Round {v1} · {v2} replies",
+  "从左侧选择一条链接。": "Pick a link on the left.",
+  "从左侧选择一个工具。": "Pick a tool on the left.",
+  "从左侧选择一轮问答。": "Pick a round on the left.",
+  "从左侧选择一个文件查看内容。": "Pick a file on the left to preview it.",
+  "链接已复制": "Link copied",
+  "已复制路径": "Path copied",
+  "出现 {v1} 次": "Mentioned {v1} times",
+  "来自我的提问": "From my message",
+  "来自 Pilot 的回复": "From Pilot's reply",
+  "协议": "Scheme",
+  "路径": "Path",
+  "锚点": "Anchor",
+  "查询参数": "Query parameters",
+  "（空）": "(empty)",
+  "提到它的消息": "Message that mentions it",
+  "（这句里只有链接本身）": "(that message is just the link)",
+  "链接只从会话正文里收集，不抓取内容：这里看到的是提过哪些链接。":
+    "Links come from the transcript only; nothing is fetched. This is a list of what was mentioned.",
+  "未开放": "Not offered",
+  "已开放": "Offered",
+  "这个工具没有写说明。": "This tool has no description.",
+  "可访问目标": "Reachable targets",
+  "输入结构": "Input schema",
+  "版本 {v1}": "Version {v1}",
+  "清单与运行时一致：这里看到的就是这次运行真实可用的工具集合。":
+    "The catalog matches runtime: this is exactly what the run could call.",
+  "我的指令": "My instruction",
+  "跳到这条回复": "Jump to this reply",
+  "这条指令在知识库里是截断后的版本。":
+    "This instruction is stored truncated in the knowledge base.",
+  "（这一轮没有文字回复）": "(no text reply in this round)",
+  "这条回复在知识库里是截断后的版本。":
+    "This reply is stored truncated in the knowledge base.",
+  "链接来自本次会话正文 · 只汇总不抓取":
+    "Links from this session's transcript · listed, never fetched",
+  "清单与运行时一致 · 只读展示": "Catalog matches runtime · read-only",
+  "按轮次整理的会话知识库 · 只读预览":
+    "Session knowledge base by round · read-only preview",
+
+  // Session resources, todos and priority pickers.
+  "这个会话已不在列表里，可能被删除了。":
+    "This session is no longer in the list, so it may have been deleted.",
+  "全部待办": "All todos",
+  "全部待办：所有会话汇总": "All todos: every session combined",
+  "这里是所有会话的待办汇总；发送会把该条待办排进对应会话的队列。":
+    "Every session's todos in one place; sending queues one in its own session.",
+  "正在汇总所有会话的待办…": "Gathering todos from every session…",
+  "没有待办": "No todos",
+  "在输入框顶部的待办面板里记一条，或选中正文后加入待办。":
+    "Add one in the todo panel above the input, or select text and add it as a todo.",
+  "回到这个会话": "Go to this session",
+  " · {v1} 项已发送": " · {v1} sent",
+  "显示已发送 {v1} 项": "Show {v1} sent",
+  "发送到该会话": "Send to that session",
+  "把这条待办发到「{v1}」？": "Send this todo to “{v1}”?",
+  "{v1} 项待发送 · 分布在 {v2} 个会话":
+    "{v1} pending · across {v2} sessions",
+  "新待办优先级：点一下切换": "New todo priority: click to cycle",
+  "新待办优先级 {v1}": "New todo priority: {v1}",
+  "高优先级 · 点击改为中": "High priority · click for medium",
+  "中优先级 · 点击改为低": "Medium priority · click for low",
+  "低优先级 · 点击改为高": "Low priority · click for high",
+  "模型服务已连接 · 点击打开设置":
+    "Model service connected · click to open settings",
+  "尚未配置 API Key · 点击打开设置":
+    "API key not set · click to open settings",
+  "已连接": "Connected",
+  "未连接": "Not connected",
+  "调用 {v1} 次": "Called {v1} times",
+  "当前会话调用 {v1} 次": "Called {v1} times in this session",
+  "在内置浏览器打开": "Open in the built-in browser",
+  "交给系统默认浏览器": "Open in the system browser",
+  "系统浏览器": "System browser",
+  "还原窗口": "Restore window",
+  "展开到整个界面": "Expand to the whole window",
 }

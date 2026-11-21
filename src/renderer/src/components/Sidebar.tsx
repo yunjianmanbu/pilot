@@ -10,10 +10,9 @@ import type {
 import {
   BrainIcon,
   ChevronDownIcon,
-  FilesIcon,
   FeedbackIcon,
+  FilesIcon,
   FolderIcon,
-  HistoryIcon,
   LayersIcon,
   ListCheckIcon,
   PauseIcon,
@@ -25,9 +24,9 @@ import {
   SettingsIcon,
   SparkIcon,
   TrashIcon,
-  WrenchIcon,
 } from '../icons'
 import { formatElapsedSince, formatRelative, type MainView } from '../ui'
+import { modelResourceName } from '../../../shared/model-label'
 import { SelectMenu } from './SelectMenu'
 import { UpdatePanel } from './UpdatePanel'
 import { t } from '../i18n'
@@ -54,7 +53,7 @@ interface SidebarProps {
   settings: SettingsView | null
   settingsOpen: boolean
   feedbackOpen: boolean
-  filesOpen: boolean
+  resourcesOpen: boolean
   version: string
   update: UpdateState
   updateOpen: boolean
@@ -65,7 +64,7 @@ interface SidebarProps {
   onDeleteSession: (session: SessionSummary) => void
   onOpenSearchHit: (hit: MessageSearchHit) => void
   onView: (view: MainView) => void
-  onOpenFiles: () => void
+  onOpenResources: () => void
   onOpenSettings: () => void
   onOpenFeedback: () => void
   onOpenUpdate: () => void
@@ -156,7 +155,7 @@ export function Sidebar({
   settings,
   settingsOpen,
   feedbackOpen,
-  filesOpen,
+  resourcesOpen,
   version,
   update,
   updateOpen,
@@ -167,7 +166,7 @@ export function Sidebar({
   onDeleteSession,
   onOpenSearchHit,
   onView,
-  onOpenFiles,
+  onOpenResources,
   onOpenSettings,
   onOpenFeedback,
   onOpenUpdate,
@@ -217,6 +216,16 @@ export function Sidebar({
   }, [query])
 
   const current = workspaces.find((workspace) => workspace.path === activeWorkspace) ?? null
+  /**
+   * 底部状态行显示当前会话模型资源的名字。以前回退到写死的 `deepseek-chat`，
+   * 让未配置的用户以为已经连上了某个真实模型；现在没有真名就只说未选择。
+   */
+  const modelName = useMemo(() => {
+    const resources = settings?.modelResources ?? []
+    const active =
+      resources.find((item) => item.id === settings?.sessionModelId) ?? resources[0]
+    return modelResourceName(active)
+  }, [settings])
   const activeKey = activeWorkspace ? pathKey(activeWorkspace) : ''
   const running = sessions.filter((session) => session.running).length
   const workspaceByKey = useMemo(
@@ -579,7 +588,7 @@ export function Sidebar({
         >
           <i className={`dot ${settings?.hasKey ? 'ok' : 'warn'}`} />
           <span>
-            {settings?.model ?? 'deepseek-chat'}
+            {modelName || t("未选择模型")}
             {settings?.hasKey ? t(" · 已连接") : t(" · 未配置 API Key")}
           </span>
         </button>
@@ -602,21 +611,12 @@ export function Sidebar({
           </button>
           <button
             type="button"
-            className={`footer-nav-item footer-nav-knowledge${view === 'knowledge' ? ' is-active' : ''}`}
-            title={t("会话知识库")}
-            onClick={() => onView('knowledge')}
+            className={`footer-nav-item${resourcesOpen ? ' is-active' : ''}`}
+            title={t("会话资源")}
+            onClick={onOpenResources}
           >
-            <HistoryIcon width={16} height={16} />
-            <span className="footer-nav-label">{t("知识库")}</span>
-          </button>
-          <button
-            type="button"
-            className={`footer-nav-item${view === 'tools' ? ' is-active' : ''}`}
-            title={t("工具")}
-            onClick={() => onView('tools')}
-          >
-            <WrenchIcon width={16} height={16} />
-            <span className="footer-nav-label">{t("工具")}</span>
+            <FilesIcon width={16} height={16} />
+            <span className="footer-nav-label">{t("资源")}</span>
           </button>
           <button
             type="button"
@@ -657,15 +657,6 @@ export function Sidebar({
                 <span className="footer-badge">{draftProfileCount}</span>
               ) : null}
             </span>
-          </button>
-          <button
-            type="button"
-            className={`footer-nav-item footer-nav-files${filesOpen ? ' is-active' : ''}`}
-            title={t("工作区文件")}
-            onClick={onOpenFiles}
-          >
-            <FilesIcon width={16} height={16} />
-            <span className="footer-nav-label">{t("文件")}</span>
           </button>
           <button
             type="button"

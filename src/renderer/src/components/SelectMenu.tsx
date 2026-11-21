@@ -5,6 +5,12 @@ export interface SelectOption {
   value: string
   label: string
   disabled?: boolean
+  /** 第二行小字：模型名这类只在展开时需要的细节。 */
+  detail?: string
+  /** 右侧短标注（如模型标签），只在展开的列表里出现。 */
+  note?: string
+  /** 触发器文案；省略时用 label，让选中后的按钮保持简短。 */
+  triggerLabel?: string
 }
 
 interface SelectMenuProps {
@@ -187,7 +193,9 @@ export function SelectMenu({
         onClick={() => (open ? closeMenu() : openMenu())}
         onKeyDown={onKeyDown}
       >
-        <span className="select-value">{selected?.label ?? ''}</span>
+        <span className="select-value">
+          {selected ? (selected.triggerLabel ?? selected.label) : ''}
+        </span>
         <ChevronDownIcon width={13} height={13} className="select-chevron" />
       </button>
 
@@ -215,7 +223,7 @@ export function SelectMenu({
                 aria-selected={isSelected}
                 aria-disabled={option.disabled || undefined}
                 disabled={option.disabled}
-                title={option.label}
+                title={option.detail ? `${option.label} · ${option.detail}` : option.label}
                 className={`select-option${index === active ? ' is-active' : ''}${
                   isSelected ? ' is-selected' : ''
                 }${option.disabled ? ' is-option-disabled' : ''}`}
@@ -225,7 +233,15 @@ export function SelectMenu({
                 }}
                 onClick={() => choose(index)}
               >
-                <span className="select-option-label">{option.label}</span>
+                {option.detail ? (
+                  <span className="select-option-main">
+                    <span className="select-option-label">{option.label}</span>
+                    <span className="select-option-detail">{option.detail}</span>
+                  </span>
+                ) : (
+                  <span className="select-option-label">{option.label}</span>
+                )}
+                {option.note ? <span className="select-option-note">{option.note}</span> : null}
                 <CheckIcon width={13} height={13} className="select-check" />
               </button>
             )

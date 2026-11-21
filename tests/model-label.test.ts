@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MODEL_TAG_MAX_LENGTH,
   modelOptionLabel,
+  modelResourceName,
   modelTagLength,
   normalizeModelTag,
 } from '../src/shared/model-label'
@@ -30,5 +31,15 @@ describe('model tags', () => {
     expect(modelOptionLabel('gpt-5', '   ')).toBe('gpt-5')
     expect(modelOptionLabel('  通义千问  ', '公司A')).toBe('通义千问 · 公司A')
     expect(modelOptionLabel('', '公司A')).toBe('公司A')
+  })
+
+  it('never shows the built-in placeholder model as a connected model', () => {
+    // 预置资源就带着 deepseek-chat：它不是用户选过的模型，不能当名字展示。
+    expect(modelResourceName({ label: '', model: 'deepseek-chat' })).toBe('')
+    expect(modelResourceName({ label: '默认模型', model: 'deepseek-chat' })).toBe('默认模型')
+    expect(modelResourceName({ label: '  ', model: 'deepseek-chat' })).toBe('')
+    expect(modelResourceName({ label: '', model: ' qwen-max ' })).toBe('qwen-max')
+    expect(modelResourceName(null)).toBe('')
+    expect(modelResourceName(undefined)).toBe('')
   })
 })

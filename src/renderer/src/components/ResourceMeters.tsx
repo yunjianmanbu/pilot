@@ -7,7 +7,7 @@ import {
 } from '../../../shared/system-info'
 import { t } from '../i18n'
 
-/** 采样间隔：顶栏是常驻信息，2s 够看出趋势，又不会把主进程拖成轮询机。 */
+/** 采样间隔：标题栏是常驻信息，2s 够看出趋势，又不会把主进程拖成轮询机。 */
 const POLL_MS = 2000
 /** 连续失败超过这个时长才把读数退成「—」：偶发一次 IO 抖动不该让条闪空。 */
 const KEEP_STALE_MS = 12_000
@@ -28,7 +28,7 @@ function percentText(percent: number | null): string {
 }
 
 /**
- * 顶栏的本机资源条：CPU、内存、磁盘各一条迷你进度条。
+ * 窗口最上边 titlebar 里的本机资源条：CPU、内存、磁盘各一条迷你进度条。
  *
  * 数据来自 `resourceUsage()`（主进程一次 ~120ms 的 CPU 差分采样），这里只负责
  * 轮询与绘制。窗口隐藏时停表——后台窗口继续采样 CPU 本身就是它想报告的那种浪费。

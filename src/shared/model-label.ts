@@ -20,6 +20,26 @@ export function normalizeModelTag(value: unknown): string {
   return Array.from(collapsed).slice(0, MODEL_TAG_MAX_LENGTH).join('')
 }
 
+/**
+ * 预置状态里写死的占位模型名。它只是默认值，不是用户选过的模型，
+ * 所以界面上不能把它当成「已连接 deepseek-chat」展示。
+ */
+export const PLACEHOLDER_MODEL_NAME = 'deepseek-chat'
+
+/**
+ * 模型资源在界面上的名字：优先用户起的 label，其次真实的 model 名。
+ * label 为空且 model 仍是内置占位名时返回空串，调用方据此只显示状态点。
+ */
+export function modelResourceName(
+  resource: { label?: string | null; model?: string | null } | null | undefined,
+): string {
+  if (!resource) return ''
+  const label = (resource.label ?? '').trim()
+  if (label) return label
+  const model = (resource.model ?? '').trim()
+  return model && model !== PLACEHOLDER_MODEL_NAME ? model : ''
+}
+
 /** 下拉框文案：「模型名称 · 标签」；没有标签时只显示名称。 */
 export function modelOptionLabel(name: string, tag: string): string {
   const title = name.trim()
