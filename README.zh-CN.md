@@ -28,6 +28,14 @@ Pilot 是一个**本地优先**、可自我学习迭代的桌面编程智能体�
 
 更多产品截图与演示视频：<https://pilot.medpilot.cc/zh.html>
 
+## 一个文件夹，一个循环
+
+![一个文件夹、一个循环、三个入口](docs/diagrams/zh/architecture.png)
+
+渲染进程从不直接碰你的文件：对话、计划与 diff 审阅只经 IPC 读状态，真正执行的是主进程里的
+智能体循环。手机端（Pilot Link）、反控端（Pilot Client）与 `pilot serve` 是同一个循环的三个
+额外入口，不是三个各自独立的智能体。
+
 ## 功能
 
 - **本地工作区智能体**：读取 / 搜索 / 预览文件，精确 patch，执行白名单命令，统一 diff 与变更确认。

@@ -29,6 +29,14 @@ key (or any OpenAI-compatible endpoint) and it works.
 
 More product screens and the demo video: <https://pilot.medpilot.cc/>
 
+## How the pieces fit
+
+![One folder, one loop, three surfaces](docs/diagrams/en/architecture.png)
+
+The renderer never touches your files — chat, plans and diff review read state over IPC, and the
+agent loop in the main process is the only writer. Pilot Link, Pilot Client and `pilot serve` are
+three extra surfaces onto that same loop, not three separate agents.
+
 ## Features
 
 - **Local workspace agent** — read, search and preview files, precise patches, whitelisted commands,
