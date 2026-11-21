@@ -579,7 +579,8 @@ a:hover {
   gap: 14px;
   padding: 0 170px 0 18px;
   background: var(--bg);
-  border-bottom: 1px solid var(--line);
+  /* 下边线由 .app-shell 的 border-top 负责：Windows 上右上角三按钮是原生
+     titleBarOverlay，会盖住标题栏自身底部的 1px，那条线在右侧就断了。 */
   -webkit-app-region: drag;
   user-select: none;
   position: relative;
@@ -625,6 +626,8 @@ a:hover {
   flex: 1;
   min-height: 0;
   display: flex;
+  /* 整宽下边线：标题栏右上角的原生窗口按钮不会盖到这里。 */
+  border-top: 1px solid var(--line);
 }
 
 .main-area {
@@ -1411,6 +1414,16 @@ a:hover {
 
 .session-time {
   flex: none;
+}
+
+/* 待办数与排队数靠右：左侧是时间与计划进度，右侧是「我还欠多少」。 */
+.session-meta-tail {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+  padding-left: 4px;
 }
 
 .session-sep {
@@ -4030,6 +4043,9 @@ button.header-title:hover {
 }
 
 .plan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   padding: 1px 5px;
   border-radius: 4px;
   background: var(--accent-soft);
@@ -4672,24 +4688,81 @@ button.queue-content {
 
 .settings-body {
   display: flex;
+  gap: 18px;
+  padding: 0 0 0 14px;
+  overflow: hidden;
+}
+
+.settings-nav {
+  flex: none;
+  width: 132px;
+  display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 1px;
+  padding: 18px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-nav-item {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+  font-size: calc(12px * var(--font-scale));
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.settings-nav-item:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.settings-nav-item.is-active {
+  background: var(--accent-soft, var(--hover));
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.settings-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 右侧留出滚动条的位置，避免滚动条压在卡片上。 */
+  padding: 18px 22px 20px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 一次只展示一组：左侧选中哪组，右侧就只渲染这一组，避免一条几万像素长的卡片列。 */
+.settings-main > [hidden] {
+  display: none;
 }
 
 .settings-section {
-  padding-bottom: 22px;
+  padding: 15px 17px 16px;
+  border-radius: 12px;
+  /* 用底色分层而不是边线；与全局 IDEA 风格一致。 */
+  background: var(--hover);
 }
 
 .settings-section:last-of-type {
-  padding-bottom: 0;
+  padding-bottom: 16px;
   border-bottom: 0;
 }
 
 /* A card in the evolution panel points here; mark the section it opened. */
 .settings-section-focus {
   outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  outline-offset: 4px;
-  border-radius: 8px;
+  outline-offset: 2px;
+  border-radius: 12px;
 }
 
 .settings-section-head {
@@ -4697,7 +4770,7 @@ button.queue-content {
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  margin-bottom: 13px;
+  margin-bottom: 12px;
 }
 
 .settings-section-head h3 {
@@ -4745,25 +4818,32 @@ button.queue-content {
   grid-column: 1 / -1;
 }
 
+/* 标题与说明分两行：并排时在窄列里说明会被挤成一字一行的竖排。 */
 .field-label {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  /* 固定两行高，让有说明和没说明的字段输入框在同一条基线上。 */
+  min-height: 32px;
   color: var(--text-soft);
   font-size: calc(11.5px * var(--font-scale));
   font-weight: 550;
+  line-height: 1.4;
 }
 
 .field-label small {
   color: var(--faint);
   font-size: calc(10px * var(--font-scale));
   font-weight: 400;
+  line-height: 1.45;
+  white-space: normal;
 }
 
 .field-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
   margin-top: 12px;
 }
 
@@ -4927,6 +5007,35 @@ button.queue-content {
   color: var(--faint);
   font-size: calc(11px * var(--font-scale));
   font-weight: 400;
+}
+
+/* 组内小分组：用间距、字号和字重分层，不加边线（IDEA 风格）。 */
+.settings-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 22px 0 0;
+  color: var(--text);
+  font-size: calc(12px * var(--font-scale));
+  font-weight: 600;
+}
+
+.settings-subhead:first-of-type {
+  margin-top: 16px;
+}
+
+.settings-subhead span {
+  color: var(--faint);
+  font-size: calc(11px * var(--font-scale));
+  font-weight: 400;
+  text-align: right;
+  line-height: 1.45;
+}
+
+.settings-subhead + .field-grid,
+.settings-subhead + .settings-note {
+  margin-top: 8px;
 }
 
 .model-eval-list {
@@ -6865,6 +6974,74 @@ button.queue-content {
 
 .toggle-inline.is-on {
   color: var(--text);
+}
+
+/* ── 进化历史 ────────────────────────────────────────────────────────────
+   记录不自动裁剪，所以列表行要密：一行能读完状态、评分与摘要，展开才看图。 */
+.cycle-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cycle-history-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.cycle-history-row > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: calc(11.5px * var(--font-scale));
+  list-style: none;
+}
+
+.cycle-history-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.cycle-history-row[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.cycle-history-row .cycle-card {
+  margin: 0;
+  border: none;
+  border-radius: 0 0 10px 10px;
+  background: transparent;
+}
+
+.cycle-history-rank {
+  flex: none;
+  width: 20px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.cycle-history-score {
+  flex: none;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.cycle-history-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cycle-history-time {
+  flex: none;
+  font-size: calc(10.5px * var(--font-scale));
 }
 
 .cycle-card {
@@ -9247,11 +9424,18 @@ button.queue-content {
 
 /* 优先级小标签：新建与已有待办共用，点一下切到下一档。宽度固定，
    避免「高/中/低」切换时整行文字左右跳动。 */
-.todo-priority {
+/* 待办优先级：下拉触发器沿用行内那枚小色块的外形，点开才展开高/中/低。 */
+.todo-priority-select {
   flex: none;
-  min-width: 26px;
+  width: auto;
+  min-width: 0;
+}
+
+.todo-priority-select .select-trigger {
+  width: auto;
   height: 20px;
-  padding: 0 5px;
+  gap: 1px;
+  padding: 0 2px 0 5px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--panel);
@@ -9261,18 +9445,28 @@ button.queue-content {
   line-height: 1;
 }
 
-.todo-priority:hover {
+.todo-priority-select .select-value {
+  overflow: visible;
+}
+
+.todo-priority-select .select-chevron {
+  width: 9px;
+  height: 9px;
+  opacity: 0.7;
+}
+
+.todo-priority-select .select-trigger:hover:not(:disabled) {
   border-color: var(--line-strong);
   color: var(--text);
 }
 
-.todo-priority.priority-high {
+.todo-priority-select.priority-high .select-trigger {
   border-color: color-mix(in srgb, var(--red) 38%, transparent);
   background: color-mix(in srgb, var(--red) 9%, var(--panel));
   color: var(--red);
 }
 
-.todo-priority.priority-low {
+.todo-priority-select.priority-low .select-trigger {
   border-color: color-mix(in srgb, var(--line-strong) 70%, transparent);
   background: var(--panel-2);
   color: var(--faint);
@@ -9772,38 +9966,55 @@ button.queue-content {
   flex: none;
 }
 
-/* Plan step numbers in a session row: colour is the state, digits are the index. */
+/* Plan steps in a session row: round colour chips like the mobile client.
+   Grey = untouched, green = done, amber = running (breathing). */
 .session-plan {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
 }
 
-.session-plan-num {
+.session-plan-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
   flex: none;
-  min-width: 8px;
-  color: var(--faint);
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--panel-3);
+  color: var(--sidebar-muted);
   font-family: var(--mono);
-  font-size: calc(10px * var(--font-scale));
+  font-size: calc(9px * var(--font-scale));
   font-style: normal;
   font-weight: 600;
   line-height: 1;
-  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
-.session-plan-num.is-done {
-  color: var(--green);
+.session-plan-dot.is-done {
+  background: var(--green);
+  color: var(--sidebar-bg);
 }
 
-.session-plan-num.is-in_progress {
-  color: var(--amber);
-}
-
-.session-plan-num.is-in_progress.is-live {
+.session-plan-dot.is-active {
+  background: var(--amber);
+  color: var(--sidebar-bg);
   animation: pulse 1.6s ease-in-out infinite;
+}
+
+.session-plan-count {
+  flex: none;
+  margin-left: 2px;
+  color: var(--sidebar-muted);
+  font-family: var(--mono);
+  font-size: calc(10px * var(--font-scale));
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .session-plan-more {
@@ -9938,6 +10149,65 @@ button.queue-content {
   gap: 8px;
 }
 
+/* 定时总览里的行：与待办总览同宽度、同密度。 */
+.schedule-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.schedule-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 13px;
+  border-top: 1px solid var(--line);
+}
+
+.schedule-row:first-child {
+  border-top: 0;
+}
+
+.schedule-row.is-off {
+  opacity: 0.6;
+}
+
+.schedule-row > .schedule-kind {
+  flex: none;
+  margin-top: 2px;
+}
+
+.schedule-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.schedule-row-main p {
+  margin: 0 0 3px;
+  color: var(--text);
+  font-size: calc(12.5px * var(--font-scale));
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.schedule-row-main small {
+  display: block;
+  color: var(--faint);
+  font-size: calc(10.5px * var(--font-scale));
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-row-main .schedule-row-error {
+  color: var(--red);
+}
+
+.schedule-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
 .schedule-list-head {
   display: flex;
   align-items: baseline;
@@ -9949,6 +10219,13 @@ button.queue-content {
 .schedule-list-head span {
   color: var(--faint);
   font-size: calc(11px * var(--font-scale));
+}
+
+.schedule-hint {
+  margin: 10px 2px 0;
+  color: var(--muted);
+  font-size: calc(12px * var(--font-scale));
+  line-height: 1.55;
 }
 
 .schedule-empty {
@@ -11909,6 +12186,86 @@ button.queue-content {
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 10px;
+}
+
+.self-source-repos {
+  margin: 0 0 12px;
+}
+
+.self-source-repos-title {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: calc(10px * var(--font-scale));
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.self-source-repo-list {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.self-source-repo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 9px;
+  background: var(--hover);
+}
+
+.self-source-repo-open {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    'label arrow'
+    'hint hint'
+    'repo repo';
+  align-items: center;
+  gap: 1px 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.self-source-repo-open strong {
+  grid-area: label;
+  font-size: calc(11.5px * var(--font-scale));
+  font-weight: 600;
+}
+
+.self-source-repo-open svg {
+  grid-area: arrow;
+  color: var(--faint);
+}
+
+.self-source-repo-open:hover svg {
+  color: var(--accent);
+}
+
+.self-source-repo-open small {
+  grid-area: hint;
+  color: var(--muted);
+  font-size: calc(10px * var(--font-scale));
+  line-height: 1.4;
+}
+
+.self-source-repo-open code {
+  grid-area: repo;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: calc(9.5px * var(--font-scale));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .self-source-grid {

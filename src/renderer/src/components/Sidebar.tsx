@@ -10,8 +10,8 @@ import type {
 import {
   BrainIcon,
   ChevronDownIcon,
+  ClockIcon,
   FeedbackIcon,
-  FilesIcon,
   FolderIcon,
   LayersIcon,
   ListCheckIcon,
@@ -54,7 +54,6 @@ interface SidebarProps {
   settings: SettingsView | null
   settingsOpen: boolean
   feedbackOpen: boolean
-  resourcesOpen: boolean
   version: string
   update: UpdateState
   updateOpen: boolean
@@ -65,7 +64,6 @@ interface SidebarProps {
   onDeleteSession: (session: SessionSummary) => void
   onOpenSearchHit: (hit: MessageSearchHit) => void
   onView: (view: MainView) => void
-  onOpenResources: () => void
   onOpenSettings: () => void
   onOpenFeedback: () => void
   onOpenUpdate: () => void
@@ -79,6 +77,8 @@ interface SidebarProps {
   memoryCount: number
   /** 所有会话里还没发送的待办总数，显示在左下角「待办」按钮上。 */
   todoCount: number
+  /** 所有会话里启用中的定时任务总数，显示在左下角「定时」按钮上。 */
+  scheduledCount: number
 }
 
 function pathKey(path: string): string {
@@ -132,19 +132,29 @@ export function PlanMarks({ plan, running }: { plan: Plan; running: boolean }) {
   // Long plans would overflow the row; the tail is summarised instead of clipped.
   const shown = plan.items.slice(0, PLAN_MARKS_LIMIT)
   const rest = total - shown.length
+  // 执行完就不再报步骤序号（移动端也是这样）：只留完成数；
+  // 还在跑时才把每一步画成彩色圆点，当前步呼吸。
   return (
     <span className="session-plan" role="img" aria-label={label} title={label}>
-      {shown.map((item, index) => (
-        <i
-          key={item.id}
-          className={`session-plan-num is-${item.status}${
-            item.status === 'in_progress' && running ? ' is-live' : ''
-          }`}
-        >
-          {index + 1}
-        </i>
-      ))}
-      {rest > 0 ? <i className="session-plan-more">+{rest}</i> : null}
+      {running
+        ? shown.map((item, index) => {
+            const state =
+              item.status === 'done'
+                ? 'done'
+                : item.status === 'in_progress'
+                  ? 'active'
+                  : 'pending'
+            return (
+              <i key={item.id} className={`session-plan-dot is-${state}`}>
+                {index + 1}
+              </i>
+            )
+          })
+        : null}
+      {running && rest > 0 ? <i className="session-plan-more">+{rest}</i> : null}
+      <b className="session-plan-count">
+        {done}/{total}
+      </b>
     </span>
   )
 }
@@ -158,7 +168,6 @@ export function Sidebar({
   settings,
   settingsOpen,
   feedbackOpen,
-  resourcesOpen,
   version,
   update,
   updateOpen,
@@ -169,7 +178,6 @@ export function Sidebar({
   onDeleteSession,
   onOpenSearchHit,
   onView,
-  onOpenResources,
   onOpenSettings,
   onOpenFeedback,
   onOpenUpdate,
@@ -182,6 +190,7 @@ export function Sidebar({
   draftProfileCount,
   memoryCount,
   todoCount,
+  scheduledCount,
 }: SidebarProps) {
   const [query, setQuery] = useState('')
   const [project, setProject] = useState('')
@@ -548,20 +557,20 @@ export function Sidebar({
                               <PlanMarks plan={session.plan} running={session.running} />
                             </>
                           ) : null}
-                          {session.todoCount > 0 ? (
-                            <>
-                              <span className="session-sep">·</span>
-                              <span className="session-todo">
-                                <ListCheckIcon width={10} height={10} />
-                                {session.todoCount}
-                              </span>
-                            </>
-                          ) : null}
-                          {session.queueCount > 0 ? (
-                            <>
-                              <span className="session-sep">·</span>
-                              <span className="session-queue">{t("排队")}{session.queueCount}</span>
-                            </>
+                          {session.todoCount > 0 || session.queueCount > 0 ? (
+                            <span className="session-meta-tail">
+                              {session.todoCount > 0 ? (
+                                <span className="session-todo">
+                                  <ListCheckIcon width={10} height={10} />
+                                  {session.todoCount}
+                                </span>
+                              ) : null}
+                              {session.queueCount > 0 ? (
+                                <span className="session-queue">
+                                  {t("排队")}{session.queueCount}
+                                </span>
+                              ) : null}
+                            </span>
                           ) : null}
                         </span>
                       </button>
@@ -627,12 +636,15 @@ export function Sidebar({
           </button>
           <button
             type="button"
-            className={`footer-nav-item${resourcesOpen ? ' is-active' : ''}`}
-            title={t("会话资源")}
-            onClick={onOpenResources}
+            className={`footer-nav-item${view === 'scheduled' ? ' is-active' : ''}`}
+            title={t("全部定时任务：所有会话汇总")}
+            onClick={() => onView('scheduled')}
           >
-            <FilesIcon width={16} height={16} />
-            <span className="footer-nav-label">{t("资源")}</span>
+            <ClockIcon width={16} height={16} />
+            <span className="footer-nav-label">
+              {t("定时")}
+              {scheduledCount > 0 ? <span className="footer-badge">{scheduledCount}</span> : null}
+            </span>
           </button>
           <button
             type="button"

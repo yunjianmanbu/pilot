@@ -6,7 +6,7 @@ import { normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
 import { normalizeModelTag } from '../shared/model-label'
 import type { BillingAccount } from './billing'
 import { isLocaleSetting, resolveLocale, AppLocale } from '../shared/i18n'
-import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionState, JudgeProvider, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResource, ModelResourceInput, ModelSettingsView, MessageSearchFilter, MessageSearchHit, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileStrategy, ProfileVersion, QualityCandidate, QualityState, QuickCommand, QuickCommandInput, ReviewReport, ReviewScope, RunFeedback, RunRecord, ScheduleKind, ScheduledTask, ScheduledTaskInput, Session, SessionKind, SessionSummary, SettingsUpdate, SettingsView, StoredMessage, TodoGroup, TodoItem, TodoPriority, WorkspaceDetail, WorkspaceSummary } from '../shared/types'
+import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionState, JudgeProvider, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResource, ModelResourceInput, ModelSettingsView, MessageSearchFilter, MessageSearchHit, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileStrategy, ProfileVersion, QualityCandidate, QualityState, QuickCommand, QuickCommandInput, ReviewReport, ReviewScope, RunFeedback, RunRecord, ScheduleKind, ScheduledTask, ScheduledTaskGroup, ScheduledTaskInput, Session, SessionKind, SessionSummary, SettingsUpdate, SettingsView, StoredMessage, TodoGroup, TodoItem, TodoPriority, WorkspaceDetail, WorkspaceSummary } from '../shared/types'
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, SETTING_CONTEXT_MAX, SETTING_CONTEXT_MIN, SETTING_OUTPUT_MAX, SETTING_OUTPUT_MIN } from '../shared/modelLimits'
 import { normalizeRelayUrl } from '../shared/relay'
 import { normalizeTodoPriority } from '../shared/todos'
@@ -1912,8 +1912,34 @@ export class Store {
       .sort((a, b) => a.nextRunAt.localeCompare(b.nextRunAt))
   }
 
+  /** Every scheduled task across sessions; the panel sorts and groups them. */
   allScheduledTasks(): ScheduledTask[] {
-    return this.state.scheduled.map((task) => ({ ...task }))
+    return this.state.scheduled
+      .map((task) => ({ ...task }))
+      .sort((left, right) => left.nextRunAt.localeCompare(right.nextRunAt))
+  }
+
+  /** The same list grouped by session, for the cross-session overview panel. */
+  allScheduledTaskGroups(): ScheduledTaskGroup[] {
+    const groups = new Map<string, ScheduledTaskGroup>()
+    for (const task of this.allScheduledTasks()) {
+      const session = this.state.sessions.find((entry) => entry.id === task.sessionId)
+      if (!session) continue
+      const group = groups.get(session.id) ?? {
+        sessionId: session.id,
+        sessionTitle: session.title,
+        workspacePath: session.workspacePath,
+        sessionUpdatedAt: session.updatedAt,
+        tasks: [],
+      }
+      group.tasks.push(task)
+      groups.set(session.id, group)
+    }
+    return [...groups.values()].sort((a, b) => {
+      const left = a.tasks[0]?.nextRunAt ?? ''
+      const right = b.tasks[0]?.nextRunAt ?? ''
+      return left.localeCompare(right)
+    })
   }
 
   private scheduledTask(taskId: string): ScheduledTask | undefined {
@@ -2227,10 +2253,10 @@ export class Store {
     return {
       policy: { ...this.state.evolutionPolicy },
       policyVersions: this.state.evolutionPolicyVersions.map((version) => ({ ...version })),
+      // The full history goes out; the panel decides what to show first.
       cycles: this.state.evolutionCycles
         .filter((cycle) => cycle.workspacePath === workspacePath)
-        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
-        .slice(0, 20),
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
     }
   }
 
@@ -2634,7 +2660,7 @@ export class Store {
       createdAt: now(),
     }
     this.state.evolutionPolicyVersions.unshift(draft)
-    this.state.evolutionPolicyVersions = this.state.evolutionPolicyVersions.slice(0, 30)
+    // No automatic trimming: a version disappears only when the user clears it.
     await this.save()
     return draft
   }
@@ -2690,9 +2716,23 @@ export class Store {
     const stored = sanitizeEvolutionCycle(cycle)
     if (!stored) throw new Error('Invalid evolution cycle')
     this.state.evolutionCycles.unshift(stored)
-    this.state.evolutionCycles = this.state.evolutionCycles.slice(0, 60)
+    // Kept until the user clears the history; see clearEvolutionHistory().
     await this.save()
     return stored
+  }
+
+  /**
+   * The only path that removes evolution records. Cycles all go, retired policy
+   * versions all go, and the version currently in force stays: dropping it would
+   * silently fall back to built-in defaults, which is not what "clear history"
+   * asks for.
+   */
+  async clearEvolutionHistory(): Promise<void> {
+    this.state.evolutionCycles = []
+    this.state.evolutionPolicyVersions = this.state.evolutionPolicyVersions.filter(
+      (version) => version.status === 'active',
+    )
+    await this.save()
   }
 
   /** Aggregate evidence used when a meta proposal does not carry its own. */

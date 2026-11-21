@@ -363,15 +363,26 @@ export async function loadSelfSourceDefaults(ctx: {
   }
 }
 
+/**
+ * Settings the loop actually uses.
+ *
+ * `adoptDefaults` decides whether an empty address may be filled in from the
+ * build-time discovery. Installed builds pass false: the official remote has to
+ * be typed by the user, so a fresh install never pulls from upstream on its own
+ * (an empty address means "compare against the installer snapshot").
+ * Development keeps adopting the checkout it is running from, where the
+ * discovered branch and path are correct by construction.
+ */
 export function effectiveSettings(
   settings: SelfSourceSettings,
   defaults: SelfSourceDefaults,
+  adoptDefaults = true,
 ): SelfSourceSettings {
   return {
     mode: settings.mode,
-    gitUrl: settings.gitUrl || defaults.gitUrl,
-    gitRef: settings.gitRef || defaults.gitRef,
-    gitPath: settings.gitPath || defaults.gitPath,
+    gitUrl: settings.gitUrl || (adoptDefaults ? defaults.gitUrl : ''),
+    gitRef: settings.gitRef || (adoptDefaults ? defaults.gitRef : '') || 'main',
+    gitPath: settings.gitPath || (adoptDefaults ? defaults.gitPath : ''),
     customPath: settings.customPath,
   }
 }
@@ -569,7 +580,8 @@ export async function resolveSelfSource(
   ctx: SelfSourceContext,
 ): Promise<{ sourcePath: string; basePath: string; baseReadOnly: boolean; provenance: SourceProvenance }> {
   const defaults = await loadSelfSourceDefaults(ctx)
-  const settings = effectiveSettings(normalizeSelfSourceSettings(ctx.settings), defaults)
+  // 安装版不继承打包时写下的官方远端：默认基线是安装包快照，官方 git 由用户填。
+  const settings = effectiveSettings(normalizeSelfSourceSettings(ctx.settings), defaults, !ctx.packaged)
   await isGitAvailable()
   const record = await readSelfSourceRecord(ctx.userDataPath)
   const builtinSource = ctx.packaged ? join(ctx.userDataPath, 'self-src') : ctx.appPath
@@ -723,7 +735,8 @@ async function ensureBareRepo(repo: string, gitUrl: string): Promise<{ ok: boole
  */
 export async function syncSelfSource(ctx: SelfSourceContext): Promise<SourceProvenance> {
   const defaults = await loadSelfSourceDefaults(ctx)
-  const settings = effectiveSettings(normalizeSelfSourceSettings(ctx.settings), defaults)
+  // 安装版不继承打包时写下的官方远端：默认基线是安装包快照，官方 git 由用户填。
+  const settings = effectiveSettings(normalizeSelfSourceSettings(ctx.settings), defaults, !ctx.packaged)
   const gitAvailable = await isGitAvailable()
   const sourcePathForSync =
     settings.mode === 'custom'

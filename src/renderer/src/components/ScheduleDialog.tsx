@@ -344,6 +344,9 @@ export function ScheduleDialog({
               </button>
             </div>
             {error ? <div className="settings-error">{error}</div> : null}
+            <p className="schedule-hint">
+              {t("也可以直接在对话里说：「每天 9 点帮我整理待办」，Pilot 会自己建好这条任务。")}
+            </p>
           </section>
 
           <section className="schedule-list">

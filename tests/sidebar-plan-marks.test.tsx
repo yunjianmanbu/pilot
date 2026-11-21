@@ -34,21 +34,26 @@ describe('session list plan marks', () => {
     expect(html).not.toContain('步骤内容')
   })
 
-  it('maps each state to its own colour class', () => {
-    const html = renderToStaticMarkup(<PlanMarks plan={plan('done', 'pending')} running={false} />)
-    expect(html).toContain('class="session-plan-num is-done"')
-    expect(html).toContain('class="session-plan-num is-pending"')
-    expect(html).not.toContain('is-live')
+  it('keeps the numbered dots only while the run is going', () => {
+    const done = renderToStaticMarkup(<PlanMarks plan={plan('done', 'done')} running={false} />)
+    // 执行结束后只报完成数，不再报步骤序号（与移动端一致）。
+    expect(done).toContain('class="session-plan-count"')
+    expect(done).toContain('2/2')
+    expect(done).not.toContain('session-plan-dot')
+
+    const running = renderToStaticMarkup(<PlanMarks plan={plan('done', 'pending')} running />)
+    expect(running).toContain('session-plan-dot is-done')
+    expect(running).toContain('session-plan-dot is-pending')
+    expect(running).toContain('1/2')
   })
 
-  it('only pulses the active number while the run is going', () => {
+  it('only pulses the active step while the run is going', () => {
     const active = renderToStaticMarkup(<PlanMarks plan={plan('in_progress', 'pending')} running />)
-    expect(active).toContain('session-plan-num is-in_progress is-live')
+    expect(active).toContain('session-plan-dot is-active')
     const settled = renderToStaticMarkup(
       <PlanMarks plan={plan('in_progress', 'pending')} running={false} />,
     )
-    expect(settled).toContain('class="session-plan-num is-in_progress"')
-    expect(settled).not.toContain('is-live')
+    expect(settled).not.toContain('session-plan-dot')
   })
 
   it('summarises the tail of a long plan instead of clipping it', () => {
@@ -60,6 +65,15 @@ describe('session list plan marks', () => {
     )
     expect(digits(html)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8'])
     expect(html).toContain('class="session-plan-more">+1</i>')
+    // 结束后的同一份计划不再列步骤，只留 8/9。
+    const settled = renderToStaticMarkup(
+      <PlanMarks
+        plan={plan('done', 'done', 'done', 'done', 'done', 'done', 'done', 'done', 'pending')}
+        running={false}
+      />,
+    )
+    expect(digits(settled)).toEqual([])
+    expect(settled).toContain('8/9')
   })
 
   it('reports progress in the accessible label and renders nothing without items', () => {

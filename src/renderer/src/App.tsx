@@ -36,6 +36,7 @@ import { SessionResourcesPanel } from './components/SessionResourcesPanel'
 import { QualityBell } from './components/QualityBell'
 import { ResourceMeters } from './components/ResourceMeters'
 import { AllTodosPanel } from './components/AllTodosPanel'
+import { AllScheduledPanel } from './components/AllScheduledPanel'
 import { MemoryPanel } from './components/MemoryPanel'
 import { ModuleCheckPanel } from './components/ModuleCheckPanel'
 import { SelfCheckPanel } from './components/SelfCheckPanel'
@@ -366,6 +367,8 @@ export function App() {
   const [scheduleRevision, setScheduleRevision] = useState(0)
   /** 全量待办视图的刷新信号：任何会话的待办变化都会自增。 */
   const [todosRevision, setTodosRevision] = useState(0)
+  /** 左下角「定时」角标：所有会话里启用中的定时任务数。 */
+  const [scheduledCount, setScheduledCount] = useState(0)
   const [scheduleSeed, setScheduleSeed] = useState<{ content: string; todoId?: string } | null>(
     null,
   )
@@ -456,6 +459,29 @@ export function App() {
   const toggleResources = useCallback((tab: ResourceTab) => {
     setResourcesTab((current) => (current === tab ? null : tab))
   }, [])
+
+  /**
+   * 左下角的「定时」角标要算所有会话，所以在定时任务变化时重新汇总一次：
+   * 事件里只带一个 sessionId，阔不出其他会话的条数。
+   */
+  useEffect(() => {
+    let cancelled = false
+    void window.pilot
+      .allScheduledTasks()
+      .then((groups) => {
+        if (cancelled) return
+        setScheduledCount(
+          groups.reduce(
+            (sum, group) => sum + group.tasks.filter((task) => task.enabled).length,
+            0,
+          ),
+        )
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [scheduleRevision])
 
   /**
    * Answer the pending phone request. The dialog closes right away and the
@@ -1136,9 +1162,9 @@ export function App() {
           return
         }
         case 'scheduled.changed': {
-          if (event.sessionId === activeSessionRef.current) {
-            setScheduleRevision((value) => value + 1)
-          }
+          // 定时任务可能属于别的会话：角标与全站视图都要跟着刷新，
+          // 所以这里不再限定「当前会话」才自增。
+          setScheduleRevision((value) => value + 1)
           return
         }
         case 'session.changed': {
@@ -1893,7 +1919,7 @@ export function App() {
         ...previous.filter((entry) => entry.id !== fork.id),
       ])
       setView('chat')
-      pushToast(t("已创建会话副本，可以从这里分叉尝试别的做法。"), 'info')
+      pushToast(t("已创建副本，可以从这里分叉尝试别的做法。"), 'info')
       void refreshSessions(fork.workspacePath)
     } catch (error) {
       pushToast(errorMessage(error), 'error')
@@ -1914,7 +1940,7 @@ export function App() {
         return
       }
       // 复制入口现在收在「更多操作」菜单里，菜单会随即关闭，所以用 toast 回执。
-      pushToast(t("已复制完整对话记录"))
+      pushToast(t("已复制对话"))
     } catch {
       pushToast(t("复制失败，请稍后重试。"), 'error')
     }
@@ -2293,6 +2319,17 @@ export function App() {
       'info',
     )
     return version
+  }, [loadDetail, pushToast])
+
+  /**
+   * 进化记录不再自动裁剪，只有用户主动点「清理」才删。当前生效的策略版本
+   * 会被保留：删掉它等于默默回退到内置默认值，不是「清理历史」的语义。
+   */
+  const clearEvolutionHistory = useCallback(async () => {
+    await window.pilot.clearEvolutionHistory()
+    const workspacePath = activeWorkspaceRef.current
+    if (workspacePath) await loadDetail(workspacePath)
+    pushToast(t("已清理进化记录，当前生效的机制保留不变。"), 'info')
   }, [loadDetail, pushToast])
 
   const toggleAutoEvolve = useCallback(
@@ -2687,23 +2724,16 @@ export function App() {
   if (session) {
     sessionMenuItems.push({
       key: 'copy-transcript',
-      label: t("复制完整对话记录"),
+      label: t("复制对话"),
       icon: <CopyIcon width={15} height={15} />,
       onSelect: () => void copyTranscript(),
     })
-    sessionMenuItems.push({
-      key: 'session-resources',
-      label: t("会话资源"),
-      hint: t("会话资源：工作区文件、相关链接、可用工具、会话知识库、新增修改文件"),
-      icon: <FilesIcon width={15} height={15} />,
-      active: resourcesTab !== null,
-      onSelect: () => toggleResources(resourcesTab ?? 'files'),
-    })
+    // 「会话资源」只保留导航栏右侧那一个图标，避免两个入口互相抢焦点。
     if (session.kind !== 'review') {
       sessionMenuItems.push({
         key: 'fork',
-        label: t("创建会话副本"),
-        hint: t("从当前会话创建副本"),
+        label: t("创建副本"),
+        hint: t("基于当前会话新建一个副本"),
         icon: <LayersIcon width={15} height={15} />,
         onSelect: () => void forkSession(),
       })
@@ -2783,7 +2813,6 @@ export function App() {
           settings={settings}
           settingsOpen={settingsOpen}
           feedbackOpen={feedbackOpen}
-          resourcesOpen={resourcesTab !== null}
           version={version}
           update={update}
           updateOpen={updateOpen}
@@ -2791,11 +2820,11 @@ export function App() {
           onNewSession={(workspacePath) => void newSession(workspacePath)}
           onNewReview={openReview}
           todoCount={sessions.reduce((sum, entry) => sum + entry.todoCount, 0)}
+          scheduledCount={scheduledCount}
           onSelectSession={selectSession}
           onDeleteSession={(target) => void deleteSession(target)}
           onOpenSearchHit={openSearchHit}
           onView={setView}
-          onOpenResources={() => toggleResources(resourcesTab ?? 'files')}
           onOpenSettings={openSettings}
           onOpenFeedback={() => setFeedbackOpen(true)}
           onOpenUpdate={openUpdates}
@@ -2834,7 +2863,9 @@ export function App() {
                       ? t("模块自检")
                       : view === 'todos'
                         ? t("全部待办")
-                        : view === 'self-check'
+                        : view === 'scheduled'
+                          ? t("全部定时任务")
+                          : view === 'self-check'
                         ? t("内视")
                         : view === 'plugins'
                           ? t("插件")
@@ -3068,6 +3099,12 @@ export function App() {
               onError={showError}
               onNotice={(message) => pushToast(message, 'info')}
             />
+          ) : view === 'scheduled' ? (
+            <AllScheduledPanel
+              revision={scheduleRevision}
+              onOpenSession={openSessionById}
+              onError={showError}
+            />
           ) : view === 'self-check' ? (
             <SelfCheckPanel onError={showError} />
           ) : view === 'module-check' ? (
@@ -3089,6 +3126,7 @@ export function App() {
               onRunEvolution={runSystemEvolution}
               onImproveEvolution={improveEvolutionFlow}
               onRollbackEvolutionPolicy={rollbackEvolutionPolicy}
+              onClearHistory={clearEvolutionHistory}
               onPropose={proposeEvolution}
               onReview={reviewProfile}
               onBenchmark={benchmarkProfile}

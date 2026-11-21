@@ -67,7 +67,16 @@ export function balanceSummary(balance: ModelBalanceState): string {
  * estimate over the token counts Pilot recorded in `RunRecord`s, because the
  * provider exposes no per-key spend endpoint. The label says so explicitly.
  */
-export function BillingPanel({ hasKey, model }: { hasKey: boolean; model: string }) {
+export function BillingPanel({
+  hasKey,
+  model,
+  hidden,
+}: {
+  hasKey: boolean
+  model: string
+  /** The settings sheet shows one group at a time; this card belongs to models. */
+  hidden?: boolean
+}) {
   const [report, setReport] = useState<ModelBillingReport | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -97,7 +106,7 @@ export function BillingPanel({ hasKey, model }: { hasKey: boolean; model: string
   const balance = report?.balance
 
   return (
-    <section className="settings-section">
+    <section className="settings-section" hidden={hidden}>
       <div className="settings-section-head">
         <div>
           <h3>{t("余额与费用")}</h3>

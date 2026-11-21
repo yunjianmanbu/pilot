@@ -60,7 +60,7 @@ describe('ProcessBox collapsed rendering', () => {
     expect(html).not.toContain('更早的')
   })
 
-  it('numbers reasoning steps by their position in the whole run', () => {
+  it('drops the step numbers from the collapsed reasoning rows', () => {
     const process = processOf([
       step('m1', '', '思考一', ['a1']),
       step('m2', '', '思考二', ['a2']),
@@ -71,13 +71,11 @@ describe('ProcessBox collapsed rendering', () => {
     ])
 
     const html = renderToStaticMarkup(<ProcessBox process={process} />)
-    // The window holds the newest five parts; the two reasoning blocks in it
-    // keep their run-wide numbers instead of restarting at 1.
+    // The window holds the newest five parts; every row is titled
+    // 「思考过程」 with no run-wide index after it.
     expect(countSteps(html)).toBe(5)
-    expect(html).toContain('思考过程 5')
-    expect(html).toContain('思考过程 6')
-    expect(html).not.toContain('思考过程 1')
-    expect(html).not.toContain('思考过程 2')
+    expect(html).toContain('思考过程')
+    expect(html).not.toMatch(/思考过程\s*\d/)
     expect(html).not.toContain('思考一')
   })
 

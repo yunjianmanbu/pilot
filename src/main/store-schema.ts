@@ -1547,16 +1547,16 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     .filter((profile): profile is ProfileVersion => Boolean(profile))
     .slice(0, 40)
   const evolutionPolicy = sanitizeEvolutionPolicy(record['evolutionPolicy'])
+  // 进化记录不再按条数裁剪：用户要求「保留全部，除非主动清理」，所以这里
+  // 只做字段净化，条数由用户自己决定。
   const evolutionPolicyVersions = (
     Array.isArray(record['evolutionPolicyVersions']) ? record['evolutionPolicyVersions'] : []
   )
     .map(sanitizeEvolutionPolicyVersion)
     .filter((version): version is EvolutionPolicyVersion => Boolean(version))
-    .slice(0, 30)
   const evolutionCycles = (Array.isArray(record['evolutionCycles']) ? record['evolutionCycles'] : [])
     .map(sanitizeEvolutionCycle)
     .filter((cycle): cycle is EvolutionCycle => Boolean(cycle))
-    .slice(0, 60)
   const quality = sanitizeQualityState(record['quality'])
   // A missing field means "never customized" (null), while an empty array is
   // an explicit choice to show no quick prompts.

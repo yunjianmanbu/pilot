@@ -70,6 +70,34 @@ const EVALUATION_LABELS = [
   t("第六评估"),
 ]
 
+/**
+ * Left-hand index of the settings sheet.
+ *
+ * The dialog had grown into one long column where model endpoints, sandbox rules
+ * and appearance all looked alike; the index turns it into a few named groups
+ * you can jump to, and the active group follows the scroll position.
+ */
+type SettingsSectionId =
+  | 'models'
+  | 'runtime'
+  | 'testing'
+  | 'sandbox'
+  | 'learning'
+  | 'appearance'
+  | 'locale'
+  | 'notify'
+
+const SETTING_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
+  { id: 'models', label: t("模型资源") },
+  { id: 'runtime', label: t("运行参数") },
+  { id: 'testing', label: t("测试与工具") },
+  { id: 'sandbox', label: t("权限与沙箱") },
+  { id: 'learning', label: t("自我学习") },
+  { id: 'appearance', label: t("外观") },
+  { id: 'locale', label: t("语言") },
+  { id: 'notify', label: t("通知") },
+]
+
 function newResourceDraft(): ResourceDraft {
   return {
     id: crypto.randomUUID(),
@@ -281,10 +309,24 @@ export function SettingsDialog({
   const [error, setError] = useState('')
   const bodyRef = useRef<HTMLDivElement>(null)
   const reviewersRef = useRef<HTMLElement>(null)
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>('models')
+  /** One ref per group; a deep link can scroll to the group it names. */
+  const sectionRefs = useRef<Partial<Record<SettingsSectionId, HTMLElement | null>>>({})
+
+  // A shortcut from the evolution panel opens the model section directly.
   useEffect(() => {
     if (focusSection !== 'reviewers') return
+    setActiveSection('models')
     reviewersRef.current?.scrollIntoView({ block: 'start' })
   }, [focusSection])
+
+  // Switching a group shows only that group, so the panel is never a long
+  // column of unrelated cards; the new group starts at its own top.
+  useEffect(() => {
+    bodyRef.current?.scrollTo({ top: 0 })
+  }, [activeSection])
+
+  const jumpTo = (id: SettingsSectionId) => setActiveSection(id)
 
   // Preview the appearance while the dialog is open. Cancel restores the saved
   // values; saving updates `settings` and the parent effect takes over.
@@ -712,10 +754,29 @@ export function SettingsDialog({
           </button>
         </div>
 
-        <div className="modal-body settings-body" ref={bodyRef}>
+        <div className="modal-body settings-body">
+          <nav className="settings-nav" aria-label={t("设置分组")}>
+            {SETTING_SECTIONS.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                className={`settings-nav-item${activeSection === entry.id ? ' is-active' : ''}`}
+                onClick={() => jumpTo(entry.id)}
+                aria-current={activeSection === entry.id}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="settings-main" ref={bodyRef}>
           <section
             className={`settings-section${focusSection === 'reviewers' ? ' settings-section-focus' : ''}`}
-            ref={reviewersRef}
+            hidden={activeSection !== 'models'}
+            ref={(element) => {
+              reviewersRef.current = element
+              sectionRefs.current.models = element
+            }}
           >
             <div className="settings-section-head">
               <div>
@@ -933,6 +994,10 @@ export function SettingsDialog({
               ))}
             </div>
 
+            <div className="settings-subhead">
+              <strong>{t("会话与复盘")}</strong>
+              <span>{t("会话模型用于普通对话与工具调用；复盘模型只在评审会话里使用。")}</span>
+            </div>
             <div className="field-grid">
               <Field label={t("会话模型")} hint={t("普通会话、分析和工具调用使用这个资源。")}>
                 <SelectMenu
@@ -957,9 +1022,9 @@ export function SettingsDialog({
               </Field>
             </div>
 
-            <div className="model-eval-head">
-              <span>{t("评估模型")}</span>
-              <span className="model-eval-note">{t("推荐两个独立模型")}</span>
+            <div className="settings-subhead">
+              <strong>{t("评估模型")}</strong>
+              <span>{t("推荐两个独立模型")}</span>
             </div>
             <p className="settings-note">
               {t("默认第一评估和第二评估；可增加更多，也可减少到一个。未选择时由会话模型自评，不算独立评审。")}
@@ -1005,9 +1070,19 @@ export function SettingsDialog({
             </button>
           </section>
 
-          <BillingPanel hasKey={effectiveHasKey} model={sessionModel || settings.model} />
+          <BillingPanel
+            hasKey={effectiveHasKey}
+            model={sessionModel || settings.model}
+            hidden={activeSection !== 'models'}
+          />
 
-          <section className="settings-section">
+          <section
+            className="settings-section"
+            hidden={activeSection !== 'runtime'}
+            ref={(element) => {
+              sectionRefs.current.runtime = element
+            }}
+          >
             <div className="settings-section-head">
               <div>
                 <h3>{t("运行参数")}</h3>
@@ -1232,7 +1307,13 @@ export function SettingsDialog({
             </div>
           </section>
 
-          <section className="settings-section">
+          <section
+            className="settings-section"
+            hidden={activeSection !== 'testing'}
+            ref={(element) => {
+              sectionRefs.current.testing = element
+            }}
+          >
             <div className="settings-section-head">
               <div>
                 <h3>{t("测试环境与动态工具")}</h3>
@@ -1314,7 +1395,13 @@ export function SettingsDialog({
             </div>
           </section>
 
-          <section className="settings-section">
+          <section
+            className="settings-section"
+            hidden={activeSection !== 'sandbox'}
+            ref={(element) => {
+              sectionRefs.current.sandbox = element
+            }}
+          >
             <div className="settings-section-head">
               <div>
                 <h3>{t("权限与沙箱")}</h3>
@@ -1535,7 +1622,13 @@ export function SettingsDialog({
             </div>
           </section>
 
-          <section className="settings-section">
+          <section
+            className="settings-section"
+            hidden={activeSection !== 'learning'}
+            ref={(element) => {
+              sectionRefs.current.learning = element
+            }}
+          >
             <div className="settings-section-head">
               <div>
                 <h3>{t("自我学习")}</h3>
@@ -1584,7 +1677,13 @@ export function SettingsDialog({
             </div>
           </section>
 
-          <section className="settings-section">
+          <section
+            className="settings-section"
+            hidden={activeSection !== 'appearance'}
+            ref={(element) => {
+              sectionRefs.current.appearance = element
+            }}
+          >
             <div className="settings-section-head">
               <div>
                 <h3>{t("外观")}</h3>
@@ -1671,7 +1770,13 @@ export function SettingsDialog({
             </div>
           </section>
 
-          <section className="settings-section">
+          <section
+            className="settings-section"
+            hidden={activeSection !== 'locale'}
+            ref={(element) => {
+              sectionRefs.current.locale = element
+            }}
+          >
             <div className="settings-section-head">
               <div>
                 <h3>{t("语言")}</h3>
@@ -1700,7 +1805,13 @@ export function SettingsDialog({
             </div>
           </section>
 
-          <section className="settings-section">
+          <section
+            className="settings-section"
+            hidden={activeSection !== 'notify'}
+            ref={(element) => {
+              sectionRefs.current.notify = element
+            }}
+          >
             <div className="settings-section-head">
               <div>
                 <h3>{t("通知")}</h3>
@@ -1723,6 +1834,7 @@ export function SettingsDialog({
               {error}
             </div>
           ) : null}
+          </div>
         </div>
 
         <div className="modal-footer">

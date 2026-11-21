@@ -4,6 +4,8 @@ import type {
   PlanItem,
   ProfileExplanation,
   ReviewRoot,
+  ScheduledTask,
+  ScheduledTaskInput,
   ShellInterpreter,
   ToolResult,
 } from '../../shared/types'
@@ -70,6 +72,7 @@ export const CREATE_MCP_SERVER = 'create_mcp_server'
 export const REMEMBER = 'remember'
 export const UPDATE_PLAN = 'update_plan'
 export const ADD_TODO = 'add_todo'
+export const SCHEDULE_TASK = 'schedule_task'
 export const PROPOSE_SELF_UPDATE = 'propose_self_update'
 export const LEARNING_RESEARCH = 'learning_research'
 export const LEARNING_LOG = 'learning_log'
@@ -944,6 +947,56 @@ export const pilotTools: AgentToolDefinition[] = [
     source: 'control',
   },
   {
+    name: SCHEDULE_TASK,
+    description:
+      "Create, list, pause/resume, edit or delete this session's scheduled tasks (定时任务). A scheduled task fires later (or repeatedly) and sends its content as a normal user message to this session, so the run inherits this workspace, model and approval policy. Use it whenever the user says in conversation that something should happen at a later time or on a repeat (「20 分钟后…」「每天 9 点…」「每隔两小时…」) instead of telling them to open the schedule dialog. All times are the user's local time. kind=once uses delayMinutes (1-10080), kind=interval uses intervalMinutes (1-10080), kind=daily uses timeOfDay \"HH:mm\". Run action=list first to find the short id of a task you want to update or remove.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'add', 'update', 'remove'],
+          description: 'What to do with the schedule.',
+        },
+        taskId: {
+          type: 'string',
+          description:
+            'Required for update and remove: the full id, or the short id prefix that action=list printed.',
+        },
+        content: {
+          type: 'string',
+          description:
+            'Required for add: the message to run later, written as the user would type it.',
+        },
+        kind: {
+          type: 'string',
+          enum: ['once', 'interval', 'daily'],
+          description: 'once = one future run, interval = every N minutes, daily = every day at HH:mm.',
+        },
+        delayMinutes: {
+          type: 'number',
+          description: 'kind=once: minutes from now before the single run (1-10080).',
+        },
+        intervalMinutes: {
+          type: 'number',
+          description: 'kind=interval: minutes between runs (1-10080).',
+        },
+        timeOfDay: {
+          type: 'string',
+          description: 'kind=daily: local wall-clock time as "HH:mm".',
+        },
+        enabled: {
+          type: 'boolean',
+          description: 'update: false pauses the task, true resumes it.',
+        },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    risk: 'control',
+    source: 'control',
+  },
+  {
     name: PROPOSE_SELF_UPDATE,
     description:
       'Propose an update to your own operating profile (prompt addendum and strategy limits). Use ONLY when the user explicitly asks you to improve, optimize or update yourself. scope=workspace targets this project; scope=global targets every workspace using Pilot. It creates a draft for review; it does not activate anything. Never include credentials.',
@@ -1114,6 +1167,29 @@ export interface CreatedMcpServer {
   error?: string
 }
 
+/**
+ * 对话里管理定时任务的请求。动作与 ScheduleDialog 走同一份 store 校验，
+ * 所以最小间隔、"HH:mm" 规范化等规则两边完全一致。
+ */
+export type ScheduleTaskRequest =
+  | { action: 'list' }
+  | { action: 'add'; input: ScheduledTaskInput }
+  | {
+      action: 'update'
+      taskId: string
+      input: Partial<ScheduledTaskInput> & { enabled?: boolean }
+    }
+  | { action: 'remove'; taskId: string }
+
+export interface ScheduleTaskResult {
+  /** The task that was created or updated. */
+  task?: ScheduledTask
+  /** The id that was deleted, when action=remove. */
+  removed?: string
+  /** The session's schedule after the change, so the answer can quote it. */
+  tasks: ScheduledTask[]
+}
+
 export interface ToolHost {
   root: string
   /**
@@ -1177,6 +1253,8 @@ export interface ToolHost {
   updatePlan(update: PlanUpdate): void
   /** Append texts to this session's todo list; returns the items actually added. */
   addTodos?(items: string[]): Promise<Array<{ id: string; text: string }>>
+  /** Manage this session's scheduled tasks; absent outside a normal session run. */
+  scheduleTasks?(request: ScheduleTaskRequest): Promise<ScheduleTaskResult>
   proposeSelfUpdate(input: {
     promptAddendum: string
     rationale: string
@@ -1285,6 +1363,44 @@ function driveHints(root: string, args: Record<string, unknown>): DriveHints {
       ? { kind: args['kind'] as NonNullable<DriveHints['kind']> }
       : {}),
   }
+}
+
+/** 「HH:mm」与本地时间在工具输出里的写法，模型和用户都读得懂。 */
+function scheduleWhen(task: ScheduledTask): string {
+  if (task.kind === 'interval') return `每 ${task.intervalMinutes ?? 0} 分钟`
+  if (task.kind === 'daily') return `每天 ${task.timeOfDay ?? ''}`
+  return '一次性'
+}
+
+function formatScheduleTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function formatScheduleLine(task: ScheduledTask): string {
+  const parts = [scheduleWhen(task), `下次 ${formatScheduleTime(task.nextRunAt)}`]
+  parts.push(task.enabled ? '启用' : '已暂停')
+  if (task.lastStatus === 'failed') {
+    parts.push(task.lastError ? `上次失败：${task.lastError}` : '上次失败')
+  } else if (task.lastStatus === 'queued') {
+    parts.push('上次已触发')
+  }
+  return `${parts.join(' · ')} · id ${task.id.slice(0, 8)}\n  ${task.content}`
+}
+
+function formatScheduleList(tasks: ScheduledTask[]): string {
+  if (tasks.length === 0) return '本会话没有定时任务。'
+  return tasks.map((task, index) => `${index + 1}. ${formatScheduleLine(task)}`).join('\n')
+}
+
+function scheduleKindArg(value: unknown): ScheduledTaskInput['kind'] {
+  return value === 'interval' || value === 'daily' ? value : 'once'
+}
+
+function minutesArg(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return fallback
+  return Math.round(value)
 }
 
 export async function executePilotTool(
@@ -1950,6 +2066,103 @@ export async function executePilotTool(
           created.length === 0
             ? `No new todos: all ${items.length} item(s) are already pending in the todo list.`
             : `Added ${created.length} todo(s): ${created.map((todo) => todo.text).join(' | ')}`,
+      }
+    }
+    case SCHEDULE_TASK: {
+      if (!host.scheduleTasks) throw new Error('Scheduled tasks are not available in this session')
+      const action = typeof args['action'] === 'string' ? args['action'].trim() : ''
+      if (action === 'list') {
+        const result = await host.scheduleTasks({ action: 'list' })
+        return {
+          ok: true,
+          output: formatScheduleList(result.tasks),
+          metadata: { scheduledTasks: result.tasks.length },
+        }
+      }
+      if (action === 'add') {
+        const content =
+          typeof args['content'] === 'string'
+            ? args['content'].replace(/\s+/g, ' ').trim().slice(0, 4_000)
+            : ''
+        if (!content) throw new Error('content is required to add a scheduled task')
+        const kind = scheduleKindArg(args['kind'])
+        const input: ScheduledTaskInput = { content, kind }
+        if (kind === 'once') input.delayMinutes = minutesArg(args['delayMinutes'], 10)
+        if (kind === 'interval') input.intervalMinutes = minutesArg(args['intervalMinutes'], 60)
+        if (kind === 'daily') {
+          const timeOfDay = typeof args['timeOfDay'] === 'string' ? args['timeOfDay'].trim() : ''
+          if (!timeOfDay) throw new Error('timeOfDay ("HH:mm") is required for a daily schedule')
+          input.timeOfDay = timeOfDay
+        }
+        const result = await host.scheduleTasks({ action: 'add', input })
+        return {
+          ok: true,
+          output: [
+            '已创建定时任务（绑定当前会话，到点后自动在这里执行）：',
+            result.task ? formatScheduleLine(result.task) : '',
+            '',
+            '本会话的定时任务：',
+            formatScheduleList(result.tasks),
+          ]
+            .filter((line) => line !== '')
+            .join('\n'),
+          metadata: { scheduledTasks: result.tasks.length },
+        }
+      }
+      if (action !== 'update' && action !== 'remove') {
+        throw new Error(`Unknown action "${action}"; use list, add, update or remove`)
+      }
+      const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim() : ''
+      if (!taskId) throw new Error(`taskId is required to ${action} a scheduled task`)
+      if (action === 'remove') {
+        const result = await host.scheduleTasks({ action: 'remove', taskId })
+        return {
+          ok: true,
+          output: [
+            `已删除定时任务 ${taskId}。`,
+            '',
+            '本会话剩下的定时任务：',
+            formatScheduleList(result.tasks),
+          ].join('\n'),
+          metadata: { removed: result.removed ?? taskId, scheduledTasks: result.tasks.length },
+        }
+      }
+      const patch: Partial<ScheduledTaskInput> & { enabled?: boolean } = {}
+      if (args['content'] !== undefined) {
+        const content =
+          typeof args['content'] === 'string'
+            ? args['content'].replace(/\s+/g, ' ').trim().slice(0, 4_000)
+            : ''
+        if (!content) throw new Error('content cannot be empty when updating a scheduled task')
+        patch.content = content
+      }
+      if (args['kind'] !== undefined) patch.kind = scheduleKindArg(args['kind'])
+      if (typeof args['delayMinutes'] === 'number') {
+        patch.delayMinutes = minutesArg(args['delayMinutes'], 10)
+      }
+      if (typeof args['intervalMinutes'] === 'number') {
+        patch.intervalMinutes = minutesArg(args['intervalMinutes'], 60)
+      }
+      if (typeof args['timeOfDay'] === 'string' && args['timeOfDay'].trim()) {
+        patch.timeOfDay = args['timeOfDay'].trim()
+      }
+      if (typeof args['enabled'] === 'boolean') patch.enabled = args['enabled']
+      if (Object.keys(patch).length === 0) {
+        throw new Error('Nothing to update: pass content, kind, a time field or enabled')
+      }
+      const result = await host.scheduleTasks({ action: 'update', taskId, input: patch })
+      return {
+        ok: true,
+        output: [
+          '已更新定时任务：',
+          result.task ? formatScheduleLine(result.task) : '',
+          '',
+          '本会话的定时任务：',
+          formatScheduleList(result.tasks),
+        ]
+          .filter((line) => line !== '')
+          .join('\n'),
+        metadata: { scheduledTasks: result.tasks.length },
       }
     }
     case PROPOSE_SELF_UPDATE: {

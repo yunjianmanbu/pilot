@@ -184,6 +184,27 @@ describe('source settings normalization', () => {
     })
   })
 
+  it('never adopts a build-time remote in an installed build', () => {
+    const defaults = {
+      gitUrl: 'https://example.test/pilot.git',
+      gitRef: 'dev',
+      gitPath: 'pilot/pilot',
+    }
+    // Installed builds pass adoptDefaults=false: the official remote is empty
+    // until the user types one, so nothing is fetched on their behalf.
+    expect(effectiveSettings(settings(), defaults, false)).toEqual({
+      mode: 'builtin',
+      gitUrl: '',
+      gitRef: 'main',
+      gitPath: '',
+      customPath: '',
+    })
+    // A typed address still wins in either mode.
+    expect(
+      effectiveSettings(settings({ gitUrl: 'https://mine.test/pilot.git' }), defaults, false),
+    ).toMatchObject({ gitUrl: 'https://mine.test/pilot.git', gitPath: '' })
+  })
+
   it('never leaks credentials from git output', () => {
     expect(sanitizeGitOutput('fatal: https://user:token@example.test/x.git not found')).toBe(
       'fatal: https://***@example.test/x.git not found',

@@ -1,23 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { TodoGroup, TodoItem, TodoPriority } from '../../../shared/types'
-import { nextTodoPriority, normalizeTodoPriority, sortTodos } from '../../../shared/todos'
+import type { TodoGroup, TodoItem } from '../../../shared/types'
+import { sortTodos } from '../../../shared/todos'
 import { CheckIcon, RefreshIcon, SendIcon, TodoIcon, TrashIcon } from '../icons'
 import { formatRelative } from '../ui'
+import { TodoPrioritySelect } from './TodoPrioritySelect'
 import { t } from '../i18n'
-
-function priorityLabel(priority: TodoPriority | undefined): string {
-  const value = normalizeTodoPriority(priority)
-  if (value === 'high') return t('高')
-  if (value === 'low') return t('低')
-  return t('中')
-}
-
-function priorityTitle(priority: TodoPriority | undefined): string {
-  const value = normalizeTodoPriority(priority)
-  if (value === 'high') return t('高优先级 · 点击改为中')
-  if (value === 'low') return t('低优先级 · 点击改为高')
-  return t('中优先级 · 点击改为低')
-}
 
 function workspaceName(path: string): string {
   const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/)
@@ -90,19 +77,15 @@ export function AllTodosPanel({
           {todo.status === 'sent' ? <CheckIcon width={11} height={11} /> : <i className="plan-circle" />}
         </span>
         {todo.status === 'pending' ? (
-          <button
-            type="button"
-            className={`todo-priority priority-${normalizeTodoPriority(todo.priority)}`}
-            title={priorityTitle(todo.priority)}
-            onClick={() =>
+          <TodoPrioritySelect
+            value={todo.priority}
+            onChange={(next) =>
               void run(
                 todo.id,
-                () => window.pilot.setTodoPriority(group.sessionId, todo.id, nextTodoPriority(todo.priority)),
+                () => window.pilot.setTodoPriority(group.sessionId, todo.id, next),
               )
             }
-          >
-            {priorityLabel(todo.priority)}
-          </button>
+          />
         ) : null}
         <span className="todo-text all-todos-text" title={todo.text}>
           {todo.text}

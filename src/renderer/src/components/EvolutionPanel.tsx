@@ -41,6 +41,9 @@ import {
 import { formatNumber, formatRelative } from '../ui'
 import { t } from '../i18n'
 
+/** How many ranked rounds the evolution history shows before "show all". */
+const HISTORY_PREVIEW = 20
+
 const STATUS_LABELS: Record<string, string> = {
   completed: t("完成"),
   failed: t("失败"),
@@ -710,6 +713,7 @@ export function EvolutionPanel({
   onRunEvolution,
   onImproveEvolution,
   onRollbackEvolutionPolicy,
+  onClearHistory,
   onPropose,
   onReview,
   onBenchmark,
@@ -749,6 +753,8 @@ export function EvolutionPanel({
   onRunEvolution: () => Promise<EvolutionCycle>
   onImproveEvolution: () => Promise<EvolutionPolicyVersion | null>
   onRollbackEvolutionPolicy: () => Promise<EvolutionPolicyVersion | null>
+  /** Remove every stored evolution record; the active policy version survives. */
+  onClearHistory: () => Promise<void>
   onPropose: () => Promise<void>
   onReview: (profileId: string) => Promise<ReviewProfileResult>
   onBenchmark: (profileId: string) => Promise<ProfileBenchmarkReport>
@@ -791,6 +797,7 @@ export function EvolutionPanel({
   onOpenSettings?: () => void
 }) {
   const [busy, setBusy] = useState<string | null>(null)
+  const [showAllCycles, setShowAllCycles] = useState(false)
   const [personalBusy, setPersonalBusy] = useState<string | null>(null)
   const [personal, setPersonal] = useState<PersonalEvolutionState | null>(null)
   const profiles = detail?.profiles ?? []
@@ -828,6 +835,18 @@ export function EvolutionPanel({
   const policy = detail?.evolution.policy ?? DEFAULT_EVOLUTION_POLICY
   const cycles = detail?.evolution.cycles ?? []
   const lastCycle = cycles[0] ?? null
+  /**
+   * Records are kept until the user clears them, so the panel cannot simply
+   * dump everything. The default view ranks by the reviewer score and shows the
+   * best 20; "show all" reveals the remaining rounds in the same order.
+   */
+  const rankedCycles = [...cycles].sort((left, right) => {
+    const leftScore = typeof left.score === 'number' ? left.score : -1
+    const rightScore = typeof right.score === 'number' ? right.score : -1
+    if (rightScore !== leftScore) return rightScore - leftScore
+    return right.startedAt.localeCompare(left.startedAt)
+  })
+  const visibleCycles = showAllCycles ? rankedCycles : rankedCycles.slice(0, HISTORY_PREVIEW)
   const policyVersions = detail?.evolution.policyVersions ?? []
   const activePolicyVersion = policyVersions.find((version) => version.status === 'active') ?? null
   const canRollbackPolicy = policyVersions.some(
@@ -884,6 +903,27 @@ export function EvolutionPanel({
     setBusy('policy-rollback')
     try {
       await onRollbackEvolutionPolicy()
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const clearHistory = async () => {
+    if (
+      !window.confirm(
+        t(
+          "清理全部进化记录？历次进化轮次与已退役的版本都会被删除，当前生效的机制保留不变。此操作不可撤销。",
+        ),
+      )
+    ) {
+      return
+    }
+    setBusy('clear-history')
+    try {
+      await onClearHistory()
+      setShowAllCycles(false)
     } catch (caught) {
       onError(caught instanceof Error ? caught.message : String(caught))
     } finally {
@@ -1674,6 +1714,85 @@ export function EvolutionPanel({
             </span>
           </div>
         </div>
+      </section>
+
+      {/* 进化历史：记录不再自动裁剪，所以这里自己控制展示量（默认评分前 20）。 */}
+      <section className="evolution-section">
+        <div className="evolution-section-head">
+          <div>
+            <h2>{t("进化历史")}</h2>
+            <p>
+              {t(
+                "所有轮次都会保留，不再自动删除；默认按评审分数从高到低显示前 {v1} 轮。",
+                { v1: HISTORY_PREVIEW },
+              )}</p>
+          </div>
+          <div className="section-actions">
+            <span className="section-count">{t("{v1} 轮记录", { v1: cycles.length })}</span>
+            {rankedCycles.length > HISTORY_PREVIEW ? (
+              <button
+                type="button"
+                className="button ghost small"
+                onClick={() => setShowAllCycles((value) => !value)}
+              >
+                {showAllCycles
+                  ? t("只看前 {v1} 轮", { v1: HISTORY_PREVIEW })
+                  : t("展开全部 {v1} 轮", { v1: rankedCycles.length })}
+              </button>
+            ) : null}
+            {cycles.length > 0 ? (
+              <button
+                type="button"
+                className="button ghost small danger"
+                onClick={() => void clearHistory()}
+                disabled={busy === 'clear-history'}
+              >
+                {busy === 'clear-history' ? (
+                  <i className="spinner" />
+                ) : (
+                  <TrashIcon width={13} height={13} />
+                )}
+                {t("清理历史")}
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {cycles.length === 0 ? (
+          <div className="empty-panel compact">
+            <SparkIcon width={22} height={22} />
+            <strong>{t("还没有进化记录")}</strong>
+            <span>{t("跑过一轮系统进化后，这里会按评分列出每次尝试。")}</span>
+          </div>
+        ) : (
+          <div className="cycle-history">
+            {visibleCycles.map((cycle, index) => (
+              <details className="cycle-history-row" key={cycle.id}>
+                <summary>
+                  <span className="cycle-history-rank">{index + 1}</span>
+                  <span className={`cycle-status tone-${cycleTone(cycle.status)}`}>
+                    {cycle.status === 'completed'
+                      ? t("完成")
+                      : cycle.status === 'rejected'
+                        ? t("未采用")
+                        : t("失败")}
+                  </span>
+                  {typeof cycle.score === 'number' ? (
+                    <span className="cycle-history-score">
+                      {t("{v1} 分", { v1: cycle.score })}
+                    </span>
+                  ) : (
+                    <span className="cycle-history-score muted">{t("无评分")}</span>
+                  )}
+                  <span className="cycle-history-summary">{cycle.summary}</span>
+                  <span className="muted cycle-history-time">
+                    {formatRelative(cycle.startedAt)}
+                  </span>
+                </summary>
+                <CycleTimeline cycle={cycle} />
+              </details>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="evolution-section">

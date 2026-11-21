@@ -11,6 +11,7 @@ import { t } from './i18n'
 export type MainView =
   | 'chat'
   | 'todos'
+  | 'scheduled'
   | 'memory'
   | 'evolution'
   | 'plugins'
@@ -109,7 +110,13 @@ const READ_TOOLS = new Set([
   'explore',
 ])
 
-const CONTROL_TOOLS = new Set(['remember', 'update_plan', 'add_todo', 'propose_self_update'])
+const CONTROL_TOOLS = new Set([
+  'remember',
+  'update_plan',
+  'add_todo',
+  'schedule_task',
+  'propose_self_update',
+])
 
 export function inferRisk(name: string): ToolRisk {
   if (READ_TOOLS.has(name)) return 'read'
@@ -165,6 +172,24 @@ export function summarizeTool(tool: ToolView): string {
       const items = Array.isArray(args['items']) ? args['items'] : []
       const first = text(items[0])
       return items.length > 1 ? `${first} +${items.length - 1}` : first
+    }
+    case 'schedule_task': {
+      const action = text(args['action'])
+      const when =
+        args['kind'] === 'interval'
+          ? t('每 {v1} 分钟', { v1: text(args['intervalMinutes']) || 60 })
+          : args['kind'] === 'daily'
+            ? t('每天 {v1}', { v1: text(args['timeOfDay']) })
+            : args['delayMinutes'] !== undefined
+              ? t('{v1} 分钟后', { v1: text(args['delayMinutes']) })
+              : ''
+      return [
+        action === 'add' ? t('定时任务') : '',
+        when,
+        text(args['content']) || text(args['taskId']),
+      ]
+        .filter(Boolean)
+        .join(' · ')
     }
     case 'propose_self_update':
       return text(args['title'])

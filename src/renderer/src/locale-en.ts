@@ -154,7 +154,6 @@ export const en: Record<string, string> = {
   "从上次中断的地方继续，Pilot 会先检查工作区现状，避免重复已完成步骤。":
     "Continue from the interruption; Pilot checks the workspace first to avoid repeating finished steps.",
   "从中断处继续任务": "Resume task",
-  "从当前会话创建副本": "Duplicate current session",
   "以下内容不会自动改变行为。记忆仅作参考；进化草稿需要在“进化”面板中审核并启用。":
     "The following does not change behavior automatically. Memory is reference only; evolution drafts must be reviewed and enabled in the Evolution panel.",
   "任务": "Task",
@@ -250,7 +249,7 @@ export const en: Record<string, string> = {
   "切换到深色模式": "Switch to dark mode",
   "刚刚": "just now",
   "创建中…": "Creating…",
-  "创建会话副本": "Duplicate session",
+  "创建副本": "Duplicate",
   "创建时间": "Created",
   "删除": "Delete",
   "删除会话": "Delete session",
@@ -398,8 +397,8 @@ export const en: Record<string, string> = {
   "无法读取运行环境": "Could not read the runtime environment",
   "工作区所在卷剩余空间不足 {v1}，安装依赖或构建可能因 ENOSPC 失败。":
     "Less than {v1} free on the workspace volume; installing dependencies or building may fail with ENOSPC.",
-  "复制完整对话记录": "Copy full transcript",
-  "已复制完整对话记录": "Full transcript copied",
+  "复制对话": "Copy chat",
+  "已复制对话": "Chat copied",
   "复制相对路径": "Copy relative path",
   "复制这条消息": "Copy this message",
   "复制链接": "Copy link",
@@ -438,6 +437,8 @@ export const en: Record<string, string> = {
   "完成至少 3 次真实任务后，Pilot 才能提出第一份进化草稿。":
     "Pilot can propose its first evolution draft after at least 3 real tasks.",
   "定时任务": "Scheduled tasks",
+  "也可以直接在对话里说：「每天 9 点帮我整理待办」，Pilot 会自己建好这条任务。":
+    "You can also just say it in the chat — “every day at 9, tidy up my todos” — and Pilot creates the task itself.",
   "定时任务保存在本机；关闭电脑后不会在后台执行。":
     "Scheduled tasks live on this machine; they do not run while it is off.",
   "定时任务内容不能为空。": "A scheduled task cannot be empty.",
@@ -463,8 +464,8 @@ export const en: Record<string, string> = {
     "Once the workspace profile is stable, click “Promote to global candidate” so lessons that hold across projects apply everywhere.",
   "已中断": "Interrupted",
   "已保存，下次配对生效。": "Saved; applies to the next pairing.",
-  "已创建会话副本，可以从这里分叉尝试别的做法。":
-    "Session duplicated; fork from here to try another approach.",
+  "已创建副本，可以从这里分叉尝试别的做法。":
+    "Copy created; fork from here to try another approach.",
   "已创建普通编码会话，会先复核每条问题再修改。":
     "A normal coding session was created; each finding is verified before changes.",
   "已加入队列，当前任务结束后自动开始。":
@@ -748,6 +749,9 @@ export const en: Record<string, string> = {
   "已配置密钥": "Key configured",
   "缺少密钥": "Missing key",
   "会话模型": "Session model",
+  "会话与复盘": "Chat and review",
+  "会话模型用于普通对话与工具调用；复盘模型只在评审会话里使用。":
+    "The chat model handles normal dialogue and tool calls; the review model is only used in review sessions.",
   "普通会话、分析和工具调用使用这个资源。":
     "Chats, analysis and tool calls use this resource.",
   "复盘会话使用；跟随会话模型时不需要单独配置。":
@@ -1113,6 +1117,7 @@ export const en: Record<string, string> = {
   "{v1} · 点击管理工作区": "{v1} · click to manage workspaces",
   "{v1} {v2} 轮{v3}": "{v1} {v2} rounds{v3}",
   "{v1} 分钟前": "{v1} minutes ago",
+  "{v1} 分钟后": "in {v1} minutes",
   "{v1} 个工具失败": "{v1} tools failed",
   "委派 {v1} 次 / {v2} 步": "delegated {v1}× / {v2} steps",
   "模型 {v1}s / 工具 {v2}s / 快照 {v3}s": "model {v1}s / tools {v2}s / checkpoints {v3}s",
@@ -1402,9 +1407,22 @@ export const en: Record<string, string> = {
   "正在读取源码来源…": "Reading source provenance…",
   "内置源码（官方 git）": "Built-in source (official git)",
   "自定义源码目录": "Custom source directory",
+  "安装版默认留空：不填时基线就是安装包内的源码快照；填仓库根地址后，内置源码会与这个仓库的提交比较。":
+    "Leave it empty in an installed build: the baseline is then the source snapshot inside the installer. Once filled, the built-in source is compared against commits from that repository.",
+  "官方仓库": "Official repositories",
+  "Pilot 桌面端": "Pilot desktop",
+  "主仓库：桌面端、中继与官网都在这里": "Main repository: desktop app, relay and website live here",
+  "移动控制端": "Mobile controller",
+  "手机控制电脑的 uni-app 端": "uni-app client that drives the computer from a phone",
+  "手机被控端": "Mobile target",
+  "电脑控制手机的反控端": "reverse-control client that lets the computer drive the phone",
+  "中继器": "Relay",
+  "自建中继，用来跨网络连接": "Self-hosted relay for connections across networks",
+  "在浏览器打开 {v1}": "Open {v1} in the browser",
+  "用作官方 git": "Use as official git",
+  "已填入地址，点「保存并检查」后生效。":
+    "Address filled in; it takes effect after Save and check.",
   "官方 git 地址": "Official git URL",
-  "填仓库根地址，例如 https://…/Pilot.git；内置源码会与这个仓库的提交比较。":
-    "Repository root URL, for example https://…/Pilot.git. The built-in source is compared against commits from this repository.",
   "分支或标签": "Branch or tag",
   "仓库内路径": "Path inside the repository",
   "填源码在仓库里的相对目录，例如 pilot/pilot；留空表示仓库根就是客户端源码。":
@@ -1982,9 +2000,6 @@ export const en: Record<string, string> = {
 
   // 会话资源抽屉（工作区文件 / 相关链接 / 可用工具 / 会话知识库 / 产出文件）
   "会话资源": "Session resources",
-  "资源": "Resources",
-  "会话资源：工作区文件、相关链接、可用工具、会话知识库、新增修改文件":
-    "Session resources: workspace files, related links, tools, session knowledge and changed files",
   "会话资源分类": "Session resource categories",
   "相关链接": "Links",
   "可用工具": "Tools",
@@ -2072,11 +2087,13 @@ export const en: Record<string, string> = {
   "把这条待办发到「{v1}」？": "Send this todo to “{v1}”?",
   "{v1} 项待发送 · 分布在 {v2} 个会话":
     "{v1} pending · across {v2} sessions",
-  "新待办优先级：点一下切换": "New todo priority: click to cycle",
-  "新待办优先级 {v1}": "New todo priority: {v1}",
-  "高优先级 · 点击改为中": "High priority · click for medium",
-  "中优先级 · 点击改为低": "Medium priority · click for low",
-  "低优先级 · 点击改为高": "Low priority · click for high",
+  "新待办优先级": "New todo priority",
+  "高优先级": "High priority",
+  "中优先级": "Medium priority",
+  "低优先级": "Low priority",
+  "最急": "Urgent",
+  "默认": "Default",
+  "可以等": "Can wait",
   "模型服务已连接 · 点击打开设置":
     "Model service connected · click to open settings",
   "尚未配置 API Key · 点击打开设置":
@@ -2089,4 +2106,40 @@ export const en: Record<string, string> = {
   "系统浏览器": "System browser",
   "还原窗口": "Restore window",
   "展开到整个界面": "Expand to the whole window",
+  "设置分组": "Settings sections",
+  "测试与工具": "Testing and tools",
+  "全部定时任务": "All scheduled tasks",
+  "全部定时任务：所有会话汇总": "All scheduled tasks: one list across sessions",
+  "定时": "Schedules",
+  "定时任务在电脑端运行；关闭客户端后不会触发，重新打开时到点未跑的任务会补跑。":
+    "Schedules run on the desktop app. They do not fire while it is closed; missed runs catch up when it opens again.",
+  "在会话右上角的三点菜单里打开「定时任务」，就能给这个会话挂一条。":
+    "Open “Scheduled tasks” from the three-dot menu in a session to add one.",
+  "删除这条定时任务？": "Delete this scheduled task?",
+  "上次执行失败": "Last run failed",
+  "上次 {v1}": "Last {v1}",
+  "没有定时任务": "No scheduled tasks",
+  "正在汇总所有会话的定时任务…": "Collecting scheduled tasks from every session…",
+  "{v1} 项定时任务": "{v1} scheduled tasks",
+  "{v1} 项定时任务 · {v2} 项启用 · 分布在 {v3} 个会话":
+    "{v1} scheduled tasks · {v2} enabled · across {v3} sessions",
+  "转成待办": "Turn into a todo",
+  "基于当前会话新建一个副本": "Create a copy of this session",
+  "进化历史": "Evolution history",
+  "已清理进化记录，当前生效的机制保留不变。":
+    "Evolution history cleared; the active mechanism is unchanged.",
+  "清理全部进化记录？历次进化轮次与已退役的版本都会被删除，当前生效的机制保留不变。此操作不可撤销。":
+    "Clear all evolution history? Past cycles and retired versions are deleted; the active mechanism is unchanged. This cannot be undone.",
+  "所有轮次都会保留，不再自动删除；默认按评审分数从高到低显示前 {v1} 轮。":
+    "Every cycle is kept until you clear it; the top {v1} by review score are shown by default.",
+  "{v1} 轮记录": "{v1} cycles",
+  "只看前 {v1} 轮": "Show top {v1} only",
+  "展开全部 {v1} 轮": "Show all {v1} cycles",
+  "清理历史": "Clear history",
+  "还没有进化记录": "No evolution cycles yet",
+  "跑过一轮系统进化后，这里会按评分列出每次尝试。":
+    "After one evolution cycle, every attempt is listed here by review score.",
+  "未采用": "Not adopted",
+  "{v1} 分": "{v1} pts",
+  "无评分": "Unscored",
 }

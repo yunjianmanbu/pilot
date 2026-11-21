@@ -184,6 +184,7 @@ const bridge: PilotBridge = {
 
   listScheduledTasks: (sessionId: string) =>
     ipcRenderer.invoke('pilot:scheduled-list', sessionId),
+  allScheduledTasks: () => ipcRenderer.invoke('pilot:scheduled-all'),
   addScheduledTask: (sessionId: string, input) =>
     ipcRenderer.invoke('pilot:scheduled-add', sessionId, input),
   updateScheduledTask: (sessionId: string, taskId: string, input) =>
@@ -225,6 +226,7 @@ const bridge: PilotBridge = {
     ipcRenderer.invoke('pilot:evolution-run-cycle', path),
   improveEvolutionFlow: () => ipcRenderer.invoke('pilot:evolution-improve-policy'),
   rollbackEvolutionPolicy: () => ipcRenderer.invoke('pilot:evolution-policy-rollback'),
+  clearEvolutionHistory: () => ipcRenderer.invoke('pilot:evolution-clear-history'),
   reviewProfile: (path: string, profileId: string) =>
     ipcRenderer.invoke('pilot:profile-review', path, profileId),
   benchmarkProfile: (path: string, profileId: string) =>

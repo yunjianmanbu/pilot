@@ -75,6 +75,7 @@ export const TOOL_DESCRIPTIONS_ZH: Record<string, string> = {
   remember: '记一条长期有效的项目事实，下次会话也能看到。',
   update_plan: '维护当前任务的可见步骤清单。',
   add_todo: '把待办追加到本次会话的待办面板，留到之后的新消息里做。',
+  schedule_task: '用对话创建、查看、暂停或删除定时任务，到点后在本会话自动执行。',
   propose_self_update: '生成一份自我改进草稿，需要用户启用才会生效。',
   learning_research: '只读抓取一个白名单来源并存档，用于自主学习取证。',
   learning_log: '记录自主学习任务或阶段成果的裁决。',

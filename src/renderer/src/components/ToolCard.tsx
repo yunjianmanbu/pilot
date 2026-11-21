@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import {
   ChevronDownIcon,
+  ClockIcon,
   FileIcon,
   FolderIcon,
   LayersIcon,
@@ -22,6 +23,7 @@ function toolIcon(name: string): ReactNode {
   if (name === 'search_files') return <SearchIcon width={14} height={14} />
   if (name === 'list_directory') return <FolderIcon width={14} height={14} />
   if (name === 'explore') return <SearchIcon width={14} height={14} />
+  if (name === 'schedule_task') return <ClockIcon width={14} height={14} />
   if (
     name === 'remember' ||
     name === 'update_plan' ||

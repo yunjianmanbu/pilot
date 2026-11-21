@@ -687,6 +687,14 @@ export interface ScheduledTask {
   lastError?: string
 }
 
+export interface ScheduledTaskGroup {
+  sessionId: string
+  sessionTitle: string
+  workspacePath: string
+  sessionUpdatedAt: string
+  tasks: ScheduledTask[]
+}
+
 export interface ScheduledTaskInput {
   content: string
   kind: ScheduleKind
@@ -2449,6 +2457,8 @@ export interface PilotBridge {
   saveQuickCommands(items: QuickCommandInput[]): Promise<QuickCommand[]>
 
   listScheduledTasks(sessionId: string): Promise<ScheduledTask[]>
+  /** 所有会话的定时任务，用于左下角「定时」总览。 */
+  allScheduledTasks(): Promise<ScheduledTaskGroup[]>
   addScheduledTask(sessionId: string, input: ScheduledTaskInput): Promise<ScheduledTask>
   updateScheduledTask(
     sessionId: string,
@@ -2508,6 +2518,8 @@ export interface PilotBridge {
   /** Ask the loop to improve its own policy (thresholds, cadence, focus). */
   improveEvolutionFlow(): Promise<EvolutionPolicyVersion | null>
   rollbackEvolutionPolicy(): Promise<EvolutionPolicyVersion | null>
+  /** 清空进化历史（回合 + 退役版本）；这是唯一会删除记录的入口。 */
+  clearEvolutionHistory(): Promise<void>
   reviewProfile(path: string, profileId: string): Promise<ReviewProfileResult>
   /** Replay the fixed benchmark under the active and the candidate profile. */
   benchmarkProfile(path: string, profileId: string): Promise<ProfileBenchmarkReport>

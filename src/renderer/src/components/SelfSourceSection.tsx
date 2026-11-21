@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { SelfSourceMode, SelfSourceSettings, SourceBaseKind, SourceProvenance } from '../../../shared/types'
 import { t } from '../i18n'
-import { RefreshIcon, TerminalIcon, CheckIcon, InfoIcon } from '../icons'
+import { RefreshIcon, TerminalIcon, CheckIcon, InfoIcon, ArrowUpRightIcon } from '../icons'
 import { formatRelative } from '../ui'
 
 /**
@@ -27,6 +27,27 @@ function baseKindLabel(kind: SourceBaseKind): string {
       return t('未建立')
   }
 }
+
+/**
+ * The four public repositories this product is split into. The panel links out
+ * to them so the checkout behind "personal source" is one click away; nothing
+ * here is fetched, and the official git address stays empty until the user
+ * decides to fill it in.
+ */
+const OFFICIAL_REPOS: Array<{ name: string; label: string; hint: string }> = [
+  {
+    name: 'yunjianmanbu/pilot',
+    label: t('Pilot 桌面端'),
+    hint: t('主仓库：桌面端、中继与官网都在这里'),
+  },
+  { name: 'yunjianmanbu/pilot-link', label: t('移动控制端'), hint: t('手机控制电脑的 uni-app 端') },
+  { name: 'yunjianmanbu/pilot-client', label: t('手机被控端'), hint: t('电脑控制手机的反控端') },
+  {
+    name: 'yunjianmanbu/pilot-connector',
+    label: t('中继器'),
+    hint: t('自建中继，用来跨网络连接'),
+  },
+]
 
 export function SelfSourceSection({
   onError,
@@ -97,6 +118,26 @@ export function SelfSourceSection({
       status?.mode === 'custom' ? t('基线已按当前分支提交重建。') : t('同步完成，基线已指向最新官方提交。'),
     )
 
+  /** Fill the official address from one of the repository links. */
+  const useOfficial = (repo: string) => {
+    setForm({
+      ...form,
+      mode: 'builtin',
+      gitUrl: `https://github.com/${repo}`,
+      gitRef: form.gitRef || 'main',
+      gitPath: repo === 'yunjianmanbu/pilot' ? 'pilot/pilot' : '',
+    })
+    setNotice(t('已填入地址，点「保存并检查」后生效。'))
+  }
+
+  const openRepo = (repo: string) => {
+    void window.pilot
+      .openLink(`https://github.com/${repo}`, true)
+      .catch((caught) =>
+        onError(caught instanceof Error ? caught.message : String(caught)),
+      )
+  }
+
   const pick = async () => {
     if (busy) return
     setBusy('pick')
@@ -151,6 +192,33 @@ export function SelfSourceSection({
               {t('自定义源码目录')}</button>
           </div>
 
+          <div className="self-source-repos">
+            <span className="self-source-repos-title">{t('官方仓库')}</span>
+            <div className="self-source-repo-list">
+              {OFFICIAL_REPOS.map((repo) => (
+                <div className="self-source-repo" key={repo.name}>
+                  <button
+                    type="button"
+                    className="self-source-repo-open"
+                    onClick={() => openRepo(repo.name)}
+                    title={t('在浏览器打开 {v1}', { v1: repo.name })}
+                  >
+                    <strong>{repo.label}</strong>
+                    <small>{repo.hint}</small>
+                    <code>{repo.name}</code>
+                    <ArrowUpRightIcon width={12} height={12} />
+                  </button>
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    onClick={() => useOfficial(repo.name)}
+                  >
+                    {t('用作官方 git')}</button>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {form.mode === 'builtin' ? (
             <div className="self-source-grid">
               <label>
@@ -160,7 +228,7 @@ export function SelfSourceSection({
                   placeholder="https://example.com/pilot.git"
                   onChange={(event) => setForm({ ...form, gitUrl: event.target.value })}
                 />
-                <small>{t('填仓库根地址，例如 https://…/Pilot.git；内置源码会与这个仓库的提交比较。')}</small>
+                <small>{t('安装版默认留空：不填时基线就是安装包内的源码快照；填仓库根地址后，内置源码会与这个仓库的提交比较。')}</small>
               </label>
               <label>
                 <span>{t('分支或标签')}</span>

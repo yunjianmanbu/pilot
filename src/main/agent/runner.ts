@@ -57,6 +57,7 @@ import { DeepSeekClient } from './model'
 import { isEmptyAssistant } from './message-guard'
 import { commandLine, evaluatePermission } from './permissions'
 import { settlePlan, shouldResetPlan } from './plan'
+import { createScheduleTaskBridge } from './schedule-bridge'
 import { moveQueuedTask, sameQueueOrder, type QueueMoveDirection } from './queue-order'
 import { buildSystemPrompt, wantsSelfUpdate } from './prompt'
 import { looksLikeCorrection, selectMemories } from './memory'
@@ -412,6 +413,11 @@ export function shouldRequirePlan(prompt: string): boolean {
   if (trimmed.split(/\n+/).filter((line) => line.trim()).length >= 3) return true
   return multiStep
 }
+
+/**
+ * 按完整 id 或唯一前缀找一条定时任务（实现见 schedule-bridge，供测试与工具两侧共用）。
+ */
+export { matchScheduledTask } from './schedule-bridge'
 
 export class AgentRunner {
   private readonly active = new Map<string, ActiveRun>()
@@ -1636,6 +1642,9 @@ export class AgentRunner {
           }
           return created
         },
+        scheduleTasks: createScheduleTaskBridge(this.store, sessionId, () =>
+          this.emit({ type: 'scheduled.changed', sessionId }),
+        ),
         proposeSelfUpdate: async (input) => {
           if (input.scope === 'global') {
             // A system-wide draft needs evidence from every workspace, not

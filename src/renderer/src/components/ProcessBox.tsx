@@ -21,13 +21,10 @@ const LATEST_PARTS = 5
 /** While a run streams, stay glued to the bottom until the user scrolls up. */
 const STICK_THRESHOLD_PX = 24
 
-function renderReasoning(part: ProcessPart & { kind: 'reasoning' }, index: number, total: number) {
+function renderReasoning(part: ProcessPart & { kind: 'reasoning' }) {
   return (
     <details className="reasoning-block" key={part.key}>
-      <summary>
-        {t("思考过程")}
-        {total > 1 ? ` ${index}` : ''}
-      </summary>
+      <summary>{t("思考过程")}</summary>
       <div className="reasoning-content">
         <ProcessTime at={part.at} />
         {part.text}
@@ -158,12 +155,8 @@ function ProcessBoxRow({
     if (!atBottomOf(node) || (event.deltaY ?? 0) < 0) stickRef.current = false
   }
 
-  // Number reasoning steps by their position in the whole run, so the labels do
-  // not shift while the collapsed five-entry window slides forward.
-  const reasoningNumberOf = new Map(
-    parts.filter((part) => part.kind === 'reasoning').map((part, index) => [part.key, index + 1]),
-  )
-  const reasoningTotal = reasoningNumberOf.size
+  // Steps carry no ordinal any more: the reader tracks the work by its content,
+  // and numbering shifted as the collapsed window slid forward.
   const toolById = new Map(process.tools.map((tool) => [tool.id, tool]))
   const nodes: ReactNode[] = []
   let toolBuffer: ToolView[] = []
@@ -188,7 +181,7 @@ function ProcessBoxRow({
     }
     flushTools()
     if (part.kind === 'reasoning') {
-      nodes.push(renderReasoning(part, reasoningNumberOf.get(part.key) ?? 0, reasoningTotal))
+      nodes.push(renderReasoning(part))
       continue
     }
     nodes.push(

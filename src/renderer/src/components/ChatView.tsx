@@ -28,7 +28,7 @@ import type {
   WorkspaceSummary,
 } from '../../../shared/types'
 import { artifactsFromCalls, collectArtifactsByRun } from '../../../shared/artifacts'
-import { nextTodoPriority, normalizeTodoPriority, sortTodos } from '../../../shared/todos'
+import { sortTodos } from '../../../shared/todos'
 import { copyText } from '../clipboard'
 import {
   BrainIcon,
@@ -74,6 +74,7 @@ import { ProcessBox } from './ProcessBox'
 import { QuickCommandsDialog } from './QuickCommandsDialog'
 import { ReferencePicker } from './ReferencePicker'
 import { SelectionTodoMenu, type SelectionMenuState } from './SelectionTodoMenu'
+import { TodoPrioritySelect } from './TodoPrioritySelect'
 import { normalizeSelectionText } from '../selection'
 import { t } from '../i18n'
 import {
@@ -732,7 +733,10 @@ function PlanPanel({
   return (
     <details className="plan-panel">
       <summary>
-        <span className="plan-badge">{t("计划")}</span>
+        <span className="plan-badge">
+          <ListCheckIcon width={12} height={12} />
+          {t("计划")}
+        </span>
         <span className="plan-goal">{plan.goal || t("当前任务")}</span>
         <span className="plan-progress">
           {done}/{plan.items.length}
@@ -744,20 +748,6 @@ function PlanPanel({
   )
 }
 
-function priorityLabel(priority: TodoPriority | undefined): string {
-  const value = normalizeTodoPriority(priority)
-  if (value === 'high') return t('高')
-  if (value === 'low') return t('低')
-  return t('中')
-}
-
-/** 完整说明用于悬停提示：点一下就切到下一档。 */
-function priorityTitle(priority: TodoPriority | undefined): string {
-  const value = normalizeTodoPriority(priority)
-  if (value === 'high') return t('高优先级 · 点击改为中')
-  if (value === 'low') return t('低优先级 · 点击改为高')
-  return t('中优先级 · 点击改为低')
-}
 
 function TodoPanel({
   todos,
@@ -826,15 +816,11 @@ function TodoPanel({
       </summary>
       <div className="todo-body">
         <div className="todo-add-row">
-          <button
-            type="button"
-            className={`todo-priority priority-${draftPriority}`}
-            title={t("新待办优先级：点一下切换")}
-            aria-label={t("新待办优先级 {v1}", { v1: priorityLabel(draftPriority) })}
-            onClick={() => setDraftPriority((value) => nextTodoPriority(value))}
-          >
-            {priorityLabel(draftPriority)}
-          </button>
+          <TodoPrioritySelect
+            value={draftPriority}
+            onChange={setDraftPriority}
+            title={t("新待办优先级")}
+          />
           <input
             className="todo-add-input"
             value={draft}
@@ -870,16 +856,10 @@ function TodoPanel({
                     )}
                   </span>
                   {todo.status === 'pending' ? (
-                    <button
-                      type="button"
-                      className={`todo-priority priority-${normalizeTodoPriority(todo.priority)}`}
-                      title={priorityTitle(todo.priority)}
-                      onClick={() => {
-                        void onPriority(todo.id, nextTodoPriority(todo.priority))
-                      }}
-                    >
-                      {priorityLabel(todo.priority)}
-                    </button>
+                    <TodoPrioritySelect
+                      value={todo.priority}
+                      onChange={(next) => void onPriority(todo.id, next)}
+                    />
                   ) : null}
                   {editing?.id === todo.id ? (
                     <input

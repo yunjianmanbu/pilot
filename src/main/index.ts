@@ -1886,6 +1886,7 @@ function registerIpc(): void {
     store.saveQuickCommands(items),
   )
   handle('pilot:scheduled-list', (sessionId: string) => store.scheduledTasks(sessionId))
+  handle('pilot:scheduled-all', () => store.allScheduledTaskGroups())
   handle(
     'pilot:scheduled-add',
     async (sessionId: string, input: ScheduledTaskInput) => {
@@ -2081,6 +2082,13 @@ function registerIpc(): void {
       workspacePath: store.activeWorkspace() ?? '',
     })
     return version
+  })
+  handle('pilot:evolution-clear-history', async () => {
+    await store.clearEvolutionHistory()
+    broadcast({
+      type: 'evolution.changed',
+      workspacePath: store.activeWorkspace() ?? '',
+    })
   })
   handle('pilot:profile-review', async (path: string, profileId: string) => {
     const result = await runner.evolution.review(path, profileId)
