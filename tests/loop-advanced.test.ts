@@ -501,7 +501,9 @@ describe('agent loop verification gate', () => {
       verificationHint: 'pnpm test',
       policy: () => 'auto',
       executeTool: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 15))
+        // Keep a margin over the assertion below: CI runners jitter around the
+        // timer, and a 15ms sleep was measured as 14ms there.
+        await new Promise((resolve) => setTimeout(resolve, 50))
         return { ok: true, output: 'ok' }
       },
     })
@@ -509,7 +511,7 @@ describe('agent loop verification gate', () => {
     expect(result.status).toBe('completed')
     expect(result.steps).toBe(3)
     expect(result.timings.modelMs).toBeGreaterThanOrEqual(0)
-    expect(result.timings.toolMs).toBeGreaterThanOrEqual(15)
+    expect(result.timings.toolMs).toBeGreaterThanOrEqual(30)
     expect(result.timings.approvalMs).toBe(0)
     expect(messagesFor(model.requests[2]!)).toContain('验证检查')
     expect(messagesFor(model.requests[2]!)).toContain('pnpm test')
