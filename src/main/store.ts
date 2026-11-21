@@ -62,7 +62,6 @@ import {
   validFontSize,
   validContrast,
   validSaturation,
-  validAccent,
   validShellInterpreter,
   BODY_KEYS,
   CONTEXT_SUMMARY_MAX_CHARS,
@@ -942,7 +941,6 @@ export class Store {
       fontSize: this.state.settings.fontSize,
       contrast: this.state.settings.contrast,
       saturation: this.state.settings.saturation,
-      accent: this.state.settings.accent,
       locale: this.state.settings.locale,
       systemLocale: app.getLocale(),
       hasKey: Boolean(key),
@@ -1183,9 +1181,6 @@ export class Store {
     if (input.saturation !== undefined) {
       this.state.settings.saturation =
         validSaturation(input.saturation) ?? this.state.settings.saturation
-    }
-    if (input.accent !== undefined) {
-      this.state.settings.accent = validAccent(input.accent) ?? this.state.settings.accent
     }
     if (input.locale !== undefined) {
       this.state.settings.locale = isLocaleSetting(input.locale)

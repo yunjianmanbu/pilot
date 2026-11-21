@@ -929,9 +929,9 @@ const state = {
   theme: (() => {
     try {
       const value = localStorage.getItem(THEME_KEY)
-      return value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
+      return value === 'light' || value === 'dark' ? value : 'dark'
     } catch {
-      return 'system'
+      return 'dark'
     }
   })(),
   scrollToBottom: false,
@@ -2198,7 +2198,6 @@ function renderSchedulesSheet() {
 function renderSettings() {
   const info = state.deviceInfo || {}
   const themes = [
-    { id: 'system', label: '跟随系统', icon: 'system' },
     { id: 'dark', label: '深色', icon: 'moon' },
     { id: 'light', label: '浅色', icon: 'sun' },
   ]
@@ -2416,10 +2415,7 @@ function resizeComposer(el) {
 /* ── Theme ─────────────────────────────────────────────────────────────── */
 
 function applyTheme() {
-  const light =
-    state.theme === 'light' ||
-    (state.theme === 'system' &&
-      window.matchMedia?.('(prefers-color-scheme: light)').matches)
+  const light = state.theme === 'light'
   document.documentElement.dataset.theme = light ? 'light' : 'dark'
   const meta = document.querySelector('meta[name="theme-color"]')
   if (meta) meta.setAttribute('content', themeColor(light))
@@ -4266,13 +4262,6 @@ function handleLocation() {
 
 window.addEventListener('hashchange', handleLocation)
 window.addEventListener('popstate', handleLocation)
-
-window.matchMedia?.('(prefers-color-scheme: light)').addEventListener?.('change', () => {
-  if (state.theme === 'system') {
-    applyTheme()
-    render()
-  }
-})
 
 /* ── Service worker ────────────────────────────────────────────────────── */
 

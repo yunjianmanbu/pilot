@@ -3,28 +3,17 @@ import type {
   FontSizePreference,
   SaturationPreference,
   ThemeMode,
-  ThemePreference,
 } from './types'
 
 /**
- * Turn the stored preference into the theme the UI actually paints.
+ * Narrow a stored theme; anything else falls back to `dark`.
  *
- * `system` follows the OS. The renderer resolves it with `matchMedia` and the
- * main process with `nativeTheme.shouldUseDarkColors`, so both ends agree on
- * the same value at any moment; keeping the maths in one pure function is what
- * stops the two from drifting.
+ * There are only two themes, so this is the single place that decides what the
+ * stylesheet may receive — the renderer applies the value as-is and the main
+ * process paints window chrome from the same value.
  */
-export function resolveThemePreference(
-  preference: ThemePreference,
-  prefersDark: boolean,
-): ThemeMode {
-  if (preference === 'system') return prefersDark ? 'dark' : 'light'
-  return preference
-}
-
-/** Narrow a value read from disk or IPC; anything else falls back to `dark`. */
-export function isThemePreference(value: unknown): value is ThemePreference {
-  return value === 'dark' || value === 'light' || value === 'system'
+export function isThemeMode(value: unknown): value is ThemeMode {
+  return value === 'dark' || value === 'light'
 }
 
 /** Narrow a stored text-size preference; anything else is the original size. */

@@ -22,7 +22,6 @@ import type {
   WorkspaceDetail,
   WorkspaceSummary,
 } from '../../shared/types'
-import { resolveThemePreference } from '../../shared/theme'
 import { modelOptionLabel } from '../../shared/model-label'
 import { copyText } from './clipboard'
 import { ChangeReviewPanel } from './components/ChangeReviewPanel'
@@ -33,6 +32,7 @@ import { PairRequestDialog } from './components/PairRequestDialog'
 import { EvolutionPanel } from './components/EvolutionPanel'
 import { FilesPanel } from './components/FilesPanel'
 import { QualityBell } from './components/QualityBell'
+import { ResourceMeters } from './components/ResourceMeters'
 import { KnowledgePanel } from './components/KnowledgePanel'
 import { MemoryPanel } from './components/MemoryPanel'
 import { ModuleCheckPanel } from './components/ModuleCheckPanel'
@@ -726,28 +726,11 @@ export function App() {
     }
   }, [pushToast])
 
-  // The stored preference may be `system`; the DOM attribute is always the
-  // concrete mode, so the stylesheet keeps just the two palettes.
+  // Only two themes exist, so the stored value is painted as-is.
   useEffect(() => {
-    const query = window.matchMedia('(prefers-color-scheme: dark)')
-    const paint = () => {
-      document.documentElement.dataset['theme'] = resolveThemePreference(
-        settings?.theme ?? 'dark',
-        query.matches,
-      )
-    }
-    paint()
-    if (settings?.theme !== 'system') return
-    query.addEventListener('change', paint)
-    return () => query.removeEventListener('change', paint)
+    document.documentElement.dataset['theme'] = settings?.theme ?? 'dark'
   }, [settings?.theme])
 
-  useEffect(() => {
-    document.documentElement.dataset['accent'] = settings?.accent ?? 'graphite'
-  }, [settings?.accent])
-
-  // Every font-size in styles.css multiplies `--font-scale`, so only text grows;
-  // controls, spacing and hit targets keep the size the layout was built for.
   useEffect(() => {
     document.documentElement.dataset['fontSize'] = settings?.fontSize ?? 'standard'
   }, [settings?.fontSize])
@@ -2835,6 +2818,10 @@ export function App() {
 
               {/* 分隔线把「当前会话的模式与操作」与「全局的铃铛/模型/主题/连接」分开。 */}
               {view === 'chat' && session ? <span className="topbar-split" /> : null}
+
+              {/* 本机负载常驻在最右侧全局区，切到任何视图都能看。 */}
+              <ResourceMeters workspacePath={detail?.workspace.path ?? activeWorkspace ?? undefined} />
+              <span className="topbar-split resource-meters-split" />
 
               {/* 小铃铛：评估模型认为有更优版本时亮起，批准前不会打包。 */}
               <QualityBell

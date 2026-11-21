@@ -35,9 +35,11 @@ import type {
   ScheduledTaskInput,
   Session,
   SessionChange,
+  SessionLink,
   SessionSummary,
   StoredMessage,
   SystemInfo,
+  ToolCatalogEntry,
   UpdateState,
   WorkspaceSummary,
 } from '../../shared/types'
@@ -59,6 +61,10 @@ import {
   type LearningSummary,
 } from '../agent/learning'
 import { DynamicToolRegistry } from '../agent/toolsmith'
+import { filterLearningTools, pilotTools, RUN_SHELL } from '../agent/tools'
+import { loadMcpConfig } from '../agent/mcp'
+import { buildToolCatalog } from '../../shared/tools-catalog'
+import { collectSessionLinks } from '../../shared/session-links'
 import { sanitizeImages, sanitizeReferences } from '../agent/attachments'
 import type { AgentRunner } from '../agent/runner'
 import { buildKnowledgePairs, clipKnowledgePair } from '../search'
@@ -146,6 +152,12 @@ const MAX_PENDING_UPLOADS = 4
 const MAX_UPLOAD_CHUNK_BASE64 = Math.ceil(MAX_UPLOAD_CHUNK_BYTES / 3) * 4 + 4
 // 知识库一次最多回传的字符总量（含指令与回复），保证加密后仍远低于中继帧上限。
 const KNOWLEDGE_PAYLOAD_CHARS = 80_000
+// 手机端「会话资源」预览同样按条数与字符预算裁剪：链接只回最近若干条，
+// 工具描述截断且不回传 inputSchema，避免一帧被长文本撑爆。
+const PHONE_LINK_LIMIT = 60
+const PHONE_LINK_URL_CHARS = 2_000
+const PHONE_TOOL_LIMIT = 120
+const PHONE_TOOL_DESCRIPTION_CHARS = 320
 // 手机端新建工作区：只接受单层目录名，由电脑端拼接到授权根目录里。
 const WORKSPACE_NAME_MAX = 64
 const WORKSPACE_NAME_INVALID = /[<>:"/\\|?*\u0000-\u001f\u007f]/
@@ -2116,6 +2128,10 @@ export class CompanionServer {
         return this.searchSessions(params)
       case 'sessions.knowledge':
         return this.sessionKnowledge(params)
+      case 'sessions.links':
+        return this.sessionLinks(params)
+      case 'sessions.tools':
+        return this.sessionTools(params)
       case 'sessions.get':
       case 'sessions.history':
         return this.getSession(params)
@@ -3131,6 +3147,94 @@ export class CompanionServer {
       pairs: selected,
       total: matched.length,
       hasMore: matched.length > selected.length,
+    }
+  }
+
+  /**
+   * 手机端任务卡片上的「链接」预览。
+   *
+   * 只回传会话正文里出现过的 http(s) 链接，不访问网络：手机看到的是「这个
+   * 任务里提过哪些链接」，不是「链接背后的内容」。与桌面端 `pilot:session-links`
+   * 用同一个收集器，两端口径一致。
+   */
+  private sessionLinks(params: Record<string, unknown>): {
+    links: SessionLink[]
+    total: number
+    hasMore: boolean
+  } {
+    const sessionId = requireString(params['sessionId'], '会话', 80)
+    const session = this.options.store.session(sessionId)
+    if (!session) throw new Error('会话不存在')
+    const limit = clampInt(params['limit'], PHONE_LINK_LIMIT, 1, 200)
+    const all = collectSessionLinks(session.messages)
+    return {
+      links: all.slice(0, limit).map((link) => ({
+        ...link,
+        // 极少见的超长 URL 截断到 2000 字符，避免一帧被单条链接撑爆。
+        url: link.url.slice(0, PHONE_LINK_URL_CHARS),
+      })),
+      total: all.length,
+      hasMore: all.length > limit,
+    }
+  }
+
+  /**
+   * 手机端任务卡片上的「工具」预览：这个任务的工作区在一次运行里会拿到哪些
+   * 工具。过滤条件与运行器一致（shell 模式、学习策略、MCP 开关），所以手机上
+   * 看到的就是真实可用清单，而不是代码里定义过的全部工具。
+   *
+   * 不回传 `inputSchema`：手机只用它显示名称、来源、风险和一句说明。
+   */
+  private async sessionTools(params: Record<string, unknown>): Promise<{
+    tools: Array<{
+      name: string
+      description: string
+      risk: ToolCatalogEntry['risk']
+      source: ToolCatalogEntry['source']
+      enabled: boolean
+      approved?: boolean
+      version?: number
+    }>
+    total: number
+    hasMore: boolean
+    mcpEnabled: boolean
+  }> {
+    const sessionId = requireString(params['sessionId'], '会话', 80)
+    const session = this.options.store.session(sessionId)
+    if (!session) throw new Error('会话不存在')
+    const settings = this.options.store.settings()
+    const builtin = filterLearningTools(
+      settings.shellMode
+        ? pilotTools
+        : pilotTools.filter((tool) => tool.name !== RUN_SHELL),
+      resolveLearningPolicy(settings).enabled,
+    )
+    const servers = await loadMcpConfig(session.workspacePath).catch(() => ({}))
+    const registry = await this.toolRegistry(session.workspacePath)
+    const catalog = buildToolCatalog({
+      builtin,
+      dynamic: await registry.list().catch(() => []),
+      mcpServers: Object.keys(servers),
+      mcpEnabled: settings.mcpEnabled === true,
+    })
+    const tools = catalog.slice(0, PHONE_TOOL_LIMIT).map((tool) => ({
+      name: tool.name,
+      description:
+        tool.description.length > PHONE_TOOL_DESCRIPTION_CHARS
+          ? `${tool.description.slice(0, PHONE_TOOL_DESCRIPTION_CHARS)}…`
+          : tool.description,
+      risk: tool.risk,
+      source: tool.source,
+      // 内置工具没有 enabled 字段，出现即代表可用。
+      enabled: tool.enabled !== false,
+      ...(tool.approved === undefined ? {} : { approved: tool.approved }),
+      ...(tool.version === undefined ? {} : { version: tool.version }),
+    }))
+    return {
+      tools,
+      total: catalog.length,
+      hasMore: catalog.length > tools.length,
+      mcpEnabled: settings.mcpEnabled === true,
     }
   }
 

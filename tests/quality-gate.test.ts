@@ -46,7 +46,6 @@ function settings(overrides: Partial<SettingsView> = {}): SettingsView {
     globalInstructionsPath: '',
     theme: 'dark',
     fontSize: 'standard',
-    accent: 'graphite',
     locale: 'zh-CN',
     systemLocale: 'zh-CN',
     hasKey: true,

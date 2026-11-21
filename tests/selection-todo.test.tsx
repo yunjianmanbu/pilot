@@ -1,11 +1,16 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { setLocale } from '../src/renderer/src/i18n'
 import { SelectionTodoMenu } from '../src/renderer/src/components/SelectionTodoMenu'
 import {
   clampMenuPosition,
   MAX_SELECTION_TODO_CHARS,
   normalizeSelectionText,
 } from '../src/renderer/src/selection'
+
+// The assertions pin the Chinese source copy; navigator.language is en-US on
+// the Linux CI runner, so pin the effective locale before rendering.
+setLocale('zh-CN')
 
 describe('normalizeSelectionText', () => {
   it('collapses wrapped lines and indentation into one line', () => {

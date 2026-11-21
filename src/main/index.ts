@@ -6,7 +6,6 @@ import {
   ipcMain,
   Menu,
   nativeImage,
-  nativeTheme,
   Notification,
   protocol,
   session,
@@ -22,7 +21,6 @@ import { appIconPath } from './app-icon'
 import { appUserModelId, foreignShortcuts, type ShortcutIdentity } from './win-identity'
 import { trayClickAction } from './window-action'
 import type {
-  AccentPalette,
   ApprovalMode,
   CheckpointRestoreMode,
   ContributionEvidence,
@@ -47,15 +45,18 @@ import type {
   SettingsUpdate,
   StoredMessage,
   ThemeMode,
-  ThemePreference,
   ContrastPreference,
   SaturationPreference,
   UpdateState,
 } from '../shared/types'
-import { applyContrastColor, resolveThemePreference } from '../shared/theme'
+import { applyContrastColor } from '../shared/theme'
 import { normalizeEnvFields, type FeedbackDraft } from '../shared/feedback'
 import type { ModuleCheckSettings } from '../shared/module-check'
 import { AgentRunner } from './agent/runner'
+import { filterLearningTools, pilotTools, RUN_SHELL } from './agent/tools'
+import { resolveLearningPolicy } from './agent/learning'
+import { buildToolCatalog } from '../shared/tools-catalog'
+import { collectSessionLinks } from '../shared/session-links'
 import { MAX_IMAGE_DATA_URL_CHARS, sanitizeImages } from './agent/attachments'
 import { DynamicToolRegistry } from './agent/toolsmith'
 import { collectSessionArtifacts } from './agent/artifacts'
@@ -87,6 +88,7 @@ import { ensureGlobalInstructions, loadProjectInstructions } from './instruction
 import { sandboxStatus } from './sandbox'
 import { runSelfCheck } from './self-check'
 import { systemInfo, feedbackEnvironment } from './system-info'
+import { resourceUsage } from './resource-usage'
 import {
   configureFingerprintCache,
   forgetSourceFingerprint,
@@ -914,35 +916,25 @@ function broadcastUpdate(state: UpdateState): void {
   companion?.publish({ type: 'update.changed', state: localized })
 }
 
-/** Resolve the stored preference; `system` reads the OS at call time. */
-function resolveTheme(preference: ThemePreference): ThemeMode {
-  return resolveThemePreference(preference, nativeTheme.shouldUseDarkColors)
-}
-
-/** Window chrome colors; the Claude preset uses warm ivory instead of pure white. */
+/**
+ * Window chrome colours, kept in step with the Islands ladder in styles.css:
+ * `#191A1C` dark canvas, `#ffffff` light canvas. They paint the first frame
+ * before the renderer boots, so an exact match avoids a flash of the wrong
+ * colour on theme switch.
+ */
 function windowPalette(
   theme: ThemeMode,
-  accent: AccentPalette,
   contrast: ContrastPreference,
 ): { color: string; symbolColor: string } {
-  const claude = accent === 'claude'
   if (theme === 'light') {
-    return claude
-      ? { color: applyContrastColor('#faf9f5', theme, contrast), symbolColor: '#1f1e1d' }
-      : { color: applyContrastColor('#ffffff', theme, contrast), symbolColor: '#000000' }
+    return { color: applyContrastColor('#ffffff', theme, contrast), symbolColor: '#191a1c' }
   }
-  return claude
-    ? { color: applyContrastColor('#1f1e1d', theme, contrast), symbolColor: '#f5f4ef' }
-    : { color: applyContrastColor('#000000', theme, contrast), symbolColor: '#ffffff' }
+  return { color: applyContrastColor('#191a1c', theme, contrast), symbolColor: '#e3e5e8' }
 }
 
-function applyTheme(
-  preference: ThemePreference,
-  accent: AccentPalette,
-  contrast: ContrastPreference,
-): void {
+function applyTheme(theme: ThemeMode, contrast: ContrastPreference): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
-  const palette = windowPalette(resolveTheme(preference), accent, contrast)
+  const palette = windowPalette(theme, contrast)
   mainWindow.setBackgroundColor(palette.color)
   if (process.platform === 'win32' || process.platform === 'linux') {
     try {
@@ -1012,12 +1004,8 @@ function healWindowsShortcuts(): void {
 }
 
 function createWindow(): void {
-  const theme = resolveTheme(store.settingsView().theme)
-  const palette = windowPalette(
-    theme,
-    store.settingsView().accent,
-    store.settingsView().contrast,
-  )
+  const theme = store.settingsView().theme
+  const palette = windowPalette(theme, store.settingsView().contrast)
 
   const iconPath = appIconPath()
   mainWindow = new BrowserWindow({
@@ -1249,8 +1237,8 @@ function registerIpc(): void {
 
   handle('pilot:settings-update', async (input: SettingsUpdate) => {
     const view = await store.updateSettings(input)
-    if (input.theme || input.accent || input.contrast) {
-      applyTheme(view.theme, view.accent, view.contrast)
+    if (input.theme || input.contrast) {
+      applyTheme(view.theme, view.contrast)
     }
     // Any key, endpoint or role change can move the primary account, so the
     // cached provider balance must be fetched again.
@@ -1327,9 +1315,9 @@ function registerIpc(): void {
     },
   )
 
-  handle('pilot:set-theme', async (theme: ThemePreference) => {
+  handle('pilot:set-theme', async (theme: ThemeMode) => {
     const view = await store.updateSettings({ theme })
-    applyTheme(theme, view.accent, view.contrast)
+    applyTheme(view.theme, view.contrast)
   })
 
   // Settings previews an appearance before saving. Painting the window chrome
@@ -1339,18 +1327,13 @@ function registerIpc(): void {
     'pilot:preview-theme',
     (
       input: {
-        theme: ThemePreference
-        accent: AccentPalette
+        theme: ThemeMode
         contrast: ContrastPreference
         saturation: SaturationPreference
       } | null,
     ) => {
       const view = store.settingsView()
-      applyTheme(
-        input?.theme ?? view.theme,
-        input?.accent ?? view.accent,
-        input?.contrast ?? view.contrast,
-      )
+      applyTheme(input?.theme ?? view.theme, input?.contrast ?? view.contrast)
     },
   )
 
@@ -1606,6 +1589,31 @@ function registerIpc(): void {
     if (!session) throw new Error('Session not found')
     return knowledgePairsFor(session.messages, typeof query === 'string' ? query : '', limit)
   })
+  handle('pilot:session-links', (sessionId: string) => {
+    const session = store.session(sessionId)
+    if (!session) throw new Error('Session not found')
+    return collectSessionLinks(session.messages)
+  })
+  handle('pilot:tools-catalog', async (sessionId: string) => {
+    const session = store.session(sessionId)
+    if (!session) throw new Error('Session not found')
+    const settings = store.settings()
+    // Same filters the runner applies, so the panel lists what a run would
+    // actually offer instead of every tool that exists in code.
+    const builtin = filterLearningTools(
+      settings.shellMode
+        ? pilotTools
+        : pilotTools.filter((tool) => tool.name !== RUN_SHELL),
+      resolveLearningPolicy(settings).enabled,
+    )
+    const servers = await loadMcpConfig(session.workspacePath).catch(() => ({}))
+    return buildToolCatalog({
+      builtin,
+      dynamic: await (await toolRegistryFor(session.workspacePath)).list().catch(() => []),
+      mcpServers: Object.keys(servers),
+      mcpEnabled: settings.mcpEnabled === true,
+    })
+  })
   handle('pilot:session-transcript', (sessionId: string): string => {
     const session = store.session(sessionId)
     if (!session) throw new Error('Session not found')
@@ -1778,6 +1786,9 @@ function registerIpc(): void {
   // The renderer passes the active workspace so the reported volume is the one
   // builds and installs will actually write to. Nothing identifying is read.
   handle('pilot:system-info', async (workspacePath?: string) => systemInfo(workspacePath))
+  // 顶栏资源条：每次调用会做一次约 120ms 的 CPU 采样，所以由渲染进程按自己的
+  // 节奏轮询（窗口隐藏时停），不在渲染期调用。
+  handle('pilot:resource-usage', async (workspacePath?: string) => resourceUsage(workspacePath))
   // 日志读取：诊断面板与 CLI 共用，只返回已脱敏的元数据记录。
   handle('pilot:logs-recent', async (limit?: number) => (appLog ? appLog.recent(limit) : []))
   handle('pilot:logs-dir', () => appLog?.dir ?? '')
@@ -2316,6 +2327,7 @@ function registerIpc(): void {
       workspace: root,
       relativePath: file,
       preload: join(__dirname, '../preload/index.js'),
+      theme: store.settingsView().theme,
     })
   })
   /** What a standalone document window needs to paint itself like the app. */
@@ -2323,7 +2335,6 @@ function registerIpc(): void {
     const settings = store.settingsView()
     return {
       theme: settings.theme,
-      accent: settings.accent,
       contrast: settings.contrast,
       saturation: settings.saturation,
       fontSize: settings.fontSize,
@@ -2375,14 +2386,6 @@ app.whenReady().then(async () => {
   if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
   store = new Store()
   await store.load()
-  // A pinned mode ignores the OS; `system` repaints the window chrome whenever
-  // it flips. The renderer follows the same flip through `matchMedia`. Bound
-  // after the store is loaded, because the handler reads settings.
-  nativeTheme.on('updated', () => {
-    const view = store.settingsView()
-    if (view.theme !== 'system') return
-    applyTheme(view.theme, view.accent, view.contrast)
-  })
   // One assembly path for both hosts: `src/core/engine.ts`. What stays here is
   // Electron-only: the window, the in-app updater, the OS notifier and the
   // single-instance lock.

@@ -1,0 +1,24 @@
+{
+  "api": 1,
+  "id": "retail-member",
+  "name": "零售门店会员中枢",
+  "version": "1.0.0",
+  "industry": "retail",
+  "description": "门店会员登记、积分查询与核销的垂直方案包：一个签名插件 + 角色权限 + 品牌预设，随包不带任何私钥。",
+  "vendor": "示例供应商",
+  "pilotVersion": ">=0.1.54",
+  "plugins": [{ "id": "retail-loyalty", "path": "plugins/retail-loyalty" }],
+  "grants": {
+    "retail-loyalty": {
+      "enabled": true,
+      "permissions": ["loyalty:read", "loyalty:write"]
+    }
+  },
+  "trust": [],
+  "branding": {
+    "productName": "门店会员中枢",
+    "accent": "clay",
+    "locale": "zh-CN"
+  },
+  "docs": ["README.md"]
+}

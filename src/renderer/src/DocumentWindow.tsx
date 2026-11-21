@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import type { DocumentWindowState, FilePreview } from '../../shared/types'
-import { resolveThemePreference } from '../../shared/theme'
 import { applyLocaleSetting, t } from './i18n'
 import { FilePreviewBody } from './components/FilePreviewBody'
 import { RefreshIcon, XIcon } from './icons'
@@ -30,9 +29,7 @@ export function DocumentWindow({ workspace, path }: { workspace: string; path: s
       .then((state: DocumentWindowState) => {
         if (cancelled) return
         const root = document.documentElement
-        const query = window.matchMedia('(prefers-color-scheme: dark)')
-        root.dataset['theme'] = resolveThemePreference(state.theme as never, query.matches)
-        root.dataset['accent'] = state.accent
+        root.dataset['theme'] = state.theme
         root.dataset['contrast'] = state.contrast
         root.dataset['saturation'] = state.saturation
         root.dataset['fontSize'] = state.fontSize

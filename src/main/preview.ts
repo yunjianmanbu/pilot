@@ -173,7 +173,7 @@ export function openPreviewWindow(url: string): void {
     minHeight: 480,
     title: titleFor(url),
     ...windowIconOption(),
-    backgroundColor: '#111111',
+    backgroundColor: '#191a1c',
     autoHideMenuBar: true,
     webPreferences: {
       partition: PREVIEW_PARTITION,

@@ -1,0 +1,33 @@
+{
+  "id": "retail-loyalty",
+  "name": "门店会员积分",
+  "version": 1,
+  "api": 1,
+  "runtime": "node",
+  "entry": "index.mjs",
+  "description": "垂直行业示例：门店会员登记、积分查询与核销。数据只落在插件自己的状态目录，不进工作区源码树。",
+  "permissions": ["loyalty:read", "loyalty:write"],
+  "roles": [
+    { "id": "owner", "permissions": ["loyalty:*"] },
+    { "id": "manager", "permissions": ["loyalty:read", "loyalty:write"] },
+    { "id": "clerk", "permissions": ["loyalty:read"] }
+  ],
+  "routes": [
+    { "method": "POST", "path": "enroll", "auth": "public", "description": "登记会员（手机号）" },
+    {
+      "method": "GET",
+      "path": "points",
+      "auth": "required",
+      "permission": "loyalty:read",
+      "description": "查询某会员积分"
+    },
+    {
+      "method": "POST",
+      "path": "redeem",
+      "auth": "required",
+      "permission": "loyalty:write",
+      "description": "核销积分"
+    }
+  ],
+  "limits": { "timeoutMs": 5000, "rateLimitPerMinute": 120, "maxBodyBytes": 8192 }
+}

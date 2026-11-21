@@ -15,7 +15,7 @@ import type {
   RunEvent,
   SettingsUpdate,
   SelfSourceSettings,
-  ThemePreference,
+  ThemeMode,
   UpdateState,
 } from '../shared/types'
 
@@ -25,7 +25,7 @@ const bridge: PilotBridge = {
   testConnection: (input) => ipcRenderer.invoke('pilot:test-connection', input),
   modelBilling: (refresh?: boolean) => ipcRenderer.invoke('pilot:model-billing', refresh),
   judgeBalance: (input) => ipcRenderer.invoke('pilot:judge-balance', input),
-  setTheme: (theme: ThemePreference) => ipcRenderer.invoke('pilot:set-theme', theme),
+  setTheme: (theme: ThemeMode) => ipcRenderer.invoke('pilot:set-theme', theme),
   previewTheme: (input) => ipcRenderer.invoke('pilot:preview-theme', input),
 
   submitFeedback: (input, workspacePath?: string) =>
@@ -81,8 +81,11 @@ const bridge: PilotBridge = {
     ipcRenderer.invoke('pilot:session-around', sessionId, messageId, limit),
   searchMessages: (query: string, limit?: number, filter?: MessageSearchFilter) =>
     ipcRenderer.invoke('pilot:search', query, limit, filter),
-  knowledgePairs: (sessionId: string, query?: string, limit?: number) =>
-    ipcRenderer.invoke('pilot:knowledge-pairs', sessionId, query, limit),
+  knowledgePairs: (sessionId: string, query?: string, limit?: number) => {
+    return ipcRenderer.invoke('pilot:knowledge-pairs', sessionId, query, limit)
+  },
+  sessionLinks: (sessionId: string) => ipcRenderer.invoke('pilot:session-links', sessionId),
+  toolsCatalog: (sessionId: string) => ipcRenderer.invoke('pilot:tools-catalog', sessionId),
   getSessionTranscript: (sessionId: string) =>
     ipcRenderer.invoke('pilot:session-transcript', sessionId),
   writeClipboard: (text: string) => ipcRenderer.invoke('pilot:clipboard-write', text),
@@ -145,6 +148,8 @@ const bridge: PilotBridge = {
 
   sandboxStatus: () => ipcRenderer.invoke('pilot:sandbox-status'),
   systemInfo: (workspacePath?: string) => ipcRenderer.invoke('pilot:system-info', workspacePath),
+  resourceUsage: (workspacePath?: string) =>
+    ipcRenderer.invoke('pilot:resource-usage', workspacePath),
   recentLogs: (limit?: number) => ipcRenderer.invoke('pilot:logs-recent', limit),
   logDir: () => ipcRenderer.invoke('pilot:logs-dir'),
   openLogs: () => ipcRenderer.invoke('pilot:logs-open'),

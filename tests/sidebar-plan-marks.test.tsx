@@ -1,7 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { setLocale } from '../src/renderer/src/i18n'
 import { PlanMarks } from '../src/renderer/src/components/Sidebar'
 import type { Plan, PlanItem } from '../src/shared/types'
+
+// The assertions pin the Chinese source copy; navigator.language is en-US on
+// the Linux CI runner, so pin the effective locale before rendering.
+setLocale('zh-CN')
 
 function plan(...statuses: PlanItem['status'][]): Plan {
   return {

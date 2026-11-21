@@ -11,8 +11,9 @@
  * the workspace jail on every call — the window never receives a raw path it
  * could turn into arbitrary disk access.
  */
-import { BrowserWindow, nativeTheme, shell } from 'electron'
+import { BrowserWindow, shell } from 'electron'
 import { basename, join } from 'node:path'
+import type { ThemeMode } from '../shared/types'
 import { windowIconOption } from './app-icon'
 
 /** Enough for a comparison of a few files, small enough to stay bounded. */
@@ -32,6 +33,11 @@ export interface OpenDocumentWindowOptions {
   relativePath: string
   /** Absolute path of the preload bundle (same one the main window uses). */
   preload: string
+  /**
+   * The saved theme, so the first frame matches the content the window paints.
+   * Read from the store by the caller: this module does not touch disk.
+   */
+  theme: ThemeMode
 }
 
 function destroyable(record: DocumentRecord): boolean {
@@ -80,7 +86,7 @@ export function openDocumentWindow(options: OpenDocumentWindowOptions): void {
     show: false,
     title,
     ...windowIconOption(),
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#111111' : '#f4f4f4',
+    backgroundColor: options.theme === 'light' ? '#ffffff' : '#191a1c',
     autoHideMenuBar: true,
     webPreferences: {
       preload: options.preload,

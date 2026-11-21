@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { setLocale } from '../src/renderer/src/i18n'
 import { knowledgeScopeLabel, planKnowledgeScope, sortKnowledgePairsNewestFirst } from '../src/renderer/src/knowledge'
 import type { SessionSummary } from '../src/shared/types'
+
+// These assertions pin the Chinese source copy; the effective locale depends
+// on navigator.language, which is en-US on the Linux CI runner.
+setLocale('zh-CN')
 
 function summary(id: string, workspacePath: string): SessionSummary {
   return {

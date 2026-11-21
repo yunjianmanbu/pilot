@@ -123,7 +123,11 @@ function parsePermissions(value: unknown, what: string): string[] {
 
 function parseEntry(value: unknown): string {
   const entry = asString(value, 'entry')
-  if (isAbsolute(entry)) throw new PluginManifestError('entry must be relative to the plugin directory')
+  // Windows drive paths ("C:/evil.mjs") are not absolute on POSIX, so a
+  // manifest that escapes via a drive letter would only be caught on Windows.
+  if (isAbsolute(entry) || /^[a-zA-Z]:[\\/]/.test(entry)) {
+    throw new PluginManifestError('entry must be relative to the plugin directory')
+  }
   const normalized = normalize(entry)
   if (normalized.includes('..')) {
     throw new PluginManifestError('entry must not escape the plugin directory')

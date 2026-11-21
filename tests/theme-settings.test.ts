@@ -43,52 +43,39 @@ async function setup(): Promise<{ store: Store; root: string }> {
 }
 
 describe('appearance settings', () => {
-  it('defaults to the dark graphite palette', async () => {
+  it('defaults to the dark theme', async () => {
     const { store } = await setup()
     expect(store.settingsView().theme).toBe('dark')
-    expect(store.settingsView().accent).toBe('graphite')
     expect(store.settingsView().contrast).toBe('standard')
     expect(store.settingsView().saturation).toBe('standard')
   })
 
-  it('persists a chosen theme and accent across a restart', async () => {
+  it('exposes no accent palette any more', async () => {
     const { store } = await setup()
-    await store.updateSettings({ theme: 'light', accent: 'clay' })
-    expect(store.settingsView().accent).toBe('clay')
+    expect('accent' in store.settingsView()).toBe(false)
+  })
+
+  it('persists a chosen theme across a restart', async () => {
+    const { store } = await setup()
+    await store.updateSettings({ theme: 'light' })
+    expect(store.settingsView().theme).toBe('light')
 
     const reloaded = new Store()
     await reloaded.load()
     expect(reloaded.settingsView().theme).toBe('light')
-    expect(reloaded.settingsView().accent).toBe('clay')
   })
 
-  it('accepts every bundled palette, including the new presets', async () => {
-    const { store } = await setup()
-    for (const accent of ['ocean', 'moss', 'plum', 'rose', 'sand', 'orange'] as const) {
-      await store.updateSettings({ accent })
-      expect(store.settingsView().accent).toBe(accent)
-    }
-    const reloaded = new Store()
-    await reloaded.load()
-    expect(reloaded.settingsView().accent).toBe('orange')
-  })
-
-  it('persists the Claude warm palette', async () => {
-    const { store } = await setup()
-    await store.updateSettings({ theme: 'light', accent: 'claude' })
-    expect(store.settingsView().accent).toBe('claude')
-
+  it('drops a stale accent value written by an older build', async () => {
+    const { root } = await setup()
+    await writeFile(
+      join(root, 'user-data', 'pilot-core.json'),
+      JSON.stringify({ settings: { theme: 'light', accent: 'clay' } }),
+      'utf8',
+    )
     const reloaded = new Store()
     await reloaded.load()
     expect(reloaded.settingsView().theme).toBe('light')
-    expect(reloaded.settingsView().accent).toBe('claude')
-  })
-
-  it('ignores an unknown accent instead of persisting it', async () => {
-    const { store } = await setup()
-    await store.updateSettings({ accent: 'clay' })
-    await store.updateSettings({ accent: 'neon' as never })
-    expect(store.settingsView().accent).toBe('clay')
+    expect('accent' in reloaded.settingsView()).toBe(false)
   })
 
   it('persists contrast and saturation across a restart', async () => {
@@ -121,25 +108,13 @@ describe('appearance settings', () => {
     const { root } = await setup()
     await writeFile(
       join(root, 'user-data', 'pilot-core.json'),
-      JSON.stringify({ settings: { contrast: 'ultra', saturation: 'auto' } }),
+      JSON.stringify({ settings: { theme: 'sepia', contrast: 'ultra', saturation: 'auto' } }),
       'utf8',
     )
     const reloaded = new Store()
     await reloaded.load()
+    expect(reloaded.settingsView().theme).toBe('dark')
     expect(reloaded.settingsView().contrast).toBe('standard')
     expect(reloaded.settingsView().saturation).toBe('standard')
-  })
-
-  it('falls back to graphite for a hand-edited palette name', async () => {
-    const { root } = await setup()
-    await writeFile(
-      join(root, 'user-data', 'pilot-core.json'),
-      JSON.stringify({ settings: { theme: 'light', accent: 'neon' } }),
-      'utf8',
-    )
-    const reloaded = new Store()
-    await reloaded.load()
-    expect(reloaded.settingsView().theme).toBe('light')
-    expect(reloaded.settingsView().accent).toBe('graphite')
   })
 })

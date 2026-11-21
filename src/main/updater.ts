@@ -51,6 +51,11 @@ export interface UpdaterOptions {
   userDataDir: string
   isPackaged: boolean
   onState: (state: UpdateState) => void
+  /**
+   * Overrides the platform gate for tests. Production keeps the default:
+   * only Windows ships the NSIS installer the silent-update path drives.
+   */
+  supported?: boolean
 }
 
 function errorMessage(error: unknown): string {
@@ -140,7 +145,7 @@ export class UpdaterService {
     this.isPackaged = options.isPackaged
     this.onState = options.onState
     this.updateDir = join(options.userDataDir, 'updates')
-    this.supported = process.platform === 'win32'
+    this.supported = options.supported ?? process.platform === 'win32'
     this.manifestUrl = process.env['PILOT_UPDATE_MANIFEST']?.trim() || DEFAULT_MANIFEST_URL
 
     const hosts = new Set(TRUSTED_HOSTS)

@@ -129,7 +129,6 @@ const settings: SettingsView = {
   fontSize: 'standard',
   contrast: 'standard',
   saturation: 'standard',
-  accent: 'graphite',
   locale: 'zh-CN',
   systemLocale: 'zh-CN',
   hasKey: true,

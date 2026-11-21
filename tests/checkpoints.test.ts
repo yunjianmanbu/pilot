@@ -47,7 +47,7 @@ async function setup() {
   await store.load()
   const workspace = await store.addWorkspace(workspacePath)
   const session = await store.createSession(workspace.path)
-  const service = new CheckpointService(userDataDir, store)
+  const service = new CheckpointService(userDataDir, store, { watch: false })
   return { root, store, service, session, workspacePath }
 }
 
@@ -220,7 +220,7 @@ describe('checkpoint service', () => {
     }
     const a = await makeWorkspace('a')
     const b = await makeWorkspace('b')
-    const service = new CheckpointService(userDataDir, store)
+    const service = new CheckpointService(userDataDir, store, { watch: false })
 
     const time = async (run: () => Promise<unknown>): Promise<number> => {
       const startedAt = Date.now()
@@ -425,7 +425,7 @@ describe('checkpoint service', () => {
 
     // A fresh service loads the persisted index, so even the first snapshot
     // after an app restart avoids re-hashing unchanged content.
-    const restarted = new CheckpointService(userDataDir, store)
+    const restarted = new CheckpointService(userDataDir, store, { watch: false })
     const third = await snapshot(restarted)
     expect(third.hashed).toBe(0)
     expect(third.reused).toBe(2)
@@ -612,7 +612,7 @@ describe('checkpoint service', () => {
       'utf8',
     )
 
-    const restarted = new CheckpointService(userDataDir, store)
+    const restarted = new CheckpointService(userDataDir, store, { watch: false })
     const scanAll = vi.spyOn(
       restarted as unknown as { scanAll: () => Promise<unknown> },
       'scanAll',
@@ -640,7 +640,7 @@ describe('checkpoint service', () => {
     const firstBytes = await blobBytes()
     expect((await readMaintenanceState()).blobBytes).toBe(firstBytes)
 
-    const restarted = new CheckpointService(userDataDir, store)
+    const restarted = new CheckpointService(userDataDir, store, { watch: false })
     const scanAll = vi.spyOn(
       restarted as unknown as { scanAll: () => Promise<unknown> },
       'scanAll',

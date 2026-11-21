@@ -2,8 +2,13 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { setLocale } from '../src/renderer/src/i18n'
 import { FileChangeBar } from '../src/renderer/src/components/FileChangeBar'
 import type { SessionArtifact } from '../src/shared/types'
+
+// The assertions pin the Chinese source copy; navigator.language is en-US on
+// the Linux CI runner, so pin the effective locale before rendering.
+setLocale('zh-CN')
 
 const CSS = readFileSync(
   fileURLToPath(new URL('../src/renderer/src/styles.css', import.meta.url)),

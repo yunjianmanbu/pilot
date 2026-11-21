@@ -11,8 +11,8 @@ import { randomUUID } from 'node:crypto'
 import { normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
 import { MODEL_TAG_MAX_LENGTH, modelTagLength, normalizeModelTag } from '../shared/model-label'
 import { isLocaleSetting, LocaleSetting } from '../shared/i18n'
-import { isContrastPreference, isFontSizePreference, isSaturationPreference, isThemePreference } from '../shared/theme'
-import type { AccentPalette, ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionStage, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResourceInput, PermissionRules, Plan, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileVersion, QualityPublishTarget, QualityState, QuickCommand, ReviewEvidenceRef, ReviewFinding, ReviewReport, ReviewScope, ReviewScores, ReviewSessionScope, RunRecord, SandboxMode, ScheduleKind, ScheduledTask, SelfSourceMode, Session, SessionKind, ShellInterpreter, StoredMessage, TestCaptchaMode, ThemeMode, ThemePreference, FontSizePreference, ContrastPreference, SaturationPreference } from '../shared/types'
+import { isContrastPreference, isFontSizePreference, isSaturationPreference, isThemeMode } from '../shared/theme'
+import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionStage, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResourceInput, PermissionRules, Plan, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileVersion, QualityPublishTarget, QualityState, QuickCommand, ReviewEvidenceRef, ReviewFinding, ReviewReport, ReviewScope, ReviewScores, ReviewSessionScope, RunRecord, SandboxMode, ScheduleKind, ScheduledTask, SelfSourceMode, Session, SessionKind, ShellInterpreter, StoredMessage, TestCaptchaMode, ThemeMode, FontSizePreference, ContrastPreference, SaturationPreference } from '../shared/types'
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, SETTING_CONTEXT_MAX, SETTING_CONTEXT_MIN, SETTING_OUTPUT_MAX, SETTING_OUTPUT_MIN } from '../shared/modelLimits'
 import { normalizeRelayUrl } from '../shared/relay'
 import { DEFAULT_EVOLUTION_POLICY, normalizeEvolutionPolicy } from '../shared/evolution'
@@ -141,12 +141,11 @@ export interface PersistedSettings {
   relayUrl: string
   /** 手机端可以在这些目录下新建工作区（已 realpath 的绝对路径）。 */
   phoneRoots: string[]
-  /** Persisted as-is; `system` is resolved where it is painted. */
-  theme: ThemePreference
+  /** Painted theme; only `dark` and `light` exist, so it is stored as-is. */
+  theme: ThemeMode
   fontSize: FontSizePreference
   contrast: ContrastPreference
   saturation: SaturationPreference
-  accent: AccentPalette
   locale: LocaleSetting
   apiKeyCipher: string | null
   apiKeyPlain: boolean
@@ -291,7 +290,6 @@ export function defaults(): PersistedState {
       fontSize: 'standard',
       contrast: 'standard',
       saturation: 'standard',
-      accent: 'graphite',
       locale: 'auto',
       apiKeyCipher: primaryResource.keyCipher,
       apiKeyPlain: primaryResource.keyPlain,
@@ -1497,8 +1495,8 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     mcpEnabled: settingsRaw['mcpEnabled'] === true,
     relayUrl: normalizeRelayUrl(settingsRaw['relayUrl']) ?? '',
     phoneRoots: normalizePhoneRoots(settingsRaw['phoneRoots']),
-    /** `system` follows the OS; the renderer and window chrome resolve it. */
-    theme: isThemePreference(settingsRaw['theme']) ? settingsRaw['theme'] : 'dark',
+    /** Only `dark` and `light` are stored; anything else falls back to `dark`. */
+    theme: isThemeMode(settingsRaw['theme']) ? settingsRaw['theme'] : 'dark',
     fontSize: isFontSizePreference(settingsRaw['fontSize']) ? settingsRaw['fontSize'] : 'standard',
     contrast: isContrastPreference(settingsRaw['contrast'])
       ? settingsRaw['contrast']
@@ -1506,7 +1504,6 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     saturation: isSaturationPreference(settingsRaw['saturation'])
       ? settingsRaw['saturation']
       : 'standard',
-    accent: validAccent(settingsRaw['accent']) ?? 'graphite',
     locale: isLocaleSetting(settingsRaw['locale']) ? settingsRaw['locale'] : 'auto',
     apiKeyCipher: sessionResource.keyCipher,
     apiKeyPlain: sessionResource.keyPlain,
@@ -1610,7 +1607,7 @@ export function validApprovalMode(value: unknown): ApprovalMode | null {
 }
 
 export function validTheme(value: unknown): ThemeMode | null {
-  return value === 'light' || value === 'dark' ? value : null
+  return isThemeMode(value) ? value : null
 }
 
 export function validFontSize(value: unknown): FontSizePreference | null {
@@ -1623,23 +1620,6 @@ export function validContrast(value: unknown): ContrastPreference | null {
 
 export function validSaturation(value: unknown): SaturationPreference | null {
   return value === 'low' || value === 'standard' || value === 'high' ? value : null
-}
-
-export function validAccent(value: unknown): AccentPalette | null {
-  return value === 'graphite' ||
-    value === 'pine' ||
-    value === 'indigo' ||
-    value === 'clay' ||
-    value === 'ocean' ||
-    value === 'moss' ||
-    value === 'plum' ||
-    value === 'rose' ||
-    value === 'sand' ||
-    value === 'orange' ||
-    value === 'celadon' ||
-    value === 'claude'
-    ? value
-    : null
 }
 
 export function validShellInterpreter(value: unknown): ShellInterpreter | null {

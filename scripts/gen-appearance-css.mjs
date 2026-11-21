@@ -376,21 +376,19 @@ function declarationLines(names, palette, transform) {
     .map((name) => `${name}: ${transform(palette[name], name)};`)
 }
 
+/**
+ * 桌面端只剩暗、浅两套主题：调色板就是 `:root` 与 `:root[data-theme='light']` 两块，
+ * 不再有 `[data-accent='…']` 覆盖层，对比度/饱和度也只生成这两条规则。
+ * 手机端（App.vue）仍按配色分支，所以 `ACCENTS` 只用于 `appPalettes`。
+ */
 function clientPalettes(css) {
-  const darkBase = variables(blockOf(css, ':root {'))
-  const lightBase = variables(blockOf(css, ":root[data-theme='light'] {"))
-  const list = [{ accent: '', dark: darkBase, light: lightBase }]
-  for (const name of ACCENTS) {
-    list.push({
-      accent: name,
-      dark: { ...darkBase, ...variables(blockOf(css, `:root[data-accent='${name}']`)) },
-      light: {
-        ...lightBase,
-        ...variables(blockOf(css, `:root[data-theme='light'][data-accent='${name}']`))
-      }
-    })
-  }
-  return list
+  return [
+    {
+      accent: '',
+      dark: variables(blockOf(css, ':root {')),
+      light: variables(blockOf(css, ":root[data-theme='light'] {"))
+    }
+  ]
 }
 
 function appPalettes(css) {

@@ -20,3 +20,34 @@ export function formatBytes(bytes: number | null | undefined): string {
   }
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
 }
+
+/** Usage bands the top bar paints differently: normal, tight, nearly out. */
+export type UsageLevel = 'ok' | 'warn' | 'alert'
+
+/** Warn from 80%, flag from 92%: both are about headroom, not about beauty. */
+export const USAGE_WARN_PERCENT = 80
+export const USAGE_ALERT_PERCENT = 92
+
+/**
+ * Share of a total that is in use, clamped to 0..100.
+ *
+ * Returns `null` when the reading is unusable (unknown total, negative or
+ * non-finite numbers), so the UI can show "—" instead of a full bar that looks
+ * like a real 100% reading.
+ */
+export function usagePercent(used: number | null, total: number | null): number | null {
+  if (used === null || total === null) return null
+  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0 || used < 0) return null
+  return Math.min(100, Math.max(0, (used / total) * 100))
+}
+
+/**
+ * Band a percentage falls into. Unknown readings are `ok`: a missing sample
+ * must not paint the window red.
+ */
+export function usageLevel(percent: number | null): UsageLevel {
+  if (percent === null || !Number.isFinite(percent)) return 'ok'
+  if (percent >= USAGE_ALERT_PERCENT) return 'alert'
+  if (percent >= USAGE_WARN_PERCENT) return 'warn'
+  return 'ok'
+}

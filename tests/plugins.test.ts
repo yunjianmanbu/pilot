@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -42,7 +43,14 @@ async function tempRoot(): Promise<string> {
 async function installAuthPlugin(root: string): Promise<void> {
   const dir = join(root, '.pilot', 'plugins', 'pilot-auth')
   await mkdir(dir, { recursive: true })
-  const source = join(__dirname, '..', '..', 'examples', 'plugins', 'pilot-auth')
+  // The example lives inside the repo (examples/plugins/pilot-auth); in the
+  // monorepo it sits one level up, so resolve both layouts.
+  const candidates = [
+    join(__dirname, 'examples', 'plugins', 'pilot-auth'),
+    join(__dirname, '..', '..', 'examples', 'plugins', 'pilot-auth'),
+  ]
+  const source = candidates.find((dir) => existsSync(join(dir, 'plugin.json')))
+  if (!source) throw new Error(`pilot-auth example not found: ${candidates.join(' | ')}`)
   for (const file of ['plugin.json', 'index.mjs']) {
     await writeFile(join(dir, file), await readFile(join(source, file), 'utf8'))
   }

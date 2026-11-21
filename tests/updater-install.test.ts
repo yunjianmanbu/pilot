@@ -69,6 +69,9 @@ describe('updater install', () => {
       userDataDir: root,
       isPackaged: true,
       onState: () => undefined,
+      // The install path is Windows-only in production; the test drives it on
+      // every platform so the spawn contract stays covered on Linux CI.
+      supported: true,
     })
     const state: UpdateState = {
       ...service.stateSnapshot(),

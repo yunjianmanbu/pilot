@@ -386,6 +386,15 @@ export const en: Record<string, string> = {
   "系统": "System",
   "内存": "Memory",
   "磁盘": "Disk",
+  "本机资源使用": "Local resource usage",
+  "CPU 占用：暂时读不到": "CPU usage: unavailable right now",
+  "CPU 占用 {v1}%": "CPU usage {v1}%",
+  "内存占用：暂时读不到": "Memory usage: unavailable right now",
+  "内存 {v1} 已用 / {v2}，占 {v3}%": "Memory {v1} used of {v2} ({v3}%)",
+  "工作区所在卷占用：暂时读不到":
+    "Workspace volume usage: unavailable right now",
+  "工作区所在卷 {v1} 已用 / {v2}，占 {v3}%":
+    "Workspace volume {v1} used of {v2} ({v3}%)",
   "运行时": "Runtime",
   "CPU": "CPU",
   "无法读取运行环境": "Could not read the runtime environment",
@@ -867,8 +876,8 @@ export const en: Record<string, string> = {
   "由工作区提升": "Promoted from a workspace",
   "电脑标识": "Desktop ID",
   "外观": "Appearance",
-  "默认是纯黑白底色，只有一处主题色标记选中、焦点和进度，长时间使用也不刺眼。":
-    "Pure black and white by default; a single accent marks selection, focus and progress, so it stays calm over long sessions.",
+  "暗色与浅色两套主题，只有一处主题色标记选中、焦点和进度，长时间使用也不刺眼。":
+    "Two themes, dark and light; a single accent marks selection, focus and progress, so it stays calm over long sessions.",
   "主题模式": "Theme mode",
   "深色": "Dark",
   "浅色": "Light",
@@ -876,29 +885,14 @@ export const en: Record<string, string> = {
   "饱和度": "Saturation",
   "调整文字与页面底色的分离程度；低档更柔和，高档更鲜明，主题色保持不变。":
     "Adjusts how strongly text separates from the page; low is softer, high is crisper, accent colors stay the same.",
-  "调整主题色与功能色的鲜艳程度；黑白主题只有灰阶，看不出饱和度差异。":
-    "Adjusts how vivid accent and functional colors are; the black-and-white theme has no saturation to change.",
+  "调整主题色与功能色的鲜艳程度；两套主题都按灰阶推算，高档更鲜明。":
+    "Adjusts how vivid accent and functional colors are; both themes stay on the grey ladder, and high is the most vivid.",
   "字号": "Text size",
   "标准": "Standard",
   "大": "Large",
   "特大": "Extra large",
   "只放大文字，按钮和间距保持不变；标准就是原来的字号。":
     "Text only; buttons and spacing stay the same. Standard is the original size.",
-  "主题配色": "Palette",
-  "黑白": "Black & white",
-  "松柏": "Pine",
-  "靛蓝": "Indigo",
-  "陶土": "Clay",
-  "海蓝": "Ocean blue",
-  "苔绿": "Moss green",
-  "梅紫": "Plum",
-  "玫瑰": "Rose",
-  "沙岩": "Sandstone",
-  "橘子海": "Orange Sea",
-  "青瓷": "Celadon",
-  "暖白": "Warm white",
-  "每套配色都会切换底色与主题色，深色和浅色各自适配。":
-    "Every palette switches both the accent and the surfaces, tuned separately for dark and light.",
   "任务完成、运行失败或等待审批时提醒你；版本与更新入口在左下角。":
     "Get a reminder when a run finishes, fails or waits for approval. Version and updates live at the bottom left.",
   "界面语言": "Interface language",

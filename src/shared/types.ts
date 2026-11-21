@@ -42,13 +42,12 @@ export type MessageDelivery = 'queue' | 'insert'
  * 审计日志靠它区分「人拍的」与「超时/中断代拍的」。
  */
 export type ApprovalDecidedBy = 'user' | 'timeout' | 'interrupted'
-export type ThemeMode = 'dark' | 'light'
 /**
- * What Settings stores: a pinned mode, or `system` to follow the OS. The
- * renderer and the main process both resolve it, so `ThemeMode` stays the
- * value that actually paints.
+ * The only two themes the desktop UI paints. There is no `system` entry: the
+ * stored value is exactly what the stylesheet receives, so the main process and
+ * the renderer never have to agree on a second resolution step.
  */
-export type ThemePreference = ThemeMode | 'system'
+export type ThemeMode = 'dark' | 'light'
 /**
  * Text size for the whole UI. `standard` is the size the app has always used;
  * the other two scale every font-size declaration through `--font-scale`, so
@@ -66,25 +65,6 @@ export type ContrastPreference = 'low' | 'standard' | 'high'
  * text contrast does not change; `standard` is the palette as designed.
  */
 export type SaturationPreference = 'low' | 'standard' | 'high'
-/**
- * Accent palette for the desktop UI. The default (`graphite`) is pure black
- * and white; the other presets are deliberately desaturated and only mark
- * selection, focus and progress. `claude` is a full warm palette: ivory
- * surfaces with Claude's terracotta accent.
- */
-export type AccentPalette =
-  | 'graphite'
-  | 'pine'
-  | 'indigo'
-  | 'clay'
-  | 'ocean'
-  | 'moss'
-  | 'plum'
-  | 'rose'
-  | 'sand'
-  | 'orange'
-  | 'celadon'
-  | 'claude'
 /**
  * Captcha handling for authorized test targets. `off` never injects a value;
  * `fixture` injects a fixed test code; `header` injects a header value the
@@ -204,6 +184,26 @@ export interface DiskSpace {
   totalBytes: number | null
   /** True when free space is below the pre-check threshold (`DISK_LOW_BYTES`). */
   low: boolean
+}
+
+/**
+ * One live load reading for the top-bar meters.
+ *
+ * Every number is nullable: a reading that could not be taken stays `null` and
+ * the meter shows "—", because a full bar painted from a failed sample would be
+ * indistinguishable from a real 100%.
+ */
+export interface ResourceUsage {
+  /** Whole-machine busy share of all cores over a short sample window. */
+  cpuPercent: number | null
+  /** Used = total − free, exactly as the OS reports it (cache included). */
+  memoryUsedBytes: number | null
+  memoryTotalBytes: number | null
+  /** Volume holding the workspace (or the process cwd). */
+  diskUsedBytes: number | null
+  diskTotalBytes: number | null
+  /** ISO timestamp of the sample, so a stale reading is visible as such. */
+  measuredAt: string
 }
 
 /**
@@ -519,6 +519,45 @@ export interface SessionArtifact {
   name: string
   action: 'write' | 'edit'
   tool: string
+}
+
+/** One external link a session mentions, extracted from its transcript. */
+export interface SessionLink {
+  url: string
+  /** Host without the `www.` prefix; empty when the URL does not parse. */
+  host: string
+  /** Whether the user or the agent wrote the message that carries it. */
+  role: 'user' | 'assistant'
+  /** Message carrying the link, so the panel can jump back to it. */
+  messageId: string
+  createdAt: string
+  /** First real line of that message with URLs removed. */
+  context: string
+  /** How many times the session mentions this URL. */
+  count: number
+}
+
+/** Where a tool in the session catalog comes from. */
+export type ToolCatalogSource = 'builtin' | 'control' | 'mcp' | 'dynamic'
+
+/** One tool a run in this workspace could be offered, from any source. */
+export interface ToolCatalogEntry {
+  name: string
+  description: string
+  risk: ToolRisk
+  source: ToolCatalogSource
+  /** MCP server the entry belongs to (`source: 'mcp'`). */
+  server?: string
+  /** Dynamic and MCP entries: whether it would be offered right now. */
+  enabled?: boolean
+  /** Dynamic tools: whether the approved bytes still match. */
+  approved?: boolean
+  /** Dynamic tools: approval version. */
+  version?: number
+  /** Dynamic tools: hosts the tool may reach. */
+  targets?: string[]
+  /** Dynamic tools: declared input schema, shown in the preview pane. */
+  inputSchema?: Record<string, unknown>
 }
 
 /** A message-content match returned by workspace-wide full-text search. */
@@ -1578,16 +1617,14 @@ export interface SettingsView {
   relayUrl: string
   /** User-level PILOT.md loaded for every workspace. */
   globalInstructionsPath: string
-  /** Saved preference; `system` follows the OS. */
-  theme: ThemePreference
+  /** Painted theme; settings store `dark` or `light` and nothing else. */
+  theme: ThemeMode
   /** Text size; `standard` keeps the original type scale. */
   fontSize: FontSizePreference
   /** Text/surface contrast; `standard` keeps the palette as designed. */
   contrast: ContrastPreference
   /** Accent and functional color saturation; `standard` keeps the palette. */
   saturation: SaturationPreference
-  /** Accent palette; see `AccentPalette`. */
-  accent: AccentPalette
   /** UI language: auto follows the OS, otherwise a pinned shipped locale. */
   locale: LocaleSetting
   /** The OS language as Electron reports it, for the "follow system" hint. */
@@ -1658,11 +1695,10 @@ export interface SettingsUpdate {
   mcpEnabled?: boolean
   /** Empty string disables the cloud path and keeps LAN-only pairing. */
   relayUrl?: string
-  theme?: ThemePreference
+  theme?: ThemeMode
   fontSize?: FontSizePreference
   contrast?: ContrastPreference
   saturation?: SaturationPreference
-  accent?: AccentPalette
   /** UI language preference; `auto` follows the OS. */
   locale?: LocaleSetting
   /** A new key for the session resource. Empty keeps it; null clears it. */
@@ -1871,9 +1907,8 @@ export interface FilePreview {
 }
 
 export interface DocumentWindowState {
-  /** Stored preference; `system` still has to be resolved against the OS. */
-  theme: ThemePreference
-  accent: AccentPalette
+  /** Painted theme; the document window applies it as-is. */
+  theme: ThemeMode
   contrast: ContrastPreference
   saturation: SaturationPreference
   fontSize: FontSizePreference
@@ -2183,7 +2218,7 @@ export interface PilotBridge {
   modelBilling(refresh?: boolean): Promise<ModelBillingReport>
   /** Provider balance for one self-evolution reviewer. */
   judgeBalance(input: JudgeBalanceInput): Promise<ModelBalanceState>
-  setTheme(theme: ThemePreference): Promise<void>
+  setTheme(theme: ThemeMode): Promise<void>
 
   /**
    * Paint a candidate appearance in the window chrome while Settings previews
@@ -2191,8 +2226,7 @@ export interface PilotBridge {
    */
   previewTheme(
     input: {
-      theme: ThemePreference
-      accent: AccentPalette
+      theme: ThemeMode
       contrast: ContrastPreference
       saturation: SaturationPreference
     } | null,
@@ -2250,6 +2284,10 @@ export interface PilotBridge {
     query?: string,
     limit?: number,
   ): Promise<KnowledgePairsResult>
+  /** External links this session mentions, newest first, from its transcript. */
+  sessionLinks(sessionId: string): Promise<SessionLink[]>
+  /** Tools a run in this workspace could be offered, from every source. */
+  toolsCatalog(sessionId: string): Promise<ToolCatalogEntry[]>
   createSession(workspacePath: string): Promise<Session>
   /** Create a read-only review session over explicit roots and session scope. */
   createReviewSession(input: ReviewSessionInput): Promise<Session>
@@ -2338,6 +2376,12 @@ export interface PilotBridge {
   sandboxStatus(): Promise<SandboxStatus>
   /** Host environment facts; `workspacePath` only selects which volume is measured. */
   systemInfo(workspacePath?: string): Promise<SystemInfo>
+  /**
+   * Live CPU / memory / disk load for the top-bar meters. Takes a ~120ms CPU
+   * sample, so the caller polls it on its own cadence instead of on render.
+   * `workspacePath` only selects which volume is measured.
+   */
+  resourceUsage(workspacePath?: string): Promise<ResourceUsage>
   /**
    * 应用日志（已脱敏的元数据记录，不含正文）。`limit` 为最近条数，上限 2000。
    * 日志目录不可读时返回空数组，不抛错。

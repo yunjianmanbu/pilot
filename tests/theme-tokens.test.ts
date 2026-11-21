@@ -234,23 +234,9 @@ describe('status colours on their own cards', () => {
 
 /**
  * 真正生效的是文末的生成层：`:root[data-contrast='x']` / `[data-saturation='y']`
- * 以及它们的 accent 变体特异性更高、位置更靠后，会盖掉手写块。所以语法高亮
- * 的对比度必须拿生成层的实际值来算，只看手写块会高估。
+ * 特异性更高、位置更靠后，会盖掉手写块。所以语法高亮的对比度必须拿生成层
+ * 的实际值来算，只看手写块会高估。暗、浅两套主题各算一遍，不再有 accent 维度。
  */
-const ACCENTS = [
-  'pine',
-  'indigo',
-  'clay',
-  'ocean',
-  'moss',
-  'plum',
-  'rose',
-  'sand',
-  'orange',
-  'celadon',
-  'claude',
-]
-
 function resolved(selectors: string[]): Variables {
   return Object.assign({}, ...selectors.map((selector) => block(selector)))
 }
@@ -299,29 +285,25 @@ describe('syntax colours inside code blocks', () => {
   const SYN = ['--syn-comment', '--syn-string', '--syn-number', '--syn-keyword', '--syn-function']
 
   for (const mode of ['dark', 'light'] as const) {
-    it(`${mode}: every accent keeps syntax colours readable`, () => {
+    it(`${mode}: syntax colours stay readable in every contrast/saturation step`, () => {
       const prefix = mode === 'light' ? ":root[data-theme='light']" : ':root'
       const base = mode === 'light' ? [':root', ":root[data-theme='light']"] : [':root']
       const failures: string[] = []
-      for (const accent of ACCENTS) {
-        for (const contrast of ['low', 'standard', 'high']) {
-          for (const saturation of ['low', 'standard', 'high']) {
-            const vars = resolved([
-              ...base,
-              `${prefix}[data-contrast='${contrast}']`,
-              `${prefix}[data-saturation='${saturation}']`,
-              `${prefix}[data-contrast='${contrast}'][data-accent='${accent}']`,
-              `${prefix}[data-saturation='${saturation}'][data-accent='${accent}']`,
-            ])
-            const background = resolveValue(vars, '--code-bg')
-            for (const token of SYN) {
-              const foreground = resolveValue(vars, token)
-              const value = ratio(foreground, background)
-              if (value < 4.5) {
-                failures.push(
-                  `${accent}/${contrast}/${saturation} ${token} ${foreground} on ${background} = ${value.toFixed(2)}:1`,
-                )
-              }
+      for (const contrast of ['low', 'standard', 'high']) {
+        for (const saturation of ['low', 'standard', 'high']) {
+          const vars = resolved([
+            ...base,
+            `${prefix}[data-contrast='${contrast}']`,
+            `${prefix}[data-saturation='${saturation}']`,
+          ])
+          const background = resolveValue(vars, '--code-bg')
+          for (const token of SYN) {
+            const foreground = resolveValue(vars, token)
+            const value = ratio(foreground, background)
+            if (value < 4.5) {
+              failures.push(
+                `${contrast}/${saturation} ${token} ${foreground} on ${background} = ${value.toFixed(2)}:1`,
+              )
             }
           }
         }

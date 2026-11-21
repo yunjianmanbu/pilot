@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -420,8 +421,14 @@ describe('pilot plugin / solution commands', () => {
 
   it('plans the shipped example solution pack as installable', async () => {
     const workspace = await makeWorkspace()
-    // Vitest runs with pilot/pilot as cwd; the example pack lives in pilot/examples.
-    const packDir = join(process.cwd(), '..', 'examples', 'solutions', 'retail-member')
+    // The example pack ships inside the repo (examples/solutions); in the
+    // monorepo it sits in pilot/examples, one level above this package.
+    const candidates = [
+      join(process.cwd(), 'examples', 'solutions', 'retail-member'),
+      join(process.cwd(), '..', 'examples', 'solutions', 'retail-member'),
+    ]
+    const packDir = candidates.find((dir) => existsSync(join(dir, 'solution.json')))
+    if (!packDir) throw new Error(`retail-member example not found: ${candidates.join(' | ')}`)
     // The example ships unsigned on purpose (no vendor key, no private key), so
     // `warn` is the policy that matches how a customer first receives it.
     const plan = await planSolution(workspace, packDir, { policy: 'warn' })

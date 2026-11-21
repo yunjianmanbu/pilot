@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1781,7 +1782,11 @@ describe('CompanionServer plugin surface', () => {
     const workspace = await mkdtemp(join(tmpdir(), 'pilot-plugin-ws-'))
     const pluginDir = join(workspace, '.pilot', 'plugins', 'pilot-auth')
     await mkdir(pluginDir, { recursive: true })
-    const example = fileURLToPath(new URL('../../examples/plugins/pilot-auth/', import.meta.url))
+    const example = fileURLToPath(
+      existsSync(fileURLToPath(new URL('../../examples/plugins/pilot-auth/', import.meta.url)))
+        ? new URL('../../examples/plugins/pilot-auth/', import.meta.url)
+        : new URL('../../../examples/plugins/pilot-auth/', import.meta.url),
+    )
     for (const file of ['plugin.json', 'index.mjs']) {
       await writeFile(join(pluginDir, file), await readFile(join(example, file), 'utf8'))
     }

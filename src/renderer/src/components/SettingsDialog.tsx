@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type {
-  AccentPalette,
   ApprovalMode,
   FontSizePreference,
   ConnectionTestResult,
@@ -14,13 +13,12 @@ import type {
   SettingsView,
   SystemInfo,
   TestCaptchaMode,
-  ThemePreference,
+  ThemeMode,
   ContrastPreference,
   SaturationPreference,
 } from '../../../shared/types'
 import { DISK_LOW_BYTES, formatBytes } from '../../../shared/system-info'
 import { formatLogRecords } from '../../../shared/app-log-view'
-import { resolveThemePreference } from '../../../shared/theme'
 import { modelLimits, SETTING_CONTEXT_MAX, SETTING_OUTPUT_MAX } from '../../../shared/modelLimits'
 import { MODEL_TAG_MAX_LENGTH, modelOptionLabel, normalizeModelTag } from '../../../shared/model-label'
 import type { LocaleSetting } from '../../../shared/i18n'
@@ -159,33 +157,6 @@ const TOKEN_BUDGET_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '2000000', label: t("200 万") },
 ]
 
-/**
- * Swatches show a mid-tone of each palette so the choice reads on both the
- * dark and light background; the actual accent values live in styles.css.
- */
-const ACCENT_OPTIONS: Array<{ value: AccentPalette; label: string; swatch: string }> = [
-  {
-    value: 'graphite',
-    label: t("黑白"),
-    swatch: 'linear-gradient(135deg, #000000 0 50%, #ffffff 50% 100%)',
-  },
-  { value: 'pine', label: t("松柏"), swatch: '#317754' },
-  { value: 'indigo', label: t("靛蓝"), swatch: '#344d93' },
-  { value: 'clay', label: t("陶土"), swatch: '#8f5932' },
-  { value: 'ocean', label: t("海蓝"), swatch: '#206788' },
-  { value: 'moss', label: t("苔绿"), swatch: '#597529' },
-  { value: 'plum', label: t("梅紫"), swatch: '#76469b' },
-  { value: 'rose', label: t("玫瑰"), swatch: '#9f3c53' },
-  { value: 'sand', label: t("沙岩"), swatch: '#816122' },
-  { value: 'orange', label: t("橘子海"), swatch: '#b2570f' },
-  { value: 'celadon', label: t("青瓷"), swatch: '#2c7671' },
-  {
-    value: 'claude',
-    label: t("暖白"),
-    swatch: 'linear-gradient(135deg, #d97757 0 50%, #faf9f5 50% 100%)',
-  },
-]
-
 function linesOf(value: string): string[] {
   return value
     .split(/\r?\n/)
@@ -299,11 +270,10 @@ export function SettingsDialog({
   const [logDir, setLogDir] = useState('')
   const [logCopied, setLogCopied] = useState(false)
   const [notifyDesktop, setNotifyDesktop] = useState(settings.notifyDesktop)
-  const [theme, setTheme] = useState<ThemePreference>(settings.theme)
+  const [theme, setTheme] = useState<ThemeMode>(settings.theme)
   const [fontSize, setFontSize] = useState<FontSizePreference>(settings.fontSize)
   const [contrast, setContrast] = useState<ContrastPreference>(settings.contrast)
   const [saturation, setSaturation] = useState<SaturationPreference>(settings.saturation)
-  const [accent, setAccent] = useState<AccentPalette>(settings.accent)
   const [locale, setLocale] = useState<LocaleSetting>(settings.locale)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -326,20 +296,15 @@ export function SettingsDialog({
   // values; saving updates `settings` and the parent effect takes over.
   useEffect(() => {
     const root = document.documentElement
-    root.dataset['theme'] = resolveThemePreference(theme, window.matchMedia('(prefers-color-scheme: dark)').matches)
-    root.dataset['accent'] = accent
+    root.dataset['theme'] = theme
     root.dataset['fontSize'] = fontSize
     root.dataset['contrast'] = contrast
     root.dataset['saturation'] = saturation
     void window.pilot
-      .previewTheme({ theme, accent, contrast, saturation })
+      .previewTheme({ theme, contrast, saturation })
       .catch(() => undefined)
     return () => {
-      root.dataset['theme'] = resolveThemePreference(
-        settings.theme,
-        window.matchMedia('(prefers-color-scheme: dark)').matches,
-      )
-      root.dataset['accent'] = settings.accent
+      root.dataset['theme'] = settings.theme
       root.dataset['fontSize'] = settings.fontSize
       root.dataset['contrast'] = settings.contrast
       root.dataset['saturation'] = settings.saturation
@@ -347,12 +312,10 @@ export function SettingsDialog({
     }
   }, [
     theme,
-    accent,
     fontSize,
     contrast,
     saturation,
     settings.theme,
-    settings.accent,
     settings.fontSize,
     settings.contrast,
     settings.saturation,
@@ -718,7 +681,6 @@ export function SettingsDialog({
       fontSize,
       contrast,
       saturation,
-      accent,
       locale,
     }
 
@@ -1632,20 +1594,12 @@ export function SettingsDialog({
             <div className="settings-section-head">
               <div>
                 <h3>{t("外观")}</h3>
-                <p>{t("默认是纯黑白底色，只有一处主题色标记选中、焦点和进度，长时间使用也不刺眼。")}</p>
+                <p>{t("暗色与浅色两套主题，只有一处主题色标记选中、焦点和进度，长时间使用也不刺眼。")}</p>
               </div>
             </div>
             <div className="appearance-block">
               <span className="field-label">{t("主题模式")}</span>
               <div className="appearance-modes" role="group" aria-label={t("主题模式")}>
-                <button
-                  type="button"
-                  className={`appearance-mode${theme === 'system' ? ' is-on' : ''}`}
-                  onClick={() => setTheme('system')}
-                  aria-pressed={theme === 'system'}
-                >
-                  {t("跟随系统")}
-                </button>
                 <button
                   type="button"
                   className={`appearance-mode${theme === 'dark' ? ' is-on' : ''}`}
@@ -1699,7 +1653,7 @@ export function SettingsDialog({
                 ))}
               </div>
               <p className="settings-hint">
-                {t("调整主题色与功能色的鲜艳程度；黑白主题只有灰阶，看不出饱和度差异。")}
+                {t("调整主题色与功能色的鲜艳程度；两套主题都按灰阶推算，高档更鲜明。")}
               </p>
             </div>
             <div className="appearance-block">
@@ -1719,31 +1673,6 @@ export function SettingsDialog({
               </div>
               <p className="settings-hint">
                 {t("只放大文字，按钮和间距保持不变；标准就是原来的字号。")}
-              </p>
-            </div>
-            <div className="appearance-block">
-              <span className="field-label">{t("主题配色")}</span>
-              <div className="accent-row" role="group" aria-label={t("主题配色")}>
-                {ACCENT_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`accent-card${accent === option.value ? ' is-on' : ''}`}
-                    onClick={() => setAccent(option.value)}
-                    aria-pressed={accent === option.value}
-                  >
-                    <span
-                      className="accent-dot"
-                      style={{ background: option.swatch }}
-                      aria-hidden="true"
-                    />
-                    <span>{option.label}</span>
-                    {accent === option.value ? <CheckIcon width={13} height={13} /> : null}
-                  </button>
-                ))}
-              </div>
-              <p className="settings-hint">
-                {t("每套配色都会切换底色与主题色，深色和浅色各自适配。")}
               </p>
             </div>
           </section>
