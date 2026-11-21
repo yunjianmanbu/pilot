@@ -1424,6 +1424,7 @@ export class AgentRunner {
               primaryRoot: workspacePath,
               topLevel,
               plan: session.plan,
+              locale: this.store.uiLocale(),
             })
           : buildSystemPrompt({
               root: workspacePath,
@@ -1432,6 +1433,9 @@ export class AgentRunner {
               profile,
               globalProfile,
               globalInstructions,
+              // Thinking text follows the app/UI language; the answer keeps
+              // following the user's language.
+              locale: this.store.uiLocale(),
               plan: analysisRun ? null : session.plan,
               // Only the analysis rules (read-only, ~20 tool calls) are gated:
               // sending them on a change request was telling the model not to
@@ -1709,6 +1713,7 @@ export class AgentRunner {
             ...(request.path ? { scope: request.path } : {}),
             ...(request.maxSteps !== undefined ? { maxSteps: request.maxSteps } : {}),
             maxContextTokens: subagentContextTokens(settings.maxContextTokens, settings.model),
+            locale: this.store.uiLocale(),
             signal,
           })
           delegations += 1
@@ -1730,6 +1735,7 @@ export class AgentRunner {
             ...(request.path ? { scope: request.path } : {}),
             ...(request.maxSteps !== undefined ? { maxSteps: request.maxSteps } : {}),
             maxContextTokens: subagentContextTokens(settings.maxContextTokens, settings.model),
+            locale: this.store.uiLocale(),
             // Same switch as the parent's run_shell: turning the shell off must
             // not leave a whitelisted executor behind in the nested loop.
             shellEnabled: settings.shellMode,

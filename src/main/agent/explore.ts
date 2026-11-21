@@ -1,6 +1,8 @@
+import type { AppLocale } from '../../shared/i18n'
 import type { AgentToolDefinition } from '../../shared/types'
 import { toolOutputCharsFor, truncateMiddle } from './context'
 import { runAgentLoop, type ModelClient } from './loop'
+import { reasoningLanguage } from './prompt'
 import {
   executePilotTool,
   LIST_DIRECTORY,
@@ -33,7 +35,12 @@ export function selectExploreTools(tools: AgentToolDefinition[] = pilotTools): A
   return tools.filter((tool) => ALLOWED.has(tool.name) && tool.risk === 'read')
 }
 
-export function buildExplorePrompt(root: string, task: string, scope?: string): string {
+export function buildExplorePrompt(
+  root: string,
+  task: string,
+  scope?: string,
+  locale?: AppLocale,
+): string {
   return [
     'You are Pilot Explore, a read-only research subagent.',
     `Workspace: ${root}`,
@@ -46,6 +53,7 @@ export function buildExplorePrompt(root: string, task: string, scope?: string): 
     '- Return concise findings with exact relative paths and line ranges. Separate verified facts from guesses, and say explicitly when something could not be determined.',
     '- Do not modify anything and do not propose shell commands that would change the workspace.',
     "- Answer in the user's language.",
+    `- Write every reasoning/thinking block in ${reasoningLanguage(locale)}, the language the app UI and system use, even when the task, the files or the tool output are in another language. Keep paths, identifiers, commands and quoted text exactly as written.`,
     '',
     `Task: ${task}`,
   ]
@@ -60,6 +68,8 @@ export interface ExploreOptions {
   scope?: string
   maxSteps?: number
   maxContextTokens?: number
+  /** Effective app/UI language for the explorer's thinking text. */
+  locale?: AppLocale
   signal?: AbortSignal
 }
 
@@ -99,7 +109,12 @@ export async function runExploreSubagent(options: ExploreOptions): Promise<Explo
     messages: [
       {
         role: 'system',
-        content: buildExplorePrompt(options.workspacePath, options.task, options.scope),
+        content: buildExplorePrompt(
+          options.workspacePath,
+          options.task,
+          options.scope,
+          options.locale,
+        ),
       },
       { role: 'user', content: options.task },
     ],

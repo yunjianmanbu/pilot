@@ -34,4 +34,13 @@ describe('buildExplorePrompt', () => {
   it('omits the scope line when no scope is given', () => {
     expect(buildExplorePrompt('/repo', 'find tests')).not.toContain('Focus your search on')
   })
+
+  it('writes the thinking text in the app language', () => {
+    expect(buildExplorePrompt('/repo', 'find tests', undefined, 'en')).toContain(
+      'reasoning/thinking block in English',
+    )
+    expect(buildExplorePrompt('/repo', 'find tests', undefined, 'zh-CN')).toContain(
+      'reasoning/thinking block in Simplified Chinese',
+    )
+  })
 })

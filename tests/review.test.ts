@@ -24,6 +24,7 @@ import type { Store } from '../src/main/store'
 import {
   buildFixPrompt,
   buildReviewReport,
+  buildReviewSystemPrompt,
   executeReviewTool,
   GET_SESSION,
   isReviewToolName,
@@ -362,6 +363,26 @@ describe('review session scope', () => {
     expect(output.output).toContain('Plan recorded by run run-a')
     expect(output.output).toContain('[done] wrote the release notes')
     expect(output.output).not.toContain('live turn goal')
+  })
+})
+
+describe('buildReviewSystemPrompt thinking language', () => {
+  const input = {
+    scope: scope('workspace'),
+    primaryRoot: ROOT,
+    topLevel: 'src',
+    plan: null,
+  }
+
+  it('follows the app language instead of the language of the work', () => {
+    expect(buildReviewSystemPrompt({ ...input, locale: 'en' })).toContain(
+      'write every reasoning/thinking block in English',
+    )
+    expect(buildReviewSystemPrompt({ ...input, locale: 'zh-CN' })).toContain(
+      'write every reasoning/thinking block in Simplified Chinese',
+    )
+    // The read-only boundary must survive the extra line.
+    expect(buildReviewSystemPrompt({ ...input, locale: 'en' })).toContain('READ-ONLY BOUNDARY:')
   })
 })
 

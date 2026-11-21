@@ -35,6 +35,25 @@ function scripted(responses: ModelResponse[]): ModelClient & { requests: ModelRe
   return client
 }
 
+describe('subagent thinking language', () => {
+  it('passes the app language to the system prompt so thinking follows the UI', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pilot-subagent-'))
+    cleanups.push(root)
+    const model = scripted([{ content: 'nothing to do', toolCalls: [] }])
+
+    await runSubagent({
+      client: model,
+      workspacePath: root,
+      mode: 'explore',
+      task: 'look around',
+      locale: 'en',
+    })
+
+    const system = model.requests[0]?.messages[0]?.content ?? ''
+    expect(system).toContain('reasoning/thinking block in English')
+  })
+})
+
 describe('subagent tools', () => {
   it('keeps explore read-only and gives general mode edits without exec', () => {
     const explore = selectSubagentTools('explore').map((tool) => tool.name)

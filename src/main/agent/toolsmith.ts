@@ -283,6 +283,11 @@ async function readManifest(dir: string): Promise<{
   const manifest = parseManifest(parsed, folder)
   const entryBytes = await readToolFile(dir, manifest.entry)
   const testBytes = await readToolFile(dir, manifest.test)
+  // The approval hash covers every file in the directory, not just the three
+  // the manifest names: entry.js may require('./lib.js'), so a byte changed in
+  // any auxiliary file must revoke the approval exactly like a change to the
+  // entry itself. Files are fed in a stable order with their relative path as
+  // a separator, so a rename or a move cannot keep the old hash.
   const hash = createHash('sha256')
   hash.update('manifest\0')
   hash.update(raw)
@@ -290,7 +295,44 @@ async function readManifest(dir: string): Promise<{
   hash.update(entryBytes)
   hash.update('\0test\0')
   hash.update(testBytes)
+  for (const file of await listToolFiles(dir)) {
+    hash.update('\0file\0')
+    hash.update(file.relative)
+    hash.update('\0bytes\0')
+    hash.update(await readFile(join(dir, file.relative)))
+  }
   return { manifest, sha256: hash.digest('hex') }
+}
+
+/**
+ * Every regular file in the tool directory, relative paths with `/`, sorted.
+ * Symlinks are rejected and the same size caps as `copyToolDirectory` apply,
+ * so a directory that cannot be hashed cannot be executed either.
+ */
+async function listToolFiles(dir: string): Promise<{ relative: string }[]> {
+  const files: { relative: string }[] = []
+  let total = 0
+  async function walk(current: string, prefix: string): Promise<void> {
+    const entries = await readdir(current, { withFileTypes: true })
+    for (const entry of entries) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isSymbolicLink()) throw new Error(`工具目录不能包含符号链接：${relative}`)
+      if (entry.isDirectory()) {
+        await walk(join(current, entry.name), relative)
+        continue
+      }
+      if (!entry.isFile()) continue
+      const info = await stat(join(current, entry.name))
+      files.push({ relative })
+      total += info.size
+      if (files.length > MAX_TOOL_FILES) throw new Error(`工具文件数超过 ${MAX_TOOL_FILES}`)
+      if (info.size > MAX_FILE_BYTES || total > MAX_TOTAL_BYTES) {
+        throw new Error('工具目录超过大小上限')
+      }
+    }
+  }
+  await walk(dir, '')
+  return files
 }
 
 /** Bump `version` inside tool.json so the file matches the approval history. */
@@ -402,8 +444,10 @@ function assertRelativeScript(value: string, runtime: DynamicToolRuntime, field:
  *
  * Registration is the trust boundary: the manifest and both scripts are
  * validated, the declared test runs inside a bounded child process, and only a
- * passing test records an approved SHA-256. Editing any of the three files
- * changes that hash and revokes the tool until it is registered again.
+ * passing test records an approved SHA-256. The hash covers every file in the
+ * tool directory, so editing any of them — entry, test or an auxiliary module
+ * the entry requires — changes that hash and revokes the tool until it is
+ * registered again.
  */
 export class DynamicToolRegistry {
   private readonly workspacePath: string
@@ -693,12 +737,14 @@ export class DynamicToolRegistry {
       value.replace(/\\\\/g, '/').replace(/\\/g, '/').toLowerCase()
     const workspace = normalize(await this.root()).replace(/\/+$/, '')
     if (workspace.length < 4) return
-    for (const file of [loaded.manifest.entry, loaded.manifest.test]) {
-      const text = await readFile(join(dir, file), 'utf8').catch(() => '')
+    // Scan every file in the directory, not just entry/test: an auxiliary
+    // module can hardcode the workspace path just as easily as the entry.
+    for (const file of await listToolFiles(dir)) {
+      const text = await readFile(join(dir, file.relative), 'utf8').catch(() => '')
       if (!text) continue
       if (normalize(text).includes(workspace)) {
         throw new Error(
-          `工具 ${name} 不通用：${file} 里写死了当前工作区路径。` +
+          `工具 ${name} 不通用：${file.relative} 里写死了当前工作区路径。` +
             '改成参数、相对路径或 PILOT_WORKSPACE 环境变量后再提升。',
         )
       }

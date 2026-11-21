@@ -182,6 +182,32 @@ describe('DynamicToolRegistry', () => {
     await expect(tools.run('echo', { name: 'x' })).rejects.toThrow(/尚未通过自测/)
   })
 
+  it('revokes approval when an auxiliary file changes', async () => {
+    const root = await workspace()
+    const data = await userData()
+    await createTool(root, 'echo')
+    // The entry requires an auxiliary module: the approval hash must cover it,
+    // otherwise a byte changed after approval would still execute.
+    const dir = join(root, '.pilot', 'tools', 'echo')
+    await writeFile(
+      join(dir, 'main.js'),
+      `const lib = require('./lib.js')\nlet raw = ''\nprocess.stdin.on('data', (chunk) => { raw += chunk })\nprocess.stdin.on('end', () => {\n  const args = JSON.parse(raw || '{}')\n  process.stdout.write(lib.prefix() + String(args.name))\n})\n`,
+      'utf8',
+    )
+    await writeFile(join(dir, 'lib.js'), "exports.prefix = () => 'echo:'\n", 'utf8')
+    const tools = registry(root, data)
+    await tools.register('echo')
+    await expect(tools.run('echo', { name: 'x' })).resolves.toMatchObject({
+      ok: true,
+      output: 'echo:x',
+    })
+
+    await writeFile(join(dir, 'lib.js'), "exports.prefix = () => 'pwned:'\n", 'utf8')
+    const listed = await tools.list()
+    expect(listed[0]?.approved).toBe(false)
+    await expect(tools.run('echo', { name: 'x' })).rejects.toThrow(/尚未通过自测/)
+  })
+
   it('refuses a disabled tool', async () => {
     const root = await workspace()
     const data = await userData()
@@ -332,6 +358,23 @@ describe('DynamicToolRegistry upgrade history', () => {
     await writeFile(
       join(root, '.pilot', 'tools', 'echo', 'main.js'),
       `const pinned = ${JSON.stringify(join(root, '.pilot'))}\n${ENTRY}`,
+      'utf8',
+    )
+    const tools = registry(root, data)
+    await tools.register('echo')
+    await tools.run('echo', { name: 'x' })
+
+    await expect(tools.promote('echo')).rejects.toThrow(/不通用/)
+  })
+
+  it('refuses to promote a tool whose auxiliary file hardcodes this workspace path', async () => {
+    const root = await workspace()
+    const data = await userData()
+    await createTool(root, 'echo')
+    // The entry itself stays clean; only the auxiliary module pins the path.
+    await writeFile(
+      join(root, '.pilot', 'tools', 'echo', 'lib.js'),
+      `const pinned = ${JSON.stringify(root)}\n`,
       'utf8',
     )
     const tools = registry(root, data)

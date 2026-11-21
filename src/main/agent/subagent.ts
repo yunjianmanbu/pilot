@@ -1,7 +1,9 @@
+import type { AppLocale } from '../../shared/i18n'
 import type { AgentToolDefinition } from '../../shared/types'
 import { toolOutputCharsFor, truncateMiddle } from './context'
 import { runAgentLoop, type ModelClient } from './loop'
 import { evaluatePermission } from './permissions'
+import { reasoningLanguage } from './prompt'
 import {
   loadScriptNames,
   MAX_CHECKS_PER_SUBAGENT,
@@ -143,6 +145,7 @@ function buildPrompt(
   task: string,
   scope: string | undefined,
   checksEnabled: boolean,
+  locale?: AppLocale,
 ): string {
   const label =
     mode === 'general' ? 'Subagent' : mode === 'toolsmith' ? 'Toolsmith' : 'Explore'
@@ -156,6 +159,7 @@ function buildPrompt(
     '- Read the smallest set of files that answers the task. Prefer search_files with a narrow glob and read_file slices over whole-file dumps.',
     '- Return concise findings with exact relative paths and line ranges. Separate verified facts from guesses, and say explicitly when something could not be determined.',
     "- Answer in the user's language.",
+    `- Write every reasoning/thinking block in ${reasoningLanguage(locale)}, the language the app UI and system use, even when the task, the files or the tool output are in another language. Keep paths, identifiers, commands and quoted text exactly as written.`,
   ]
   if (mode === 'general') {
     common.push(
@@ -206,6 +210,8 @@ export interface SubagentOptions {
   maxContextTokens?: number
   /** Mirrors the user's shell setting; keeps `run_check` off when shell is off. */
   shellEnabled?: boolean
+  /** Effective app/UI language for the subagent's thinking text. */
+  locale?: AppLocale
   signal?: AbortSignal
 }
 
@@ -277,6 +283,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentRes
           options.task,
           options.scope,
           checksEnabled,
+          options.locale,
         ),
       },
       { role: 'user', content: options.task },

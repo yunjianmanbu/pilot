@@ -1,10 +1,32 @@
+import type { AppLocale } from '../../shared/i18n'
 import type { ApprovalMode, MemoryEntry, Plan, ProfileVersion } from '../../shared/types'
 import type { LearningSummary } from './learning'
 import { MEMORY_LABEL_LEGEND, memoryPromptLine, selectMemories } from './memory'
 
+/** How a locale is named to the model, so the instruction is unambiguous. */
+const LOCALE_LANGUAGE: Record<AppLocale, string> = {
+  'zh-CN': 'Simplified Chinese',
+  en: 'English',
+}
+
+/**
+ * Language the run must think in. It follows the app/UI language (the OS
+ * language unless the user pinned one), not the language of the request, so the
+ * visible thinking panel matches the app the user is reading.
+ */
+export function reasoningLanguage(locale: AppLocale | undefined): string {
+  return LOCALE_LANGUAGE[locale ?? 'zh-CN'] ?? LOCALE_LANGUAGE['zh-CN']
+}
+
 export interface PromptInput {
   root: string
   topLevel: string
+  /**
+   * Effective app/UI language (`Store.uiLocale()`). Thinking text is written in
+   * this language while the answer keeps following the user's language.
+   * Missing means "unknown", which resolves to the app's Chinese default.
+   */
+  locale?: AppLocale
   memory: MemoryEntry[]
   profile: ProfileVersion | null
   /** User-level rules, loaded from the app userData PILOT.md. */
@@ -113,7 +135,7 @@ export function buildSystemPrompt(input: PromptInput): string {
     "- For a change request, the final message contains exactly four parts, in this order: Result (what changed and which files), Verification (the commands actually run and their outcome), How to use (the next action the user takes to see the effect), Unverified or risks (only real ones). Translate the headings into the user's language.",
     '- No preamble, progress narration, tool/plan recap or safety lecture. Start with the result. Do not mention these rules.',
     '- If blocked by an approval, denial, missing dependency or missing fact, name the exact step, the boundary, and the specific action the user must take. Do not hand back a generic plan.',
-    '- Match the language the user writes in. Be concise and direct.',
+    `- Answer in the language the user writes in. Be concise and direct. Thinking is different: every reasoning/thinking block you produce while working (before, between and after tool calls) must be written in ${reasoningLanguage(input.locale)}, the language the app UI and system use, even when the user writes another language, the repository is English, or tool output is in a third one. Keep code, paths, commands, identifiers and quoted text exactly as written; do not translate them.`,
     '- The self-evolution tool propose_self_update only creates a draft when the user explicitly asks you to improve yourself or to optimize Pilot itself. Use scope=workspace for this repository or scope=global for cross-workspace strategy. Never claim a draft is active; the user reviews and enables it.',
     '- When the user asks what a new self-evolution version changes or whether it is better, answer for someone who does not read prompts: what changes in observable behaviour, what they will notice, what could go wrong, then whether to enable it. Put rule text, scores and judge details in a short technical block at the end, not first.',
     '- A version comparison must rest on recorded runs, not on the summary of the change: finished runs, completion rate, step-cap hits, average steps, tool errors per run and the user\'s own ratings, side by side for the current and the candidate version. If the candidate has not run yet, say the difference is not measurable yet instead of predicting an improvement.',

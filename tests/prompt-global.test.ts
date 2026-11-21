@@ -156,6 +156,35 @@ describe('buildSystemPrompt analysis gate', () => {
   })
 })
 
+describe('buildSystemPrompt thinking language', () => {
+  const base = {
+    root: 'E:\\work\\acme',
+    topLevel: 'src',
+    memory: [],
+    profile: null,
+    plan: null,
+    selfUpdate: false,
+  }
+
+  it('pins the thinking language to the app language, not to the user language', () => {
+    const chinese = buildSystemPrompt({ ...base, locale: 'zh-CN' })
+    expect(chinese).toContain('Thinking is different')
+    expect(chinese).toContain('written in Simplified Chinese, the language the app UI and system use')
+    // The answer still follows whoever is writing; thinking is the part that
+    // changes with the system language.
+    expect(chinese).toContain('Answer in the language the user writes in')
+
+    const english = buildSystemPrompt({ ...base, locale: 'en' })
+    expect(english).toContain('written in English, the language the app UI and system use')
+    expect(english).not.toContain('written in Simplified Chinese')
+  })
+
+  it('keeps identifiers untranslated inside a thinking block', () => {
+    const text = buildSystemPrompt({ ...base, locale: 'en' })
+    expect(text).toContain('Keep code, paths, commands, identifiers and quoted text exactly as written')
+  })
+})
+
 describe('buildSystemPrompt learning mode', () => {
   const base = {
     root: 'E:\\work\\acme',

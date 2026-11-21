@@ -9,8 +9,10 @@
  * approval path (`DynamicToolRegistry.adoptBundled`).
  *
  * The hash is the runtime's own hash — sha256('manifest\0' + raw tool.json +
- * '\0entry\0' + entry bytes + '\0test\0' + test bytes) — so a byte changed by
- * hand between packaging and install is refused instead of silently trusted.
+ * '\0entry\0' + entry bytes + '\0test\0' + test bytes, then every file in the
+ * directory as '\0file\0' + relative path + '\0bytes\0' + file bytes) — so a
+ * byte changed by hand between packaging and install is refused instead of
+ * silently trusted.
  * Every tool's self-test runs here, at build time, and a failing test stops the
  * build: a bundle that is not verified is not produced.
  *
@@ -132,6 +134,7 @@ async function readTool(dir) {
   }
   const entryBytes = await readFile(join(dir, entry))
   const testBytes = await readFile(join(dir, test))
+  const files = await collectFiles(dir)
   const hash = createHash('sha256')
   hash.update('manifest\0')
   hash.update(raw)
@@ -139,6 +142,15 @@ async function readTool(dir) {
   hash.update(entryBytes)
   hash.update('\0test\0')
   hash.update(testBytes)
+  // Mirror the runtime hash exactly: every file in the directory is fed with
+  // its relative path as a separator, so the bundle's index.json vouches for
+  // the same bytes the runtime will hash after adoption.
+  for (const relative of files) {
+    hash.update('\0file\0')
+    hash.update(relative)
+    hash.update('\0bytes\0')
+    hash.update(await readFile(join(dir, relative)))
+  }
   const targets = Array.isArray(manifest.targets) ? manifest.targets : []
   return {
     folder,
@@ -149,7 +161,7 @@ async function readTool(dir) {
     risk: manifest.risk === 'read' ? 'read' : 'exec',
     description,
     targets,
-    files: await collectFiles(dir),
+    files,
     sha256: hash.digest('hex'),
   }
 }
