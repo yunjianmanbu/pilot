@@ -17,7 +17,17 @@ refined behaviour profile.
 The UI is Electron + React. **No sign-up, no login, no cloud database** — point it at a DeepSeek API
 key (or any OpenAI-compatible endpoint) and it works.
 
-![Pilot main window](docs/screenshot-en.png)
+![Pilot main window](docs/screenshots/en/main.png)
+
+| Change review, per-file undo | A question is answered, a change is verified | A checkpoint before every task |
+| --- | --- | --- |
+| ![Change review](docs/screenshots/en/change-review.png) | ![Answer vs. change](docs/screenshots/en/answer-changes.png) | ![Checkpoint dialog](docs/screenshots/en/checkpoint-dialog.png) |
+
+| Context budget follows the model window | Drive the same agent from the phone | Todos that became scheduled runs |
+| --- | --- | --- |
+| ![Context budget](docs/screenshots/en/context-budget.png) | ![Phone link](docs/screenshots/en/mobile-link.png) | ![Scheduled tasks](docs/screenshots/en/scheduled-tasks.png) |
+
+More product screens and the demo video: <https://pilot.medpilot.cc/>
 
 ## Features
 

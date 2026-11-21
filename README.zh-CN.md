@@ -16,7 +16,17 @@ Pilot 是一个**本地优先**、可自我学习迭代的桌面编程智能体�
 界面由 Electron + React 构建，**无需注册、无需登录、无云端数据库**。填入 DeepSeek API Key
 （或任意兼容 OpenAI 的端点）即可开始工作。
 
-![Pilot 主界面](docs/screenshot.png)
+![Pilot 主界面](docs/screenshots/zh/main.png)
+
+| 变更审阅，可逐文件撤销 | 问答要答清楚，改动要跑验证 | 每次任务前的回退点 |
+| --- | --- | --- |
+| ![变更审阅](docs/screenshots/zh/change-review.png) | ![问答与改动](docs/screenshots/zh/answer-changes.png) | ![回退点](docs/screenshots/zh/checkpoint-dialog.png) |
+
+| 上下文预算按模型窗口收敛 | 在手机上驱动同一个智能体 | 待办转成的定时任务 |
+| --- | --- | --- |
+| ![上下文预算](docs/screenshots/zh/context-budget.png) | ![手机连接](docs/screenshots/zh/mobile-link.png) | ![定时任务](docs/screenshots/zh/scheduled-tasks.png) |
+
+更多产品截图与演示视频：<https://pilot.medpilot.cc/zh.html>
 
 ## 功能
 
