@@ -64,4 +64,14 @@ describe('macOS staged swap', () => {
     expect(MAC_SWAP_SCRIPT).toContain('xattr -dr com.apple.quarantine')
     expect(MAC_SWAP_SCRIPT).toContain('sleep 1')
   })
+
+  it('removes the staging directory on every exit path', () => {
+    // A real 0.1.89 update left /Applications/.pilot-update-<token> behind:
+    // the staged bundle is moved out, but its parent directory is not.
+    expect(MAC_SWAP_SCRIPT).toContain('cleanup_stage()')
+    expect(MAC_SWAP_SCRIPT).toContain('*/.pilot-update-*)')
+    const calls = MAC_SWAP_SCRIPT.match(/^\s*cleanup_stage$/gm) ?? []
+    // Missing staged bundle, failed move-out, successful swap, rollback.
+    expect(calls.length).toBe(4)
+  })
 })

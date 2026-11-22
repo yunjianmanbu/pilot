@@ -46,7 +46,9 @@ export function stagingDirFor(appBundle: string, token: string): string {
  *   1 current bundle  2 staged bundle  3 backup path  4 log file
  * Ordering matters: the old bundle is moved aside first, the new one is moved
  * in, and any failure puts the old one back so the user never ends up with a
- * half-installed app.
+ * half-installed app. Every exit path also removes the staging directory: the
+ * moved-out bundle is not at its original path any more, so the directory would
+ * otherwise stay behind in /Applications (one hidden dir per update).
  */
 export const MAC_SWAP_SCRIPT = `#!/bin/sh
 # Written by Pilot's updater. Swaps a staged app bundle over the installed one
@@ -56,27 +58,38 @@ TARGET="$1"
 STAGED="$2"
 BACKUP="$3"
 LOG="$4"
+STAGE_DIR="$(dirname "$STAGED")"
 exec >>"$LOG" 2>&1
 echo "== start $(date) =="
+# Only ever removes the staging directory this updater created.
+cleanup_stage() {
+  case "$STAGE_DIR" in
+    */.pilot-update-*) rm -rf "$STAGE_DIR" ;;
+  esac
+}
 # Give the quitting process a moment to release its bundle and the instance lock.
 sleep 1
 if [ ! -d "$STAGED" ]; then
   echo "staged bundle missing: $STAGED"
+  cleanup_stage
   exit 1
 fi
 rm -rf "$BACKUP"
 if ! mv "$TARGET" "$BACKUP"; then
   echo "cannot move the installed bundle; is it on a read-only volume?"
+  cleanup_stage
   exit 1
 fi
 if mv "$STAGED" "$TARGET"; then
   echo "swapped in $TARGET"
   xattr -dr com.apple.quarantine "$TARGET" >/dev/null 2>&1 || true
   rm -rf "$BACKUP"
+  cleanup_stage
   open "$TARGET"
   exit 0
 fi
 echo "swap failed, rolling back"
 mv "$BACKUP" "$TARGET"
+cleanup_stage
 exit 1
 `
