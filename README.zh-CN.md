@@ -18,7 +18,7 @@ Pilot 是一个**本地优先**、可自我学习迭代的桌面编程智能体�
 界面由 Electron + React 构建，**无需注册、无需登录、无云端数据库**。填入 DeepSeek API Key
 （或任意兼容 OpenAI 的端点）即可开始工作。
 
-![Pilot 主界面](docs/screenshots/zh/main.png)
+![Pilot 动起来：一个文件夹就是工作区，每处改动都要过审，同一个智能体在手机上应答](docs/social/zh/demo.gif)
 
 | 变更审阅，可逐文件撤销 | 问答要答清楚，改动要跑验证 | 每次任务前的回退点 |
 | --- | --- | --- |

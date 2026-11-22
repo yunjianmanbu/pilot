@@ -19,7 +19,7 @@ refined behaviour profile.
 The UI is Electron + React. **No sign-up, no login, no cloud database** — point it at a DeepSeek API
 key (or any OpenAI-compatible endpoint) and it works.
 
-![Pilot main window](docs/screenshots/en/main.png)
+![Pilot in motion: a folder becomes the workspace, every edit is reviewed, the same agent answers on your phone](docs/social/en/demo.gif)
 
 | Change review, per-file undo | A question is answered, a change is verified | A checkpoint before every task |
 | --- | --- | --- |
