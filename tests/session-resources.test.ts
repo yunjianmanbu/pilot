@@ -1,17 +1,26 @@
 import { describe, expect, it } from 'vitest'
+import type { MemoryEntry } from '../src/shared/types'
 import {
   describeLink,
   excerpt,
   queryPairs,
   RESOURCE_TABS,
+  sessionMemories,
 } from '../src/renderer/src/session-resources'
 
-// 会话资源抽屉里五类资源共用同一套列表/预览结构，这里钉住的是纯函数的边界：
+// 会话资源抽屉里六类资源共用同一套列表/预览结构，这里钉住的是纯函数的边界：
 // 坏 URL 不能抛错、查询参数要能拆成可读的键值、摘录必须是一行。
 
 describe('session resource tabs', () => {
-  it('keeps the five categories in the order the panel renders them', () => {
-    expect(RESOURCE_TABS).toEqual(['files', 'links', 'tools', 'knowledge', 'artifacts'])
+  it('keeps the six categories in the order the panel renders them', () => {
+    expect(RESOURCE_TABS).toEqual([
+      'files',
+      'links',
+      'tools',
+      'knowledge',
+      'memory',
+      'artifacts',
+    ])
   })
 })
 
@@ -87,5 +96,56 @@ describe('excerpt', () => {
 
   it('leaves a short line untouched', () => {
     expect(excerpt('  短句  ')).toBe('短句')
+  })
+})
+
+function memory(id: string, extra: Partial<MemoryEntry> = {}): MemoryEntry {
+  return {
+    id,
+    content: `记忆 ${id}`,
+    source: 'agent',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...extra,
+  }
+}
+
+describe('sessionMemories', () => {
+  it('returns nothing without a session', () => {
+    expect(sessionMemories([memory('a')], null)).toEqual([])
+  })
+
+  it('lists what the prompt carried in the recorded order', () => {
+    const rows = sessionMemories([memory('a'), memory('b')], { id: 's1', memoryIds: ['b', 'a'] })
+    expect(rows.map((row) => row.entry.id)).toEqual(['b', 'a'])
+    expect(rows.every((row) => row.injected)).toBe(true)
+  })
+
+  it('drops ids the workspace store no longer holds', () => {
+    const rows = sessionMemories([memory('a')], { id: 's1', memoryIds: ['gone', 'a'] })
+    expect(rows.map((row) => row.entry.id)).toEqual(['a'])
+  })
+
+  it('appends what this session wrote but never re-read, newest first', () => {
+    const rows = sessionMemories(
+      [
+        memory('a'),
+        memory('old', { sessionId: 's1', createdAt: '2026-01-01T00:00:00.000Z' }),
+        memory('new', { sessionId: 's1', createdAt: '2026-02-01T00:00:00.000Z' }),
+        memory('other', { sessionId: 's2' }),
+      ],
+      { id: 's1', memoryIds: ['a'] },
+    )
+    expect(rows.map((row) => row.entry.id)).toEqual(['a', 'new', 'old'])
+    expect(rows[0]?.written).toBe(false)
+    expect(rows[1]?.injected).toBe(false)
+  })
+
+  it('counts an entry once even when it was written and injected', () => {
+    const rows = sessionMemories([memory('a', { sessionId: 's1' })], {
+      id: 's1',
+      memoryIds: ['a'],
+    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ injected: true, written: true })
   })
 })

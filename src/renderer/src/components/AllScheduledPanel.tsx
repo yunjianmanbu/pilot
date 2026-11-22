@@ -48,6 +48,8 @@ export function AllScheduledPanel({
 }) {
   const [groups, setGroups] = useState<ScheduledTaskGroup[] | null>(null)
   const [busyId, setBusyId] = useState('')
+  /** 「启用中」只看还会触发的；「全部」连暂停的也列出来。 */
+  const [tab, setTab] = useState<'active' | 'all'>('active')
 
   const load = useCallback(() => {
     setGroups(null)
@@ -69,9 +71,18 @@ export function AllScheduledPanel({
     return {
       tasks: tasks.length,
       active: tasks.filter((task) => task.enabled).length,
+      paused: tasks.filter((task) => !task.enabled).length,
       sessions: (groups ?? []).filter((group) => group.tasks.length > 0).length,
     }
   }, [groups])
+
+  // 切到「启用中」时只看还会跑的任务，空组直接收起来。
+  const visibleGroups = useMemo(() => {
+    if (tab === 'all') return groups ?? []
+    return (groups ?? [])
+      .map((group) => ({ ...group, tasks: group.tasks.filter((task) => task.enabled) }))
+      .filter((group) => group.tasks.length > 0)
+  }, [groups, tab])
 
   const run = useCallback(
     async (id: string, action: () => Promise<unknown>, message?: string) => {
@@ -173,11 +184,53 @@ export function AllScheduledPanel({
                 })}
           </p>
         </div>
-        <div className="all-todos-actions">
-          <button type="button" className="icon-button" title={t('刷新')} onClick={load}>
-            <RefreshIcon width={15} height={15} />
-          </button>
+        <div className="stat-strip">
+          <div className="stat">
+            <strong>{totals.active}</strong>
+            <span>{t('项启用中')}</span>
+          </div>
+          <div className="stat">
+            <strong>{totals.paused}</strong>
+            <span>{t('项已暂停')}</span>
+          </div>
+          <div className="stat">
+            <strong>{totals.sessions}</strong>
+            <span>{t('个会话')}</span>
+          </div>
         </div>
+      </div>
+
+      <div className="page-tabs" role="tablist" aria-label={t('定时任务筛选')}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'active'}
+          className={`page-tab${tab === 'active' ? ' is-active' : ''}`}
+          onClick={() => setTab('active')}
+        >
+          <ClockIcon width={15} height={15} />
+          {t('启用中')}
+          {totals.active > 0 ? <span className="page-tab-badge">{totals.active}</span> : null}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'all'}
+          className={`page-tab${tab === 'all' ? ' is-active' : ''}`}
+          onClick={() => setTab('all')}
+        >
+          {t('全部')}
+          {totals.tasks > 0 ? <span className="page-tab-badge">{totals.tasks}</span> : null}
+        </button>
+        <button
+          type="button"
+          className="page-tabs-refresh"
+          title={t('刷新')}
+          aria-label={t('刷新')}
+          onClick={load}
+        >
+          <RefreshIcon width={14} height={14} />
+        </button>
       </div>
 
       <div className="all-todos-body">
@@ -190,10 +243,16 @@ export function AllScheduledPanel({
           <div className="all-todos-empty">
             <ClockIcon width={26} height={26} />
             <strong>{t('没有定时任务')}</strong>
-            <span>{t('在会话右上角的三点菜单里打开「定时任务」，就能给这个会话挂一条。')}</span>
+            <span>{t('在会话输入框上方的「定时任务」面板新建一条，就能给这个会话挂上。')}</span>
+          </div>
+        ) : visibleGroups.length === 0 ? (
+          <div className="all-todos-empty">
+            <ClockIcon width={26} height={26} />
+            <strong>{t('没有启用中的定时任务')}</strong>
+            <span>{t('切到「全部」可以看到已暂停的任务，再点「启用」恢复它。')}</span>
           </div>
         ) : (
-          groups.map((group) => (
+          visibleGroups.map((group) => (
             <article className="all-todos-group" key={group.sessionId}>
               <header className="all-todos-group-head">
                 <button

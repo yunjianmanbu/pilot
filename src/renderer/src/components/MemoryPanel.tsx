@@ -17,7 +17,7 @@ const SOURCE_LABELS = {
   reflection: t("运行复盘"),
 } as const
 
-const CATEGORY_LABELS: Record<MemoryCategory, string> = {
+export const MEMORY_CATEGORY_LABELS: Record<MemoryCategory, string> = {
   invariant: t("不变量"),
   verification: t("验证路径"),
   negative: t("走不通的路"),
@@ -164,7 +164,7 @@ export function MemoryPanel({
                     className={`chip-button${filter === category ? ' active' : ''}`}
                     onClick={() => setFilter(category)}
                   >
-                    {CATEGORY_LABELS[category]} {counts[category]}
+                    {MEMORY_CATEGORY_LABELS[category]} {counts[category]}
                   </button>
                 ))}
               </div>
@@ -187,7 +187,7 @@ export function MemoryPanel({
                         {SOURCE_LABELS[entry.source]}
                       </span>
                       <span className="source-chip memory-category-chip">
-                        {CATEGORY_LABELS[memoryCategoryOf(entry)]}
+                        {MEMORY_CATEGORY_LABELS[memoryCategoryOf(entry)]}
                       </span>
                       {(entry.reinforced ?? 0) > 0 ? (
                         <span className="memory-strength">

@@ -4,6 +4,7 @@ import type {
   FileNode,
   FilePreview,
   KnowledgePair,
+  MemoryEntry,
   Session,
   SessionArtifact,
   SessionLink,
@@ -16,10 +17,12 @@ import {
   excerpt,
   queryPairs,
   RESOURCE_TABS,
+  sessionMemories,
   type ResourceTab,
 } from '../session-resources'
 import {
   ArrowUpRightIcon,
+  BrainIcon,
   ChevronDownIcon,
   ChevronIcon,
   CopyIcon,
@@ -31,10 +34,13 @@ import {
   PopoutIcon,
   RefreshIcon,
   SearchIcon,
+  TrashIcon,
   WrenchIcon,
   XIcon,
 } from '../icons'
 import { copyText } from '../clipboard'
+import { memoryCategoryOf } from '../../../shared/memory'
+import { MEMORY_CATEGORY_LABELS } from './MemoryPanel'
 import { FilePreviewBody } from './FilePreviewBody'
 import { Markdown } from './Markdown'
 import { formatRelative } from '../ui'
@@ -54,6 +60,7 @@ function tabLabel(tab: ResourceTab): string {
   if (tab === 'links') return t('相关链接')
   if (tab === 'tools') return t('可用工具')
   if (tab === 'knowledge') return t('会话知识库')
+  if (tab === 'memory') return t('会话记忆')
   if (tab === 'artifacts') return t('新增/修改文件')
   return t('工作区文件')
 }
@@ -62,6 +69,7 @@ function tabIcon(tab: ResourceTab, size = 13): ReactNode {
   if (tab === 'links') return <LinkIcon width={size} height={size} />
   if (tab === 'tools') return <WrenchIcon width={size} height={size} />
   if (tab === 'knowledge') return <HistoryIcon width={size} height={size} />
+  if (tab === 'memory') return <BrainIcon width={size} height={size} />
   if (tab === 'artifacts') return <FileIcon width={size} height={size} />
   return <FilesIcon width={size} height={size} />
 }
@@ -203,6 +211,10 @@ export function SessionResourcesPanel({
   artifactSeed,
   onOpenMessage,
   onOpenChanges,
+  memory = [],
+  onAddMemory,
+  onDeleteMemory,
+  onOpenMemoryPanel,
   onClose,
   onError,
   onNotice,
@@ -217,6 +229,12 @@ export function SessionResourcesPanel({
   onOpenMessage?: (sessionId: string, messageId: string) => void
   /** Artifacts tab: open the diff view for the files this session changed. */
   onOpenChanges?: () => void
+  /** Workspace project memory; the memory tab narrows it down to this session. */
+  memory?: MemoryEntry[]
+  onAddMemory?: (content: string) => Promise<void>
+  onDeleteMemory?: (memoryId: string) => Promise<void>
+  /** Open the full workspace memory page from the empty state. */
+  onOpenMemoryPanel?: () => void
   onClose: () => void
   onError: (message: string) => void
   onNotice: (message: string) => void
@@ -243,6 +261,8 @@ export function SessionResourcesPanel({
 
   const [artifacts, setArtifacts] = useState<SessionArtifact[] | null>(null)
   const [artifactPreview, setArtifactPreview] = useState<FilePreview | null>(null)
+  const [activeMemoryId, setActiveMemoryId] = useState<string | null>(null)
+  const [memoryBusy, setMemoryBusy] = useState<string | null>(null)
 
   const [previewLoading, setPreviewLoading] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -497,11 +517,27 @@ export function SessionResourcesPanel({
     return visiblePairs.find((pair) => pair.key === activePairKey) ?? visiblePairs[0] ?? null
   }, [activePairKey, visiblePairs])
 
+  // The workspace store keeps the only copy of every entry; this session only
+  // records which ids its prompt carried. Written-but-unread entries are added
+  // so a remember call shows up immediately, before the next run re-injects it.
+  const memoryRows = useMemo(() => sessionMemories(memory, session), [memory, session])
+  const visibleMemoryRows = useMemo(() => {
+    if (!needle) return memoryRows
+    return memoryRows.filter((row) => row.entry.content.toLowerCase().includes(needle))
+  }, [memoryRows, needle])
+  const activeMemoryRow = useMemo(() => {
+    if (visibleMemoryRows.length === 0) return null
+    return (
+      visibleMemoryRows.find((row) => row.entry.id === activeMemoryId) ?? visibleMemoryRows[0] ?? null
+    )
+  }, [activeMemoryId, visibleMemoryRows])
+
   const counts: Record<ResourceTab, number | null> = {
     files: null,
     links: links?.length ?? null,
     tools: tools?.length ?? null,
     knowledge: pairs ? pairTotal : null,
+    memory: session ? memoryRows.length : null,
     artifacts: artifacts?.length ?? null,
   }
 
@@ -717,6 +753,49 @@ export function SessionResourcesPanel({
             <span className="resource-row-main">
               <span className="resource-row-title">{t('第 {v1} 轮', { v1: pair.index })}</span>
               <span className="resource-row-sub">{excerpt(pair.instruction, 90)}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    )
+  }
+
+  const renderMemoryList = (): ReactNode => {
+    if (!session) {
+      return emptyState(
+        <BrainIcon width={26} height={26} />,
+        t('还没有选中的会话'),
+        t('选择会话后，这里会列出这轮任务用到的项目记忆。'),
+      )
+    }
+    if (visibleMemoryRows.length === 0) {
+      return emptyState(
+        <BrainIcon width={26} height={26} />,
+        needle ? t('没有匹配的记忆') : t('这个会话还没有记忆'),
+        needle
+          ? t('换一个关键词，或清空搜索查看全部条目。')
+          : t('运行会把工作区里相关的记忆写进提示词，Pilot 也可以用 remember 记录新事实。'),
+      )
+    }
+    return (
+      <div className="file-list">
+        {visibleMemoryRows.map((row) => (
+          <button
+            type="button"
+            className={`resource-row${row.entry.id === activeMemoryRow?.entry.id ? ' is-active' : ''}`}
+            key={row.entry.id}
+            onClick={() => setActiveMemoryId(row.entry.id)}
+            title={excerpt(row.entry.content, 400)}
+          >
+            <span className="file-icon memory">
+              <BrainIcon width={15} height={15} />
+            </span>
+            <span className="resource-row-main">
+              <span className="resource-row-title">{excerpt(row.entry.content, 48)}</span>
+              <span className="resource-row-sub">
+                {MEMORY_CATEGORY_LABELS[memoryCategoryOf(row.entry)]}
+                {row.written ? ` · ${t('本会话写入')}` : ''}
+              </span>
             </span>
           </button>
         ))}
@@ -1063,10 +1142,88 @@ export function SessionResourcesPanel({
     )
   }
 
+  const renderMemoryPreview = (): ReactNode => {
+    if (!activeMemoryRow) {
+      return (
+        <div className="resource-hint">
+          {needle
+            ? t('没有匹配的记忆，清空搜索可查看这个会话的全部记忆。')
+            : t('从左侧选择一条记忆查看内容。')}
+        </div>
+      )
+    }
+    const entry = activeMemoryRow.entry
+    return (
+      <div className="resource-detail memory-preview">
+        <div className="resource-detail-head">
+          <span className="resource-detail-title">
+            {MEMORY_CATEGORY_LABELS[memoryCategoryOf(entry)]}
+          </span>
+          <span className="resource-detail-actions">
+            {activeMemoryRow.written ? (
+              <span className="resource-chip">{t('本会话写入')}</span>
+            ) : null}
+            {activeMemoryRow.injected ? (
+              <span className="resource-chip">{t('本轮提示词已注入')}</span>
+            ) : null}
+            <span className="resource-chip">{formatRelative(entry.createdAt)}</span>
+            {onDeleteMemory ? (
+              <button
+                type="button"
+                className="icon-button danger"
+                title={t('删除这条记忆')}
+                aria-label={t('删除这条记忆')}
+                disabled={memoryBusy === entry.id}
+                onClick={() => {
+                  if (!window.confirm(t('删除这条记忆？Pilot 之后不会再使用它。'))) return
+                  setMemoryBusy(entry.id)
+                  void onDeleteMemory(entry.id)
+                    .catch(() => {
+                      // The app surfaces the error as a toast.
+                    })
+                    .finally(() => setMemoryBusy(null))
+                }}
+              >
+                {memoryBusy === entry.id ? (
+                  <i className="spinner small" />
+                ) : (
+                  <TrashIcon width={13} height={13} />
+                )}
+              </button>
+            ) : null}
+          </span>
+        </div>
+        <div className="preview-doc memory-preview-body">
+          <Markdown content={entry.content} />
+        </div>
+        <div className="resource-note">
+          {t('提示词注入 {v1} 次 · 复现 {v2} 次', {
+            v1: entry.injected ?? 0,
+            v2: entry.reinforced ?? 0,
+          })}
+          {entry.source === 'user'
+            ? ` · ${t('你写入的长期偏好')}`
+            : entry.source === 'reflection'
+              ? ` · ${t('运行复盘产生')}`
+              : ` · ${t('Pilot 运行时记录')}`}
+        </div>
+        {onOpenMemoryPanel ? (
+          <div className="resource-actions">
+            <button type="button" className="button small" onClick={onOpenMemoryPanel}>
+              <BrainIcon width={14} height={14} />
+              {t('打开项目记忆')}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
   const renderPreview = (): ReactNode => {
     if (tab === 'links') return renderLinksPreview()
     if (tab === 'tools') return renderToolsPreview()
     if (tab === 'knowledge') return renderKnowledgePreview()
+    if (tab === 'memory') return renderMemoryPreview()
     if (previewLoading) return loadingRow(t('打开文件…'))
     if (tab === 'artifacts') {
       if (!artifactPreview) {
@@ -1115,7 +1272,9 @@ export function SessionResourcesPanel({
           ? t('清单与运行时一致 · 只读展示')
           : tab === 'knowledge'
             ? t('按轮次整理的会话知识库 · 只读预览')
-            : t('只汇总本次会话成功写入的文件 · 只读预览')
+            : tab === 'memory'
+              ? t('项目记忆按工作区共享 · 这里只列出本会话用到的条目')
+              : t('只汇总本次会话成功写入的文件 · 只读预览')
 
   return (
     <div className="resources-panel-shell">
@@ -1202,13 +1361,15 @@ export function SessionResourcesPanel({
               </div>
             ) : null}
 
-            {tab === 'knowledge' ? (
+            {tab === 'knowledge' || tab === 'memory' ? (
               <label className="resources-search">
                 <SearchIcon width={13} height={13} />
                 <input
                   type="search"
                   value={query}
-                  placeholder={t('搜索这个会话的问答')}
+                  placeholder={
+                    tab === 'memory' ? t('搜索本会话的记忆') : t('搜索这个会话的问答')
+                  }
                   onChange={(event) => setQuery(event.target.value)}
                 />
               </label>
@@ -1222,7 +1383,9 @@ export function SessionResourcesPanel({
                   ? renderToolsList()
                   : tab === 'knowledge'
                     ? renderKnowledgeList()
-                    : renderArtifactsList()}
+                    : tab === 'memory'
+                      ? renderMemoryList()
+                      : renderArtifactsList()}
           </div>
           <div className="resources-preview">{renderPreview()}</div>
         </div>

@@ -56,15 +56,53 @@ describe('session list plan marks', () => {
     expect(settled).not.toContain('session-plan-dot')
   })
 
-  it('summarises the tail of a long plan instead of clipping it', () => {
+  it('keeps the running step visible when a plan is longer than the row fits', () => {
+    // 9 步只画当前步附近的 3 个点，两侧折叠成 +N——整排铺开会被侧栏的
+    // overflow 裁掉，而被裁掉的往往正好是「现在跑到第几步」。
     const html = renderToStaticMarkup(
       <PlanMarks
         plan={plan('done', 'done', 'done', 'done', 'done', 'done', 'done', 'done', 'pending')}
         running
       />,
     )
-    expect(digits(html)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8'])
-    expect(html).toContain('class="session-plan-more">+1</i>')
+    // 前 8 步已完成，当前步是第 9 步：窗口落在尾部，前面折叠 6 步。
+    expect(digits(html)).toEqual(['7', '8', '9'])
+    expect(html).toContain('class="session-plan-more">+6</i>')
+    // 还没有任何一步标成 in_progress 时，当前步（下一个要做的）按运行中高亮。
+    expect(html).toContain('session-plan-dot is-active is-current')
+    expect(html).toContain('>8/9<')
+  })
+
+  it('centres the window on the step that is running', () => {
+    const html = renderToStaticMarkup(
+      <PlanMarks
+        plan={plan(
+          'done',
+          'done',
+          'done',
+          'done',
+          'done',
+          'in_progress',
+          'pending',
+          'pending',
+          'pending',
+        )}
+        running
+      />,
+    )
+    // 第 6 步在跑：5/6/7 可见，前后各自折叠。
+    expect(digits(html)).toEqual(['5', '6', '7'])
+    expect(html).toContain('class="session-plan-more">+4</i>')
+    expect(html).toContain('class="session-plan-more">+2</i>')
+    expect(html).toContain('session-plan-dot is-active is-current')
+  })
+
+  it('still lists every step when the plan is short', () => {
+    const html = renderToStaticMarkup(
+      <PlanMarks plan={plan('done', 'in_progress', 'pending', 'pending', 'pending')} running />,
+    )
+    expect(digits(html)).toEqual(['1', '2', '3', '4', '5'])
+    expect(html).not.toContain('session-plan-more')
     // 结束后的同一份计划不再列步骤，只留 8/9。
     const settled = renderToStaticMarkup(
       <PlanMarks

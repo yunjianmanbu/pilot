@@ -609,6 +609,31 @@ a:hover {
   letter-spacing: 0.16em;
 }
 
+.titlebar-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  margin-right: 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  /* 标题栏整体是拖拽区，按钮要退成 no-drag 才收得到点击。 */
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-icon:hover {
+  background: var(--hover-strong);
+  color: var(--text);
+}
+
+.titlebar-icon.is-active {
+  background: var(--hover-strong);
+  color: var(--accent);
+}
+
 .titlebar-path {
   margin-left: auto;
   max-width: 46%;
@@ -1786,6 +1811,24 @@ button.header-title:hover {
   gap: 10px;
   flex: none;
   margin-right: 2px;
+  /* 整条可点：重置 button 的默认外观，只保留 hover 的浅底反馈。 */
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.resource-meters:hover {
+  background: var(--hover);
+  border-color: var(--line-strong);
+}
+
+.resource-meters:focus-visible {
+  border-color: var(--accent);
+  outline: none;
 }
 
 /* titlebar 整条是拖拽区：条本身不接收点击，但要能弹出读数提示，所以退成 no-drag。 */
@@ -3100,6 +3143,9 @@ button.header-title:hover {
 }
 
 .reasoning-block summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   padding: 7px 10px;
   cursor: pointer;
   color: var(--muted);
@@ -3109,6 +3155,22 @@ button.header-title:hover {
   user-select: none;
 }
 
+/* Title stays put; the first line of the thinking takes the rest of the row
+   and is cut with an ellipsis instead of wrapping. */
+.reasoning-label {
+  flex: none;
+}
+
+.reasoning-peek {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--faint);
+  font-weight: 400;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .reasoning-block summary::-webkit-details-marker {
   display: none;
 }
@@ -3116,6 +3178,7 @@ button.header-title:hover {
 .reasoning-block summary::before {
   content: '›';
   display: inline-block;
+  flex: none;
   margin-right: 6px;
   color: var(--faint);
   transition: transform 0.15s ease;
@@ -4520,6 +4583,9 @@ button.queue-content {
 
 .settings-modal {
   max-width: 780px;
+  /* 每组内容长短差异很大（模型资源很长、通知只有一行）：高度锁死，
+     切换左侧分组时弹框不再上下跳动，也不再带着整块界面一起位移。 */
+  height: min(calc(100vh - 70px), 820px);
 }
 
 .workspace-modal {
@@ -4623,6 +4689,11 @@ button.queue-content {
 }
 
 .modal-head h2 {
+  /* 弹框标题里的图标与文字对齐到同一水平线：h2 内部的 svg 曾经落在基线上，
+     比中文字底低 2-3px，看上去像是图标沉了一截。 */
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0 0 4px;
   font-size: calc(18px * var(--font-scale));
   font-weight: 650;
@@ -4684,6 +4755,168 @@ button.queue-content {
   gap: 8px;
 }
 
+/* ── 系统资源详情 ────────────────────────────────────────────────────────
+   顶栏资源条点开的读数详情。整块内容收进一张面板：上半是三项负载，
+   每项一行「标签 / 进度条 / 百分比」，绝对量小字紧贴进度条下面；
+   下半是本机信息键值表。段与段、行与行都用同一条 1px 分隔线，
+   不再让每项各占一张描边卡片——三块砖叠在一起比数据本身更抢眼。
+   宽度收在 640px：大窗口里整屏宽只会撑出一片空行。 */
+.system-resource-modal {
+  max-width: 640px;
+}
+
+.usage-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* 分区条：左标题右附注，下面紧接本区内容。 */
+.usage-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 11px 16px 9px;
+  background: var(--panel-2);
+  color: var(--text-soft);
+  font-size: calc(11px * var(--font-scale));
+  font-weight: 650;
+  letter-spacing: 0.06em;
+}
+
+.usage-section-head + .usage-section-head,
+.usage-detail + .usage-section-head {
+  border-top: 1px solid var(--line);
+}
+
+.usage-section-head small {
+  color: var(--faint);
+  font-size: calc(10.5px * var(--font-scale));
+  font-weight: 500;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-detail {
+  display: flex;
+  flex-direction: column;
+}
+
+.usage-detail-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 56px;
+  column-gap: 14px;
+  row-gap: 6px;
+  align-items: center;
+  padding: 12px 16px;
+}
+
+.usage-detail-row + .usage-detail-row {
+  border-top: 1px solid var(--line);
+}
+
+.usage-detail-row > strong {
+  font-size: calc(12px * var(--font-scale));
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.usage-detail-value {
+  justify-self: end;
+  color: var(--text);
+  font-size: calc(15px * var(--font-scale));
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-detail-track {
+  position: relative;
+  display: block;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  overflow: hidden;
+}
+
+.usage-detail-track > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  border-radius: inherit;
+  background: var(--faint);
+  transition: width 0.45s ease, background 0.3s ease;
+}
+
+.usage-detail-text {
+  /* 绝对量贴着进度条左边缘，读起来和条本身是一组。 */
+  grid-column: 2 / -1;
+  color: var(--muted);
+  font-size: calc(11px * var(--font-scale));
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 分档上色与顶栏资源条同一套阈值，弹框里看到的颜色不会和条上不一致。 */
+.usage-detail-row.level-warn .usage-detail-track > i {
+  background: var(--warn);
+}
+
+.usage-detail-row.level-alert .usage-detail-track > i {
+  background: var(--bad);
+}
+
+.usage-detail-row.level-warn .usage-detail-value {
+  color: var(--warn);
+}
+
+.usage-detail-row.level-alert .usage-detail-value {
+  color: var(--bad);
+}
+
+/* 键值表：与上面三项负载共用同一套 1px 分隔线，左右两列，
+   工作区路径单独占整行。 */
+.usage-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  background: var(--line);
+}
+
+.usage-facts > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 16px;
+  background: var(--surface);
+}
+
+/* 工作区路径可能很长：单独占一整行，右对齐换行。 */
+.usage-facts > div.wide {
+  grid-column: 1 / -1;
+}
+
+.usage-facts dt {
+  flex: none;
+  color: var(--muted);
+  font-size: calc(11px * var(--font-scale));
+}
+
+.usage-facts dd {
+  min-width: 0;
+  margin: 0;
+  font-size: calc(11.5px * var(--font-scale));
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 /* ── Settings ──────────────────────────────────────────────────────────── */
 
 .settings-body {
@@ -4734,6 +4967,9 @@ button.queue-content {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* 滚动条位置常驻：内容短的分组没有滚动条时也占住同样的宽度，
+     否则切换分组会让右侧卡片突然左右移动 10px。 */
+  scrollbar-gutter: stable;
   /* 右侧留出滚动条的位置，避免滚动条压在卡片上。 */
   padding: 18px 22px 20px 4px;
   display: flex;
@@ -4977,6 +5213,12 @@ button.queue-content {
 
 .judge-row .field-grid {
   margin-top: 0;
+}
+
+/* 刚添加的资源卡片插在列表最上面，高亮到用户开始填写为止。 */
+.judge-row.is-new {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
 }
 
 .model-resource-head {
@@ -6531,6 +6773,9 @@ button.queue-content {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* 滚动条始终占位：页面长短不同时（插件/工具页有滚动条、待办/定时页没有）
+     内层宽度会差出 10px，同一窗口里两页的右边界对不齐，像两套栅格。 */
+  scrollbar-gutter: stable;
 }
 
 .panel-page {
@@ -9402,6 +9647,80 @@ button.queue-content {
   padding: 0 9px 8px;
 }
 
+/* ── 会话输入框上方的定时面板：外形跟「待办」一致，控件另起一行 ───────── */
+.schedule-panel {
+  margin-top: 6px;
+}
+
+.schedule-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 6px;
+}
+
+.schedule-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.schedule-controls .select-menu {
+  width: 132px;
+  flex: none;
+}
+
+.schedule-param {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: calc(11px * var(--font-scale));
+  white-space: nowrap;
+}
+
+.schedule-param .todo-add-input {
+  width: 76px;
+  flex: none;
+}
+
+.schedule-save {
+  height: 28px;
+  padding: 0 10px;
+  font-size: calc(11.5px * var(--font-scale));
+  flex: none;
+}
+
+.schedule-error {
+  color: var(--red);
+  font-size: calc(11px * var(--font-scale));
+}
+
+.schedule-empty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 2px;
+  color: var(--faint);
+  font-size: calc(11px * var(--font-scale));
+}
+
+.schedule-list {
+  max-height: 148px;
+}
+
+.schedule-item.is-paused .todo-text {
+  color: var(--faint);
+}
+
+.schedule-meta {
+  margin-left: 6px;
+  color: var(--faint);
+  font-size: calc(10.5px * var(--font-scale));
+  font-variant-numeric: tabular-nums;
+}
+
 .todo-add-row {
   display: flex;
   align-items: center;
@@ -9599,27 +9918,9 @@ button.queue-content {
 
 /* ── All todos page ────────────────────────────────────────────────────── */
 
-/* 左下角「待办」打开的汇总页：按会话分组，组内按优先级排序。 */
-.all-todos-page {
-  max-width: 900px;
-}
-
-.all-todos-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: none;
-}
-
-.all-todos-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: calc(11.5px * var(--font-scale));
-  cursor: pointer;
-  white-space: nowrap;
-}
+/* 左下角「待办」/「定时」打开的汇总页：与插件页同构（page-head + 统计条 + 标签条 + 卡片）。
+   容器宽度直接沿用 .panel-page（1180px），不再单独收窄：一旦这里写死更小的 max-width，
+   同一个窗口下待办页的内容区就比插件页窄一截，看上去像两套栅格。 */
 
 .all-todos-body {
   display: flex;
@@ -9629,8 +9930,8 @@ button.queue-content {
 
 .all-todos-group {
   border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel);
+  border-radius: 12px;
+  background: var(--surface);
   overflow: hidden;
 }
 
@@ -9639,8 +9940,16 @@ button.queue-content {
   align-items: baseline;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 9px 13px;
-  background: var(--panel-2);
+  padding: 12px 16px 0;
+}
+
+/* 定时任务行直接挂在卡片里：左右各留一点，和待办卡片的内边距对齐。 */
+.all-todos-group > .schedule-rows {
+  padding: 6px 4px 8px;
+}
+
+.all-todos-group > .schedule-rows .schedule-row:first-child {
+  border-top: 0;
 }
 
 .all-todos-session {
@@ -9670,7 +9979,7 @@ button.queue-content {
   flex-direction: column;
   /* 行之间不再画分隔线，用 3px 间隙 + 行自身圆角区分。 */
   gap: 3px;
-  padding: 5px 11px 7px;
+  padding: 8px 12px 12px;
 }
 
 .all-todos-text {
@@ -10007,6 +10316,12 @@ button.queue-content {
   animation: pulse 1.6s ease-in-out infinite;
 }
 
+/* 步骤多的计划只画当前步附近的几个点，当前步用一圈内描边加强，
+   一眼能看出「跑到第几步」，不必依赖呼吸动画（贴边圆点也不会被裁）。 */
+.session-plan-dot.is-current {
+  box-shadow: inset 0 0 0 1.5px var(--sidebar-bg);
+}
+
 .session-plan-count {
   flex: none;
   margin-left: 2px;
@@ -10017,9 +10332,13 @@ button.queue-content {
   font-variant-numeric: tabular-nums;
 }
 
+/* 收缩时先牺牲折叠计数，保住进行中的序号和完成数这两个必需信息。 */
 .session-plan-more {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   margin-left: 1px;
+  overflow: hidden;
+  white-space: nowrap;
   color: var(--faint);
   font-family: var(--mono);
   font-size: calc(10px * var(--font-scale));
@@ -12563,6 +12882,15 @@ button.queue-content {
   gap: 10px;
 }
 
+/* 系统工具页按来源筛出来的是「一堆同格式的类目卡」，排成与插件市场一样宽的自适应列；
+   单列长条会把内容区拉得比插件页更宽，同一个窗口里两页的右边界对不齐。 */
+.tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+
 .tools-card {
   padding: 14px 16px;
   border: 1px solid var(--border);
@@ -12694,6 +13022,7 @@ button.queue-content {
 
 /* ── Plugin market and plugin assistant ──────────────────────────────────── */
 
+.page-tabs,
 .plugins-tabs {
   display: flex;
   align-items: center;
@@ -12702,6 +13031,7 @@ button.queue-content {
   padding-bottom: 10px;
 }
 
+.page-tab,
 .plugins-tab {
   display: inline-flex;
   align-items: center;
@@ -12717,16 +13047,19 @@ button.queue-content {
   transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
 }
 
+.page-tab:hover,
 .plugins-tab:hover {
   color: var(--text);
   background: var(--hover);
 }
 
+.page-tab.is-active,
 .plugins-tab.is-active {
   background: var(--panel-2);
   color: var(--text);
 }
 
+.page-tab-badge,
 .plugins-tab-badge {
   min-width: 17px;
   padding: 0 5px;
@@ -12738,6 +13071,7 @@ button.queue-content {
   text-align: center;
 }
 
+.page-tabs-refresh,
 .plugins-refresh {
   display: inline-flex;
   align-items: center;
@@ -12752,6 +13086,7 @@ button.queue-content {
   cursor: pointer;
 }
 
+.page-tabs-refresh:hover:not(:disabled),
 .plugins-refresh:hover:not(:disabled) {
   border-color: var(--line-strong);
   color: var(--text);

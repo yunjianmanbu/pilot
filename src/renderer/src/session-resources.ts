@@ -6,10 +6,23 @@
  * the session already recorded.
  */
 
-/** The five kinds of resource one session can expose. */
-export type ResourceTab = 'files' | 'links' | 'tools' | 'knowledge' | 'artifacts'
+/** The kinds of resource one session can expose. */
+export type ResourceTab =
+  | 'files'
+  | 'links'
+  | 'tools'
+  | 'knowledge'
+  | 'memory'
+  | 'artifacts'
 
-export const RESOURCE_TABS: ResourceTab[] = ['files', 'links', 'tools', 'knowledge', 'artifacts']
+export const RESOURCE_TABS: ResourceTab[] = [
+  'files',
+  'links',
+  'tools',
+  'knowledge',
+  'memory',
+  'artifacts',
+]
 
 export interface LinkParts {
   scheme: string
@@ -69,4 +82,10 @@ export function excerpt(text: string, limit = 160): string {
   if (flat.length <= limit) return flat
   return `${flat.slice(0, limit)}…`
 }
+
+/**
+ * 「会话记忆」选条目的规则住在 shared/memory.ts：手机端的会话资源页要用
+ * 同一套规则，而渲染进程的这份模块带着 UI 依赖，手机端拿不到。
+ */
+export { sessionMemories, type SessionMemoryRow } from '../../shared/memory'
 

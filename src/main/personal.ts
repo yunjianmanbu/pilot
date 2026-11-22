@@ -1,21 +1,8 @@
-import { spawn, spawnSync } from 'node:child_process'
-import { createHash, randomUUID } from 'node:crypto'
-import {
-  access,
-  cp,
-  lstat,
-  mkdir,
-  readFile,
-  readdir,
-  realpath,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises'
 import { isUtf8 } from 'node:buffer'
-import { existsSync } from 'node:fs'
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { dirname, join } from 'node:path'
 import type {
   ContributionEvidence,
   PersonalChangedFile,
@@ -32,10 +19,45 @@ import type {
   PersonalVersionInput,
   SourceProvenance,
 } from '../shared/types'
+import {
+  exists,
+  now,
+  readJson,
+  resolveInside,
+  safeRelative,
+  safeWriteTarget,
+  sha256,
+  writeJson,
+} from './personal/fs-utils'
+import {
+  FINGERPRINT_TRUST_MS,
+  cachedSourceFingerprint,
+  configureFingerprintCache,
+  forgetSourceFingerprint,
+  hashEntry,
+  rawTree,
+  resetFingerprintMemo,
+  scanSourceChanges,
+  sourceFingerprint,
+  tree,
+  walk,
+} from './personal/tree'
+import { latestBuild, prepareGitBase } from './personal/baseline'
+import { diffHunks, hasConflictMarkers, mergeText } from './personal/merge'
+
+export {
+  cachedSourceFingerprint,
+  configureFingerprintCache,
+  diffHunks,
+  forgetSourceFingerprint,
+  mergeText,
+  prepareGitBase,
+  resetFingerprintMemo,
+  scanSourceChanges,
+  sourceFingerprint,
+}
 
 const FORMAT = 'pilot-contribution/v1'
-const MAX_FILES = 1_200
-const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_TOTAL_BYTES = 16 * 1024 * 1024
 const MAX_VERSIONS = 40
 const MAX_CONTRIBUTIONS = 50
@@ -64,34 +86,6 @@ function containsSecret(text: string, path?: string): boolean {
   if (!SOFT_SECRET_PATTERN.test(text)) return false
   return !path || !isFixturePath(path)
 }
-const EXCLUDED_DIRS = new Set([
-  '.git',
-  '.pilot',
-  '.pilot-upgrade',
-  '.selfdev-build',
-  'coverage',
-  'dist',
-  'node_modules',
-  'out',
-  'release',
-  'release-selfdev',
-])
-
-const EXCLUDED_FILES = new Set([
-  '.DS_Store',
-  'build/self-source-package.json',
-  'keystore-password.txt',
-])
-
-const FORBIDDEN_SUFFIXES = ['.jks', '.keystore', '.pem', '.key', '.pfx', '.p12', '.log']
-
-interface TreeEntry {
-  path: string
-  absolute: string
-  size: number
-  /** 用于指纹缓存的重算判据：任一文件被改写都会推高新 mtime。 */
-  mtimeMs: number
-}
 
 interface ForkRecord {
   forkId: string
@@ -100,23 +94,6 @@ interface ForkRecord {
   baseVersion: string
   /** Fingerprint of the official tree captured when the fork was created. */
   baseHash?: string
-}
-
-interface MergeHunk {
-  baseStart: number
-  baseEnd: number
-  sideStart: number
-  sideEnd: number
-}
-
-interface TaggedHunk extends MergeHunk {
-  side: 'mine' | 'theirs'
-  sideLines: string[]
-}
-
-interface MergeOutcome {
-  text: string
-  conflicts: number
 }
 
 interface UpgradeAction {
@@ -163,9 +140,6 @@ interface UpgradeRecord {
   output?: string
   rolledBackAt?: string
 }
-
-const MAX_MERGE_LINES = 2_000
-const MAX_MERGE_CELLS = 2_000_000
 
 interface VersionManifest extends PersonalVersion {}
 
@@ -219,14 +193,6 @@ export interface PersonalServiceOptions {
   provenance?: SourceProvenance
 }
 
-function now(): string {
-  return new Date().toISOString()
-}
-
-function sha256(buffer: Buffer | string): string {
-  return createHash('sha256').update(buffer).digest('hex')
-}
-
 /** Deterministic JSON so the client and the official importer agree on checksums. */
 export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
@@ -240,617 +206,6 @@ export function stableStringify(value: unknown): string {
 
 export function contributionChecksum(payload: unknown): string {
   return sha256(stableStringify(payload))
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path)
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function readJson<T>(path: string, fallback: T): Promise<T> {
-  try {
-    return JSON.parse(await readFile(path, 'utf8')) as T
-  } catch {
-    return fallback
-  }
-}
-
-async function writeJson(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`)
-}
-
-function safeRelative(path: string): string {
-  const normalized = path.replace(/\\/g, '/')
-  if (
-    !normalized ||
-    normalized.includes('\0') ||
-    isAbsolute(normalized) ||
-    normalized.startsWith('/') ||
-    normalized.split('/').some((part) => part === '' || part === '.' || part === '..') ||
-    normalized.includes(':')
-  ) {
-    throw new Error(`贡献包包含不安全路径：${path}`)
-  }
-  return normalized
-}
-
-function resolveInside(root: string, relative: string): string {
-  const normalized = safeRelative(relative)
-  const base = resolve(root)
-  const target = resolve(base, ...normalized.split('/'))
-  if (target !== base && !target.startsWith(`${base}${sep}`)) {
-    throw new Error(`路径越出源码目录：${relative}`)
-  }
-  return target
-}
-
-/** Resolve a write target while refusing to traverse symlinks out of the tree. */
-async function safeWriteTarget(root: string, relative: string): Promise<string> {
-  const target = resolveInside(root, relative)
-  const realRoot = await realpath(root)
-  let parent = dirname(target)
-  while (!(await exists(parent))) parent = dirname(parent)
-  const realParent = await realpath(parent)
-  if (realParent !== realRoot && !realParent.startsWith(`${realRoot}${sep}`)) {
-    throw new Error(`路径通过符号链接越出源码目录：${relative}`)
-  }
-  try {
-    if ((await lstat(target)).isSymbolicLink()) {
-      throw new Error(`拒绝通过符号链接写入：${relative}`)
-    }
-  } catch (caught) {
-    if ((caught as NodeJS.ErrnoException).code !== 'ENOENT') throw caught
-  }
-  return target
-}
-
-function isExcludedFile(relative: string): boolean {
-  if (EXCLUDED_FILES.has(relative)) return true
-  const lower = relative.toLowerCase()
-  if (FORBIDDEN_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return true
-  if (lower === '.env' || lower.startsWith('.env.') || lower.endsWith('/.env')) return true
-  return false
-}
-
-async function walk(
-  root: string,
-  relative = '',
-  output: TreeEntry[] = [],
-  limits = true,
-): Promise<TreeEntry[]> {
-  const directory = relative ? join(root, ...relative.split('/')) : root
-  const entries = await readdir(directory, { withFileTypes: true })
-  for (const entry of entries) {
-    if (entry.isSymbolicLink()) continue
-    const path = relative ? `${relative}/${entry.name}` : entry.name
-    if (entry.isDirectory()) {
-      if (EXCLUDED_DIRS.has(entry.name)) continue
-      await walk(root, path, output, limits)
-      continue
-    }
-    if (!entry.isFile()) continue
-    if (isExcludedFile(path)) continue
-    const info = await stat(join(root, ...path.split('/')))
-    if (limits && info.size > MAX_FILE_BYTES) {
-      throw new Error(`文件过大，无法放入个人版本：${path}（${(info.size / 1024).toFixed(0)} KiB）`)
-    }
-    output.push({
-      path,
-      absolute: join(root, ...path.split('/')),
-      size: info.size,
-      mtimeMs: info.mtimeMs,
-    })
-    if (limits && output.length > MAX_FILES) {
-      throw new Error(`改动文件过多（超过 ${MAX_FILES} 个），请拆分成更小的版本。`)
-    }
-  }
-  return output
-}
-
-/** 整棵树的指纹：路径 + 每个文件的 sha256，顺序稳定。 */
-async function hashTree(input: TreeEntry[]): Promise<string> {
-  const entries = [...input].sort((left, right) =>
-    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
-  )
-  const hash = createHash('sha256')
-  for (const entry of entries) {
-    hash.update(entry.path)
-    hash.update('\0')
-    hash.update(sha256(await readFile(entry.absolute)))
-    hash.update('\n')
-  }
-  return hash.digest('hex')
-}
-
-/** Fingerprint of the whole source tree, used to match a build to its source. */
-export async function sourceFingerprint(root: string): Promise<string> {
-  return hashTree(await walk(root, '', [], false))
-}
-
-/**
- * 只 stat 的树签名：文件数、总字节、最新 mtime。
- *
- * 进化页每次打开都会问一次「基线有没有变」，而真正算指纹要把 8 MiB 全部读一遍
- * 再算 sha256（实测约 1.6 s）。签名只多花约 0.25 s，未变时直接复用上次结果。
- */
-function treeSignature(entries: TreeEntry[]): string {
-  let bytes = 0
-  let newest = 0
-  for (const entry of entries) {
-    bytes += entry.size
-    if (entry.mtimeMs > newest) newest = entry.mtimeMs
-  }
-  return `${entries.length}:${bytes}:${newest}`
-}
-
-interface FingerprintMemo {
-  hash: string
-  signature: string
-  /** 上次「确认未变」的时间。在 TTL 内直接复用，不再扫目录。 */
-  checkedAt?: number
-}
-
-/**
- * 官方基线树只由本进程写（快照/合并/升级/回滚），那几处都会显式失效；
- * 所以短时间内无需每次重新 stat 整棵树（Windows 上 610 个文件约 0.3-1.5 s）。
- * 窗口刻意留短：安装包升级会替换官方基线，那是本进程看不到的外部变化。
- */
-const FINGERPRINT_TRUST_MS = 30_000
-
-const fingerprintMemos = new Map<string, FingerprintMemo>()
-
-/**
- * 指纹缓存文件（userData 下）。重新启动后第一张进化页仍要把整棵树读一遍，
- * 落盘后签名命中就能直接复用，省掉约 1.5 s 的读盘与 sha256。
- */
-let fingerprintCachePath: string | null = null
-let diskMemos: Record<string, FingerprintMemo> | null = null
-
-export function configureFingerprintCache(path: string | null): void {
-  fingerprintCachePath = path
-  diskMemos = null
-}
-
-async function readDiskMemos(): Promise<Record<string, FingerprintMemo>> {
-  if (diskMemos) return diskMemos
-  if (!fingerprintCachePath) return {}
-  try {
-    const parsed = JSON.parse(await readFile(fingerprintCachePath, 'utf8')) as Record<
-      string,
-      FingerprintMemo
-    >
-    diskMemos = parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    diskMemos = {}
-  }
-  return diskMemos
-}
-
-async function writeDiskMemo(root: string, memo: FingerprintMemo): Promise<void> {
-  if (!fingerprintCachePath) return
-  const memos = await readDiskMemos()
-  memos[root] = memo
-  try {
-    await mkdir(dirname(fingerprintCachePath), { recursive: true })
-    await writeFile(fingerprintCachePath, JSON.stringify(memos), 'utf8')
-  } catch {
-    // A cache write failure only costs the next process a recompute.
-  }
-}
-
-/**
- * `sourceFingerprint` 的记忆版：签名未变就不重复读整棵树。
- *
- * `trustMs` > 0 时，在窗口内直接采信已确认的结果、不再扫目录。只适用于
- * 由应用自己维护的树（官方基线）；用户可写的目录必须传 0 保持逐次校验。
- * 落盘结果只用来省掉“重新读整棵树 + sha256”，签名对不上就重算。
- */
-export async function cachedSourceFingerprint(root: string, trustMs = 0): Promise<string> {
-  const memo = fingerprintMemos.get(root)
-  if (trustMs > 0 && memo?.checkedAt && Date.now() - memo.checkedAt < trustMs) return memo.hash
-  const entries = await walk(root, '', [], false)
-  const signature = treeSignature(entries)
-  if (memo && memo.signature === signature) {
-    memo.checkedAt = Date.now()
-    return memo.hash
-  }
-  const stored = (await readDiskMemos())[root]
-  if (stored && stored.signature === signature) {
-    const hit = { ...stored, checkedAt: Date.now() }
-    fingerprintMemos.set(root, hit)
-    return hit.hash
-  }
-  const hash = await hashTree(entries)
-  const fresh = { hash, signature, checkedAt: Date.now() }
-  fingerprintMemos.set(root, fresh)
-  await writeDiskMemo(root, { hash, signature })
-  return hash
-}
-
-/** 树刚被本进程改过（快照/合并/升级），丢掉对应指纹。 */
-export function forgetSourceFingerprint(root: string): void {
-  fingerprintMemos.delete(root)
-  if (diskMemos) delete diskMemos[root]
-}
-
-/** Test seam: forget every memoised fingerprint. */
-export function resetFingerprintMemo(): void {
-  fingerprintMemos.clear()
-  diskMemos = null
-}
-
-async function tree(root: string): Promise<Map<string, TreeEntry>> {
-  const result = new Map<string, TreeEntry>()
-  for (const entry of await walk(root)) result.set(entry.path, entry)
-  return result
-}
-
-async function hashEntry(entry: TreeEntry): Promise<string> {
-  return sha256(await readFile(entry.absolute))
-}
-
-/**
- * True when two files differ only in line endings.
- *
- * A checkout with `core.autocrlf` has CRLF in the working tree but LF in the
- * blobs, and an official baseline extracted from git has LF. Comparing bytes
- * blindly would report every file as modified on Windows. The hashes reported
- * to the user stay byte-exact (the official importer recomputes them), so this
- * only affects the equality test.
- */
-async function sameContent(left: TreeEntry, right: TreeEntry): Promise<boolean> {
-  const [a, b] = await Promise.all([readFile(left.absolute), readFile(right.absolute)])
-  if (a.equals(b)) return true
-  if (a.includes(0) || b.includes(0)) return false
-  return a.toString('utf8').replace(/\r\n/g, '\n') === b.toString('utf8').replace(/\r\n/g, '\n')
-}
-
-/** Compare the official source with the user's copy without trusting mtimes. */
-export async function scanSourceChanges(
-  sourcePath: string,
-  basePath: string,
-): Promise<PersonalChangedFile[]> {
-  const source = await tree(sourcePath)
-  const base = await tree(basePath)
-  const paths = new Set([...source.keys(), ...base.keys()])
-  const changes: PersonalChangedFile[] = []
-  for (const path of [...paths].sort()) {
-    const sourceEntry = source.get(path)
-    const baseEntry = base.get(path)
-    if (!sourceEntry && !baseEntry) continue
-    if (sourceEntry && !baseEntry) {
-      changes.push({
-        path,
-        status: 'added',
-        beforeSha256: null,
-        afterSha256: await hashEntry(sourceEntry),
-        size: sourceEntry.size,
-        text: isUtf8(await readFile(sourceEntry.absolute)),
-      })
-      continue
-    }
-    if (!sourceEntry && baseEntry) {
-      changes.push({
-        path,
-        status: 'deleted',
-        beforeSha256: await hashEntry(baseEntry),
-        afterSha256: null,
-        size: baseEntry.size,
-        text: true,
-      })
-      continue
-    }
-    if (!sourceEntry || !baseEntry) continue
-    // Line-ending-only differences are not a user edit; see sameContent().
-    if (await sameContent(baseEntry, sourceEntry)) continue
-    const [beforeSha256, afterSha256] = await Promise.all([
-      hashEntry(baseEntry),
-      hashEntry(sourceEntry),
-    ])
-    changes.push({
-      path,
-      status: 'modified',
-      beforeSha256,
-      afterSha256,
-      size: sourceEntry.size,
-      text: isUtf8(await readFile(sourceEntry.absolute)),
-    })
-  }
-  return changes
-}
-
-/**
- * Create a read-only baseline from git HEAD for development runs. Installed
- * builds use the pristine copy under resources/source instead.
- */
-export async function prepareGitBase(sourcePath: string, cacheRoot: string): Promise<string> {
-  const revision = spawnSync('git', ['rev-parse', 'HEAD'], {
-    cwd: sourcePath,
-    encoding: 'utf8',
-    shell: process.platform === 'win32',
-  })
-  if (revision.status !== 0 || !revision.stdout.trim()) {
-    throw new Error('开发模式下需要 git 才能保存个人版本；安装版会使用安装包内置的官方源码。')
-  }
-  const target = join(cacheRoot, revision.stdout.trim())
-  if (await exists(join(target, 'package.json'))) return target
-  const archive = spawnSync('git', ['archive', '--format=tar', 'HEAD'], {
-    cwd: sourcePath,
-    maxBuffer: 128 * 1024 * 1024,
-  })
-  if (archive.status !== 0 || !archive.stdout) {
-    throw new Error('无法读取当前 git 版本的源码快照。')
-  }
-  await mkdir(target, { recursive: true })
-  // Windows 自带的 bsdtar 在 SystemRoot 下，不能写死 C: 盘（系统盘符可能不是 C）。
-  const systemTar =
-    process.platform === 'win32' && process.env.SystemRoot
-      ? join(process.env.SystemRoot, 'System32', 'tar.exe')
-      : null
-  const tar = systemTar && existsSync(systemTar) ? systemTar : 'tar'
-  const extracted = spawnSync(tar, ['-xf', '-', '-C', target], { input: archive.stdout })
-  if (extracted.status !== 0) {
-    await rm(target, { recursive: true, force: true })
-    throw new Error('无法展开官方源码快照，请确认系统自带的 tar 可用。')
-  }
-  return target
-}
-
-async function latestBuild(
-  sourcePath: string,
-  fingerprint: string,
-): Promise<{ buildPath?: string; builtAt?: string }> {
-  const root = join(sourcePath, 'release-selfdev')
-  let entries: string[]
-  try {
-    entries = (await readdir(root, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith('Pilot-'))
-      .map((entry) => join(root, entry.name))
-  } catch {
-    return {}
-  }
-  const withTime = await Promise.all(
-    entries.map(async (path) => ({ path, mtime: (await stat(path)).mtimeMs })),
-  )
-  withTime.sort((left, right) => right.mtime - left.mtime)
-  for (const candidate of withTime) {
-    const info = await readJson<{ builtAt?: string; sourceHash?: string }>(
-      join(candidate.path, 'build-info.json'),
-      {},
-    )
-    if (info.sourceHash === fingerprint) {
-      return {
-        buildPath: candidate.path,
-        ...(info.builtAt ? { builtAt: info.builtAt } : {}),
-      }
-    }
-  }
-  return {}
-}
-
-/** Tree listing without the per-file size limits used by saved versions. */
-async function rawTree(root: string): Promise<Map<string, TreeEntry>> {
-  const result = new Map<string, TreeEntry>()
-  for (const entry of await walk(root, '', [], false)) result.set(entry.path, entry)
-  return result
-}
-
-function splitLines(text: string): string[] {
-  return text.replace(/\r\n/g, '\n').split('\n')
-}
-
-function hasConflictMarkers(text: string): boolean {
-  return /^<<<<<<< |^>>>>>>> /m.test(text)
-}
-
-/**
- * Line-level diff. Returns `null` when the file is too large to merge safely,
- * so callers can report a conflict instead of blocking the event loop.
- */
-export function diffHunks(base: string[], side: string[]): MergeHunk[] | null {
-  if (base.length > MAX_MERGE_LINES || side.length > MAX_MERGE_LINES) return null
-  let prefix = 0
-  while (prefix < base.length && prefix < side.length && base[prefix] === side[prefix]) prefix += 1
-  let suffix = 0
-  while (
-    suffix < base.length - prefix &&
-    suffix < side.length - prefix &&
-    base[base.length - 1 - suffix] === side[side.length - 1 - suffix]
-  ) {
-    suffix += 1
-  }
-  const mine = base.slice(prefix, base.length - suffix)
-  const theirs = side.slice(prefix, side.length - suffix)
-  if (mine.length === 0 && theirs.length === 0) return []
-  if (mine.length * theirs.length > MAX_MERGE_CELLS) return null
-  const width = theirs.length + 1
-  const table = new Uint32Array((mine.length + 1) * width)
-  for (let row = 1; row <= mine.length; row += 1) {
-    for (let column = 1; column <= theirs.length; column += 1) {
-      table[row * width + column] =
-        mine[row - 1] === theirs[column - 1]
-          ? table[(row - 1) * width + (column - 1)]! + 1
-          : Math.max(table[(row - 1) * width + column]!, table[row * width + (column - 1)]!)
-    }
-  }
-  const matches: { base: number; side: number }[] = []
-  let row = mine.length
-  let column = theirs.length
-  while (row > 0 && column > 0) {
-    if (mine[row - 1] === theirs[column - 1]) {
-      matches.push({ base: row - 1, side: column - 1 })
-      row -= 1
-      column -= 1
-    } else if (table[(row - 1) * width + column]! >= table[row * width + (column - 1)]!) {
-      row -= 1
-    } else {
-      column -= 1
-    }
-  }
-  matches.reverse()
-  const hunks: MergeHunk[] = []
-  let baseCursor = 0
-  let sideCursor = 0
-  for (const match of matches) {
-    if (match.base > baseCursor || match.side > sideCursor) {
-      hunks.push({
-        baseStart: prefix + baseCursor,
-        baseEnd: prefix + match.base,
-        sideStart: prefix + sideCursor,
-        sideEnd: prefix + match.side,
-      })
-    }
-    baseCursor = match.base + 1
-    sideCursor = match.side + 1
-  }
-  if (baseCursor < mine.length || sideCursor < theirs.length) {
-    hunks.push({
-      baseStart: prefix + baseCursor,
-      baseEnd: prefix + mine.length,
-      sideStart: prefix + sideCursor,
-      sideEnd: prefix + theirs.length,
-    })
-  }
-  return hunks
-}
-
-function hunksOverlap(left: MergeHunk, right: MergeHunk): boolean {
-  const leftInsert = left.baseStart === left.baseEnd
-  const rightInsert = right.baseStart === right.baseEnd
-  if (leftInsert && rightInsert) return left.baseStart === right.baseStart
-  if (leftInsert) return right.baseStart < left.baseStart && left.baseStart < right.baseEnd
-  if (rightInsert) return left.baseStart < right.baseStart && right.baseStart < left.baseEnd
-  return left.baseStart < right.baseEnd && right.baseStart < left.baseEnd
-}
-
-function clusterHunks(hunks: TaggedHunk[]): TaggedHunk[][] {
-  const sorted = [...hunks].sort(
-    (left, right) =>
-      left.baseStart - right.baseStart ||
-      left.baseEnd - right.baseEnd ||
-      (left.side === right.side ? 0 : left.side === 'mine' ? -1 : 1),
-  )
-  const clusters: TaggedHunk[][] = []
-  let current: TaggedHunk[] = []
-  for (const hunk of sorted) {
-    if (current.length === 0) {
-      current = [hunk]
-      continue
-    }
-    if (current.some((entry) => hunksOverlap(entry, hunk))) {
-      current.push(hunk)
-      continue
-    }
-    clusters.push(current)
-    current = [hunk]
-  }
-  if (current.length > 0) clusters.push(current)
-  return clusters
-}
-
-function renderClusterSide(
-  base: string[],
-  hunks: TaggedHunk[],
-  start: number,
-  end: number,
-): string[] {
-  const ordered = [...hunks].sort((left, right) => left.baseStart - right.baseStart)
-  const output: string[] = []
-  let cursor = start
-  for (const hunk of ordered) {
-    while (cursor < hunk.baseStart) {
-      output.push(base[cursor]!)
-      cursor += 1
-    }
-    output.push(...hunk.sideLines)
-    cursor = hunk.baseEnd
-  }
-  while (cursor < end) {
-    output.push(base[cursor]!)
-    cursor += 1
-  }
-  return output
-}
-
-/**
- * Three-way merge of text files. Non-overlapping edits are combined; overlapping
- * edits produce standard conflict markers that a coding agent can resolve.
- */
-export function mergeText(
-  ancestor: string,
-  mine: string,
-  theirs: string,
-  officialVersion: string,
-): MergeOutcome | null {
-  if (hasConflictMarkers(mine) || hasConflictMarkers(theirs) || hasConflictMarkers(ancestor)) {
-    return null
-  }
-  const base = splitLines(ancestor)
-  const mineLines = splitLines(mine)
-  const theirLines = splitLines(theirs)
-  const mineHunks = diffHunks(base, mineLines)
-  const theirHunks = diffHunks(base, theirLines)
-  if (!mineHunks || !theirHunks) return null
-  const tagged: TaggedHunk[] = [
-    ...mineHunks.map((hunk) => ({
-      ...hunk,
-      side: 'mine' as const,
-      sideLines: mineLines.slice(hunk.sideStart, hunk.sideEnd),
-    })),
-    ...theirHunks.map((hunk) => ({
-      ...hunk,
-      side: 'theirs' as const,
-      sideLines: theirLines.slice(hunk.sideStart, hunk.sideEnd),
-    })),
-  ]
-  const clusters = clusterHunks(tagged)
-  const output: string[] = []
-  let cursor = 0
-  let conflicts = 0
-  for (const cluster of clusters) {
-    const start = Math.min(...cluster.map((hunk) => hunk.baseStart))
-    const end = Math.max(...cluster.map((hunk) => hunk.baseEnd))
-    while (cursor < start) {
-      output.push(base[cursor]!)
-      cursor += 1
-    }
-    const mineCluster = cluster.filter((hunk) => hunk.side === 'mine')
-    const theirCluster = cluster.filter((hunk) => hunk.side === 'theirs')
-    if (mineCluster.length > 0 && theirCluster.length > 0) {
-      const mineRegion = renderClusterSide(base, mineCluster, start, end)
-      const theirRegion = renderClusterSide(base, theirCluster, start, end)
-      if (
-        mineRegion.length === theirRegion.length &&
-        mineRegion.every((line, index) => line === theirRegion[index])
-      ) {
-        output.push(...mineRegion)
-      } else {
-        conflicts += 1
-        output.push(
-          '<<<<<<< 我的版本',
-          ...mineRegion,
-          '=======',
-          ...theirRegion,
-          `>>>>>>> 官方 v${officialVersion}`,
-        )
-      }
-    } else {
-      output.push(...renderClusterSide(base, cluster, start, end))
-    }
-    cursor = Math.max(cursor, end)
-  }
-  while (cursor < base.length) {
-    output.push(base[cursor]!)
-    cursor += 1
-  }
-  const crlf = [ancestor, mine, theirs].some((text) => text.includes('\r\n'))
-  const text = output.join('\n')
-  return { text: crlf ? text.replace(/\n/g, '\r\n') : text, conflicts }
 }
 
 interface CommandResult {

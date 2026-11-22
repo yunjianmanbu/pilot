@@ -11,6 +11,7 @@ import { ChevronDownIcon, InfoIcon } from '../icons'
 import { processParts, recentProcessParts, type ProcessPart, type ToolView, type UIMessage } from '../ui'
 import { Markdown } from './Markdown'
 import { ProcessTime } from './ProcessTime'
+import { ReasoningBlock } from './ReasoningBlock'
 import { ToolCard } from './ToolCard'
 import { t } from '../i18n'
 
@@ -22,15 +23,8 @@ const LATEST_PARTS = 5
 const STICK_THRESHOLD_PX = 24
 
 function renderReasoning(part: ProcessPart & { kind: 'reasoning' }) {
-  return (
-    <details className="reasoning-block" key={part.key}>
-      <summary>{t("思考过程")}</summary>
-      <div className="reasoning-content">
-        <ProcessTime at={part.at} />
-        {part.text}
-      </div>
-    </details>
-  )
+  // The folded title carries the first line of the thinking, like the phone app.
+  return <ReasoningBlock key={part.key} text={part.text} at={part.at} />
 }
 
 function ProcessBoxRow({

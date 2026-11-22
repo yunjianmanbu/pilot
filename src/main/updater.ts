@@ -1,8 +1,9 @@
 import { app, net } from 'electron'
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { accessSync, constants, createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { finished } from 'node:stream/promises'
 import { gunzipSync } from 'node:zlib'
@@ -19,6 +20,13 @@ import {
   isNewerVersion,
   parseRelease,
 } from './update/manifest'
+import {
+  MAC_SWAP_SCRIPT,
+  appBundleForExecutable,
+  isMountedVolume,
+  pickStagedApp,
+  stagingDirFor,
+} from './update/mac-install'
 
 const DEFAULT_MANIFEST_URL = 'https://download.medpilot.cc/pilot/latest.json'
 const TRUSTED_HOSTS = ['download.medpilot.cc']
@@ -52,10 +60,52 @@ export interface UpdaterOptions {
   isPackaged: boolean
   onState: (state: UpdateState) => void
   /**
-   * Overrides the platform gate for tests. Production keeps the default:
-   * only Windows ships the NSIS installer the silent-update path drives.
+   * Overrides the platform gate for tests. Production keeps the default: the
+   * platforms whose install format the in-app updater can apply (NSIS `/S` on
+   * Windows, a staged bundle swap on macOS).
    */
   supported?: boolean
+}
+
+/** Install files the updater can keep as a delta base and later apply. */
+const INSTALLER_NAME_PATTERN = /\.(exe|zip|dmg|appimage)$/i
+
+function isInstallerName(name: string): boolean {
+  return INSTALLER_NAME_PATTERN.test(name)
+}
+
+/**
+ * A delta base has to be the same kind of artifact as the download: blocks of
+ * an .exe cannot patch a .zip, and the arm64 and x64 zips of one version share
+ * almost no layout. Extension plus architecture is what distinguishes them.
+ */
+export function sameInstallerKind(name: string, reference: string): boolean {
+  const extension = (value: string) => {
+    const dot = value.lastIndexOf('.')
+    return dot === -1 ? '' : value.slice(dot).toLowerCase()
+  }
+  if (extension(name) !== extension(reference)) return false
+  const arch = (value: string) => /-(arm64|x64)\.(?:zip|dmg)$/i.exec(value)?.[1]?.toLowerCase() ?? ''
+  return arch(name) === arch(reference)
+}
+
+function supportsInAppUpdate(): boolean {
+  return process.platform === 'win32' || process.platform === 'darwin'
+}
+
+/**
+ * Which `platforms` entry the download comes from. Windows uses the top-level
+ * installer (the same file as `platforms.windows-x64`), macOS needs its own
+ * architecture's zip because a dmg cannot be applied by a running app.
+ */
+function platformManifestKey(): string | undefined {
+  if (process.platform !== 'darwin') return undefined
+  return process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64'
+}
+
+/** True when this build installs by replacing its .app bundle rather than an installer. */
+function usesBundleSwap(): boolean {
+  return process.platform === 'darwin'
 }
 
 function errorMessage(error: unknown): string {
@@ -145,7 +195,7 @@ export class UpdaterService {
     this.isPackaged = options.isPackaged
     this.onState = options.onState
     this.updateDir = join(options.userDataDir, 'updates')
-    this.supported = options.supported ?? process.platform === 'win32'
+    this.supported = options.supported ?? supportsInAppUpdate()
     this.manifestUrl = process.env['PILOT_UPDATE_MANIFEST']?.trim() || DEFAULT_MANIFEST_URL
 
     const hosts = new Set(TRUSTED_HOSTS)
@@ -299,7 +349,7 @@ export class UpdaterService {
     } catch {
       throw new Error('更新清单不是有效的 JSON。')
     }
-    const release = parseRelease(raw, this.allowedHosts)
+    const release = parseRelease(raw, this.allowedHosts, platformManifestKey())
     assertReleaseUrl(release.url, this.allowedHosts)
     return release
   }
@@ -745,7 +795,9 @@ export class UpdaterService {
       const names = await readdir(this.updateDir)
       const candidates: BaseInstaller[] = []
       for (const name of names) {
-        if (!/\.exe$/i.test(name) || name === targetName) continue
+        if (!isInstallerName(name) || name === targetName || !sameInstallerKind(name, targetName)) {
+          continue
+        }
         const path = join(this.updateDir, name)
         const info = await stat(path).catch(() => null)
         if (!info?.isFile() || info.size <= 0 || info.size > MAX_INSTALLER_BYTES) continue
@@ -793,7 +845,7 @@ export class UpdaterService {
       const names = await readdir(this.updateDir)
       await Promise.all(
         names
-          .filter((name) => /\.(exe|blockmap|part)$/i.test(name) && !keep.has(name))
+          .filter((name) => (isInstallerName(name) || /\.(blockmap|part)$/i.test(name)) && !keep.has(name))
           .map((name) => rm(join(this.updateDir, name), { force: true }).catch(() => undefined)),
       )
     } catch {
@@ -811,7 +863,9 @@ export class UpdaterService {
       const names = await readdir(this.updateDir)
       const entries: { name: string; version: string; modifiedAt: number }[] = []
       for (const name of names) {
-        if (!/\.exe$/i.test(name) || name === excludeName) continue
+        if (!isInstallerName(name) || name === excludeName || !sameInstallerKind(name, excludeName)) {
+          continue
+        }
         const version = /Pilot-(\d+\.\d+\.\d+)/i.exec(name)?.[1]
         if (!version) continue
         const info = await stat(join(this.updateDir, name))
@@ -875,6 +929,11 @@ export class UpdaterService {
       throw error
     }
 
+    if (usesBundleSwap()) {
+      await this.installBundleSwap(installer, release)
+      return
+    }
+
     this.publish({
       status: 'installing',
       message: this.state.relocatingToUserDir
@@ -929,6 +988,139 @@ export class UpdaterService {
     setTimeout(() => app.quit(), 300)
   }
 
+  /**
+   * macOS install path: unzip the new bundle beside the installed one, verify
+   * its version, then let a detached script swap it in after Pilot quits. The
+   * bundle cannot be replaced while this process is running it, and mounting a
+   * dmg is not something the updater can do on the user's behalf.
+   */
+  private async installBundleSwap(installer: string, release: UpdateRelease): Promise<void> {
+    const bundle = appBundleForExecutable(process.execPath)
+    if (!bundle) throw new Error('无法定位 Pilot.app，请手动下载安装包。')
+    if (isMountedVolume(bundle)) {
+      throw new Error('Pilot 正从磁盘映像运行：请先把 Pilot.app 拖到「应用程序」文件夹，再检查更新。')
+    }
+    const parent = dirname(bundle)
+    try {
+      await access(parent, constants.W_OK)
+    } catch {
+      throw new Error(`没有写入 ${parent} 的权限：请手动下载安装包覆盖安装。`)
+    }
+
+    const token = randomUUID().slice(0, 8)
+    // Same volume as the installed bundle: the swap becomes a rename instead of
+    // a multi-hundred-megabyte copy.
+    const stage = stagingDirFor(bundle, token)
+    let stagedApp = ''
+    try {
+      this.publish({ status: 'installing', message: '正在解压新版本，Pilot 将退出并在完成后重新启动…' })
+      await mkdir(stage, { recursive: true })
+      // ditto preserves symlinks and permissions inside the bundle; unzip does not.
+      await this.runTool('/usr/bin/ditto', ['-x', '-k', installer, stage])
+      const picked = pickStagedApp(await readdir(stage), basename(bundle))
+      if (!picked) throw new Error('更新包里没有 Pilot.app。')
+      stagedApp = join(stage, picked)
+      const stagedVersion = await this.bundleVersion(stagedApp)
+      if (stagedVersion && stagedVersion !== release.version) {
+        throw new Error(`更新包内是 ${stagedVersion}，与清单的 ${release.version} 不一致。`)
+      }
+    } catch (error) {
+      await rm(stage, { recursive: true, force: true }).catch(() => undefined)
+      this.publish({
+        status: 'error',
+        release,
+        progress: 0,
+        transferred: 0,
+        total: 0,
+        message: `安装更新失败：${errorMessage(error)}`,
+      })
+      throw error
+    }
+
+    const script = join(tmpdir(), `pilot-update-${token}.sh`)
+    const log = join(tmpdir(), `pilot-update-${token}.log`)
+    const backup = `${bundle}.old-${token}`
+    this.publish({
+      status: 'installing',
+      message: '正在替换应用，Pilot 将退出并在完成后重新启动…',
+    })
+    try {
+      await writeFile(script, MAC_SWAP_SCRIPT, { mode: 0o755 })
+      const child = spawn('/bin/sh', [script, bundle, stagedApp, backup, log], {
+        detached: true,
+        stdio: 'ignore',
+      })
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('spawn', () => resolve())
+      })
+      child.unref()
+    } catch (error) {
+      await rm(stage, { recursive: true, force: true }).catch(() => undefined)
+      this.publish({
+        status: 'error',
+        release,
+        progress: 0,
+        transferred: 0,
+        total: 0,
+        message: `安装更新失败：${errorMessage(error)}`,
+      })
+      throw error
+    }
+    // The script waits a moment before touching the bundle; quitting right away
+    // releases the instance lock so it can be relaunched.
+    setTimeout(() => app.quit(), 300)
+  }
+
+  private async bundleVersion(bundle: string): Promise<string> {
+    try {
+      const { stdout } = await this.runTool('/usr/bin/plutil', [
+        '-extract',
+        'CFBundleShortVersionString',
+        'raw',
+        '-o',
+        '-',
+        join(bundle, 'Contents', 'Info.plist'),
+      ])
+      return stdout.trim()
+    } catch {
+      // A missing or unreadable plist is not fatal: the zip was already checked
+      // against the manifest size and SHA-256 before it got here.
+      return ''
+    }
+  }
+
+  private runTool(
+    command: string,
+    args: string[],
+    timeoutMs = 180_000,
+  ): Promise<{ stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      let stdout = ''
+      let stderr = ''
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(new Error(`${basename(command)} 执行超时。`))
+      }, timeoutMs)
+      child.stdout?.on('data', (chunk: Buffer | string) => {
+        stdout = `${stdout}${String(chunk)}`.slice(-8000)
+      })
+      child.stderr?.on('data', (chunk: Buffer | string) => {
+        stderr = `${stderr}${String(chunk)}`.slice(-4000)
+      })
+      child.once('error', (error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
+      child.once('close', (code) => {
+        clearTimeout(timer)
+        if (code === 0) resolve({ stdout, stderr })
+        else reject(new Error(stderr.trim() || `${basename(command)} 退出码 ${code}`))
+      })
+    })
+  }
+
   private async discardInstaller(message: string): Promise<void> {
     const installer = this.installerPath
     this.installerPath = null
@@ -957,11 +1149,14 @@ export class UpdaterService {
   private installerFilename(release: UpdateRelease): string {
     try {
       const name = basename(new URL(release.url).pathname)
-      if (/^[A-Za-z0-9._-]{1,120}\.exe$/i.test(name)) return name
+      if (/^[A-Za-z0-9._-]{1,120}(\.exe|\.zip|\.dmg|\.AppImage)$/i.test(name)) return name
     } catch {
       // Fall through to a generated name.
     }
     const version = release.version.replace(/[^0-9A-Za-z._-]/g, '_')
+    if (usesBundleSwap()) {
+      return `Pilot-${version}-mac-${process.arch === 'arm64' ? 'arm64' : 'x64'}.zip`
+    }
     return `Pilot-${version}-setup.exe`
   }
 }

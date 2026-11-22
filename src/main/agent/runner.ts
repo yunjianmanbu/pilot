@@ -9,7 +9,6 @@ import type {
   ApprovalRequest as SharedApprovalRequest,
   CheckpointTrigger,
   MessageOptions,
-  PermissionRules,
   Plan,
   ProfileExplanation,
   ReviewRoot,
@@ -55,7 +54,7 @@ import { runSubagent } from './subagent'
 import { summarizeConversation } from './summarize'
 import { DeepSeekClient } from './model'
 import { isEmptyAssistant } from './message-guard'
-import { commandLine, evaluatePermission } from './permissions'
+import { commandLine } from './permissions'
 import { settlePlan, shouldResetPlan } from './plan'
 import { createScheduleTaskBridge } from './schedule-bridge'
 import { moveQueuedTask, sameQueueOrder, type QueueMoveDirection } from './queue-order'
@@ -69,6 +68,8 @@ import {
   reviewToolsFor,
   type ReviewRuntime,
 } from './review'
+import { resolveToolPolicy } from './permission-policy'
+import { createSelfUpdateBridge } from './self-update-bridge'
 import { ProcessManager } from './processes'
 import { captureScreenshot, listCapturableWindows } from './screenshots'
 import {
@@ -79,7 +80,6 @@ import {
   READ_EXECUTION_RECORDS,
   READ_SYSTEM_STRATEGY,
   REQUEST_SYSTEM_ACCESS,
-  systemAccessPolicy,
   type SystemAccessGrant,
 } from './system-access'
 import { ensureBuiltinTools } from './builtin-tools'
@@ -91,7 +91,6 @@ import {
   LEARNING_RESEARCH,
   pilotTools,
   RUN_SHELL,
-  SUBAGENT,
   withReferenceRoots,
   withShellDescription,
   type PlanUpdate,
@@ -1503,6 +1502,7 @@ export class AgentRunner {
           .noteMemoryInjected(
             workspacePath,
             injectedMemory.map((entry) => entry.id),
+            session.id,
           )
           .catch(() => undefined)
       }
@@ -1605,7 +1605,14 @@ export class AgentRunner {
               },
             }),
         remember: async (content, reason) => {
-          const entry = await this.store.addMemory(workspacePath, content, 'agent', ctx.runId)
+          const entry = await this.store.addMemory(
+            workspacePath,
+            content,
+            'agent',
+            ctx.runId,
+            undefined,
+            ctx.sessionId,
+          )
           this.emit({ type: 'memory.changed', workspacePath })
           this.emit({
             type: 'notice',
@@ -1645,75 +1652,12 @@ export class AgentRunner {
         scheduleTasks: createScheduleTaskBridge(this.store, sessionId, () =>
           this.emit({ type: 'scheduled.changed', sessionId }),
         ),
-        proposeSelfUpdate: async (input) => {
-          if (input.scope === 'global') {
-            // A system-wide draft needs evidence from every workspace, not
-            // just the one that happened to ask. The user still has to review
-            // and activate it in the Evolution panel.
-            const workspaces = this.store.workspaces().map((workspace) => workspace.path)
-            const recentRuns = workspaces.flatMap((path) => this.store.runs(path).slice(0, 30))
-            const evidence = workspaces
-              .map((path) => this.store.evidence(path))
-              .reduce(
-                (total, entry) => ({
-                  runs: total.runs + entry.runs,
-                  failures: total.failures + entry.failures,
-                  avgSteps: 0,
-                  avgTokens: 0,
-                  positive: total.positive + entry.positive,
-                  negative: total.negative + entry.negative,
-                }),
-                { runs: 0, failures: 0, avgSteps: 0, avgTokens: 0, positive: 0, negative: 0 },
-              )
-            const draft = await this.store.createGlobalProfileDraft({
-              promptAddendum: input.promptAddendum,
-              rationale: input.rationale,
-              source: 'self',
-              strategy: {
-                ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
-                ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
-              },
-              evidence: {
-                ...evidence,
-                avgSteps:
-                  recentRuns.length > 0
-                    ? Math.round(
-                        (recentRuns.reduce((sum, run) => sum + run.steps, 0) /
-                          recentRuns.length) *
-                          10,
-                      ) / 10
-                    : 0,
-                avgTokens:
-                  recentRuns.length > 0
-                    ? Math.round(
-                        recentRuns.reduce((sum, run) => sum + run.totalTokens, 0) /
-                          recentRuns.length,
-                      )
-                    : 0,
-              },
-            })
-            this.emit({ type: 'profile.changed', workspacePath })
-            return {
-              version: draft.version,
-              ...(await this.explainDraft('global', workspacePath, draft.id)),
-            }
-          }
-          const draft = await this.store.createProfileDraft(workspacePath, {
-            promptAddendum: input.promptAddendum,
-            rationale: input.rationale,
-            source: 'self',
-            strategy: {
-              ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
-              ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
-            },
-            evidence: this.store.evidence(workspacePath),
-          })
-          this.emit({ type: 'profile.changed', workspacePath })
-          return {
-            version: draft.version,
-            ...(await this.explainDraft('workspace', workspacePath, draft.id)),
-          }
-        },
+        proposeSelfUpdate: createSelfUpdateBridge({
+          store: this.store,
+          workspacePath,
+          onProfileChanged: () => this.emit({ type: 'profile.changed', workspacePath }),
+          explainDraft: (scope, path, profileId) => this.explainDraft(scope, path, profileId),
+        }),
         explore: async (request, signal) => {
           const result = await runExploreSubagent({
             client: this.makeClient(undefined, sessionId),
@@ -1900,123 +1844,39 @@ export class AgentRunner {
           .map(toAgentMessage)
         return [...history, ...produced]
       }
-      const permissionPolicy = async (
+      const permissionPolicy = (
         tool: AgentToolDefinition,
         call: ToolCall,
-      ): Promise<ToolPolicyResult> => {
-        if (review) {
-          if (!isReviewToolName(call.name) || (tool.risk !== 'read' && tool.risk !== 'control')) {
-            return {
-              decision: 'deny',
-              reason: '复盘会话是只读的：只允许读取允许目录和会话记录，不允许写入、执行或联网。',
-            }
-          }
-          return { decision: 'auto' }
-        }
-        if (
-          call.name === SUBAGENT &&
-          call.arguments['mode'] === 'general' &&
-          ctx.approvalMode !== 'auto'
-        ) {
-          return {
-            decision: 'deny',
-            reason: '通用子智能体会在工作区内直接改文件，只允许在全部自动模式下使用。',
-          }
-        }
-        if (call.name === REQUEST_SYSTEM_ACCESS) {
-          const decision = systemAccessPolicy(
-            ctx.approvalMode,
-            ctx.systemAccess,
-            call.arguments ?? {},
-          )
-          if (decision) return decision
-        }
-        let grantSatisfied = false
-        if (call.name === READ_EXECUTION_RECORDS || call.name === READ_SYSTEM_STRATEGY) {
-          const covered = grantCovers(
-            ctx.systemAccess,
-            [call.name === READ_EXECUTION_RECORDS ? 'execution_records' : 'system_strategy'],
-            call.arguments['workspace'] === 'all',
-          )
-          if (!covered) {
-            return {
-              decision: 'deny',
-              reason:
-                '读取系统信息需要本次运行的授权：请先调用 request_system_access（需要全部工作区时把 workspaces 设为 all），等用户批准后再读取。',
-            }
-          }
-          // The approval already happened for this run; do not ask again in
-          // approve-each-call modes. Explicit deny rules still win below.
-          grantSatisfied = true
-        }
-        const verdict = evaluatePermission({
-          mode: ctx.approvalMode,
+      ): Promise<ToolPolicyResult> =>
+        resolveToolPolicy({
           tool,
           call,
+          review,
+          approvalMode: () => ctx.approvalMode,
+          systemAccess: ctx.systemAccess,
           workspacePath,
-          rules: settings.permissionRules as PermissionRules,
-          trustedCommands: settings.trustedCommands,
-          sandboxed: sandboxEnabled && tool.name === RUN_SHELL,
-          sandboxAutoAllow: settings.sandboxAutoAllow,
-          allowUnattendedBuild: settings.allowUnattendedBuild,
-          // 只有用户在设置里开启了 shell 隔离，学习探索才接管 shell 的外发限制。
-          learningMode: learningEnabled,
-          learningIsolateShell: settings.learningShellIsolation === true,
+          settings,
+          sandboxEnabled,
+          learningEnabled,
+          classify: classifier.classify,
+          classifierModel,
+          prompt,
+          transcript: classifierTranscript,
+          signal: ctx.controller.signal,
+          onClassifierAllow: () => this.recordClassifierAllow(sessionId),
+          onClassifierBlock: () => this.recordClassifierBlock(sessionId),
+          onPauseAllAuto: async () => {
+            ctx.approvalMode = 'manual'
+            await this.store.updateSession(sessionId, { approvalMode: 'manual' })
+            this.emit({ type: 'session.changed', sessionId })
+            this.emit({
+              type: 'notice',
+              level: 'warn',
+              message:
+                '权限分类器连续拦截了多次操作，已暂停全部自动并切回“只读自动”；后续写入和命令会逐次询问你。',
+            })
+          },
         })
-        if (grantSatisfied && verdict.action === 'ask') {
-          return { decision: 'auto', reason: '本次运行已获得系统信息授权。' }
-        }
-        if (verdict.action === 'classify') {
-          const classified = await classifier.classify({
-            model: classifierModel,
-            tool: tool.name,
-            call,
-            workspacePath,
-            userRequest: prompt,
-            transcript: classifierTranscript(),
-            signal: ctx.controller.signal,
-          })
-          if (classified.decision === 'allow') {
-            this.recordClassifierAllow(sessionId)
-            return {
-              decision: 'auto',
-              reason: classified.reason,
-            }
-          }
-          if (classified.decision === 'deny') {
-            const blocks = this.recordClassifierBlock(sessionId)
-            if (blocks.pause) {
-              ctx.approvalMode = 'manual'
-              await this.store.updateSession(sessionId, { approvalMode: 'manual' })
-              this.emit({ type: 'session.changed', sessionId })
-              this.emit({
-                type: 'notice',
-                level: 'warn',
-                message:
-                  '权限分类器连续拦截了多次操作，已暂停全部自动并切回“只读自动”；后续写入和命令会逐次询问你。',
-              })
-            }
-            return {
-              decision: 'deny',
-              reason: `权限分类器拦截：${classified.reason}`,
-            }
-          }
-          return {
-            decision: 'ask',
-            reason: `权限分类器建议确认：${classified.reason}`,
-          }
-        }
-        return {
-          decision:
-            verdict.action === 'allow'
-              ? 'auto'
-              : verdict.action === 'deny'
-                ? 'deny'
-                : 'ask',
-          reason: verdict.reason,
-          ...(verdict.rule ? { rule: verdict.rule } : {}),
-        }
-      }
       const verificationHint = review
         ? ''
         : await detectCheckCommands(workspacePath).catch(() => '')

@@ -13,6 +13,7 @@ export type MainView =
   | 'todos'
   | 'scheduled'
   | 'memory'
+  | 'tools'
   | 'evolution'
   | 'plugins'
   | 'module-check'

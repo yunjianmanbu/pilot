@@ -93,6 +93,8 @@ const bridge: PilotBridge = {
   },
   sessionLinks: (sessionId: string) => ipcRenderer.invoke('pilot:session-links', sessionId),
   toolsCatalog: (sessionId: string) => ipcRenderer.invoke('pilot:tools-catalog', sessionId),
+  toolsCatalogForWorkspace: (workspacePath: string) =>
+    ipcRenderer.invoke('pilot:tools-catalog-workspace', workspacePath),
   getSessionTranscript: (sessionId: string) =>
     ipcRenderer.invoke('pilot:session-transcript', sessionId),
   writeClipboard: (text: string) => ipcRenderer.invoke('pilot:clipboard-write', text),

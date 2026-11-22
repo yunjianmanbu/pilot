@@ -99,7 +99,6 @@ export const en: Record<string, string> = {
   "。连续 7 天未使用会自动失效。": ". Expires automatically after 7 days without use.",
   "一次": "once",
   "一次复盘最多读取 8 个目录。": "A review reads at most 8 directories.",
-  "一次性": "one-time",
   "三级知识库": "Three-level knowledge base",
   "上下文预算": "Context budget",
   "token 总量上限": "Token budget per task",
@@ -110,7 +109,6 @@ export const en: Record<string, string> = {
   "200 万": "2M",
   "token 总量上限需要是 0 或正整数（0 = 不限制）。": "The token budget must be 0 or a positive whole number (0 = no limit).",
   "上次任务没有正常结束": "The previous task did not finish cleanly",
-  "上次失败": "Last failure",
   "下载中": "Downloading",
   "下载中…": "Downloading…",
   "下载更新": "Download update",
@@ -180,8 +178,6 @@ export const en: Record<string, string> = {
   "会话知识库": "Session knowledge",
   "低": "Low",
   "你写入": "You",
-  "例如：检查项目测试结果，失败则修复并重新运行":
-    "e.g. check the test results, fix failures and rerun",
   "例如：评估 2026-11-10 的发布流程，重点检查版本号、签名和下载清单是否一致。":
     "e.g. review the 2026-11-10 release: version, signature and download manifest consistency.",
   "保存": "Save",
@@ -208,7 +204,6 @@ export const en: Record<string, string> = {
   "全部清除": "Clear all",
   "允许读取的目录": "Readable directories",
   "先从侧边栏选择一个本地文件夹。": "Pick a local folder in the sidebar first.",
-  "先写清楚要定时执行的内容。": "Describe what should run on schedule first.",
   "先和 Pilot 完成一轮问答，再来查看。": "Finish one Q&A round with Pilot, then come back.",
   "先在左上角选择一个工作区，再查看它的项目知识库。":
     "Pick a workspace in the top left to view its project knowledge.",
@@ -262,8 +257,6 @@ export const en: Record<string, string> = {
   "删除这条项目记忆？Pilot 之后不会再使用它。":
     "Delete this project memory? Pilot will stop using it.",
   "别名": "Alias",
-  "到点后把内容加入这个会话的队列，和手动发送走同样的审批与工作区边界。":
-    "At the scheduled time the content joins this session's queue, with the same approval and workspace boundaries as manual sends.",
   "刷新": "Refresh",
   "刷新会话列表": "Refresh sessions",
   "加载中…": "Loading…",
@@ -437,11 +430,6 @@ export const en: Record<string, string> = {
   "完成至少 3 次真实任务后，Pilot 才能提出第一份进化草稿。":
     "Pilot can propose its first evolution draft after at least 3 real tasks.",
   "定时任务": "Scheduled tasks",
-  "也可以直接在对话里说：「每天 9 点帮我整理待办」，Pilot 会自己建好这条任务。":
-    "You can also just say it in the chat — “every day at 9, tidy up my todos” — and Pilot creates the task itself.",
-  "定时任务保存在本机；关闭电脑后不会在后台执行。":
-    "Scheduled tasks live on this machine; they do not run while it is off.",
-  "定时任务内容不能为空。": "A scheduled task cannot be empty.",
   "审批超时": "Approval timeout",
   "审批超时需要在 0 到 3,600 秒之间。":
     "The approval timeout must be between 0 and 3,600 seconds.",
@@ -480,7 +468,6 @@ export const en: Record<string, string> = {
   "已复制": "Copied",
   "已把选中内容加入待办。": "Selection added to todos.",
   "选中内容": "Selected text",
-  "已安排": "Scheduled",
   "已恢复": "Restored",
   "已截断": "Truncated",
   "已把定时任务转为待办。": "Scheduled task moved to todos.",
@@ -500,10 +487,6 @@ export const en: Record<string, string> = {
   "已配置": "Configured",
   "平均 tokens": "Avg tokens",
   "平均步数": "Avg steps",
-  "延迟分钟": "Delay (min)",
-  "延迟时间需要在 1 到 10,080 分钟之间。":
-    "The delay must be between 1 and 10,080 minutes.",
-  "延迟（分钟）": "Delay (minutes)",
   "建议已加入待办。": "Suggestion added to todos.",
   "建议：": "Suggestions:",
   "开发模式下不会执行安装": "Install is skipped in development mode",
@@ -571,7 +554,6 @@ export const en: Record<string, string> = {
   "打开本地工作区": "Open a local workspace",
   "打开目录": "Open directory",
   "执行中": "Running",
-  "执行内容": "Command content",
   "执行前创建。 快照排除": "Created before running. Snapshots exclude",
   "执行完成": "Completed",
   "执行模式 + 显式规则 + OS 沙箱。规则由程序强制执行，按“拒绝 → 询问 → 允许”匹配，拒绝规则和受保护路径在任何模式下都不能被覆盖。":
@@ -804,7 +786,6 @@ export const en: Record<string, string> = {
   "每个目录都需要一个别名。": "Every directory needs an alias.",
   "每天": "Daily",
   "每天固定时间": "Daily at a fixed time",
-  "每天时间": "Time of day",
   "每次任务记录步数、工具错误、tokens 和你的反馈。":
     "Every task records steps, tool errors, tokens and your feedback.",
   "每次运行按类别配额挑选最有价值的记忆，而不是简单取最新几条。":
@@ -838,9 +819,6 @@ export const en: Record<string, string> = {
   "测试连接": "Test connection",
   "消息命中": "Message hits",
   "消息投递方式": "Delivery",
-  "添加": "Add",
-  "添加后会把这个待办转成定时任务，并从待办列表移除。":
-    "Converts this todo into a scheduled task and removes it from the list.",
   "添加图片": "Add images",
   "添加待办": "Add todo",
   "添加待办，Enter 保存": "Add a todo, Enter to save",
@@ -958,6 +936,32 @@ export const en: Record<string, string> = {
   "让 Pilot 重新生成这条回答": "Ask Pilot to regenerate this answer",
   "记录下一步，稍后一键发送": "Capture the next step; send it later in one click",
   "记忆": "Memory",
+  "会话记忆": "Session memory",
+  "选择会话后，这里会列出这轮任务用到的项目记忆。":
+    "Pick a session to list the project memory that task used.",
+  "没有匹配的记忆": "No matching memory",
+  "这个会话还没有记忆": "This session has no memory yet",
+  "换一个关键词，或清空搜索查看全部条目。":
+    "Try another keyword, or clear the search to see every entry.",
+  "运行会把工作区里相关的记忆写进提示词，Pilot 也可以用 remember 记录新事实。":
+    "Runs feed relevant workspace memory into the prompt; Pilot can also record new facts with remember.",
+  "本会话写入": "Written in this session",
+  "没有匹配的记忆，清空搜索可查看这个会话的全部记忆。":
+    "No matching memory; clear the search to see all of this session's memory.",
+  "从左侧选择一条记忆查看内容。": "Pick a memory on the left to read it.",
+  "本轮提示词已注入": "Injected into this run's prompt",
+  "删除这条记忆": "Delete this memory",
+  "删除这条记忆？Pilot 之后不会再使用它。":
+    "Delete this memory? Pilot will stop using it.",
+  "提示词注入 {v1} 次 · 复现 {v2} 次":
+    "Injected {v1} times · reinforced {v2} times",
+  "你写入的长期偏好": "Your stored preference",
+  "运行复盘产生": "From a run review",
+  "Pilot 运行时记录": "Recorded by Pilot at runtime",
+  "打开项目记忆": "Open project memory",
+  "项目记忆按工作区共享 · 这里只列出本会话用到的条目":
+    "Project memory is shared per workspace; only entries this session used are listed here",
+  "搜索本会话的记忆": "Search this session's memory",
   "不变量": "Invariant",
   "验证路径": "Verification",
   "走不通的路": "Dead ends",
@@ -987,7 +991,6 @@ export const en: Record<string, string> = {
   "跨项目对比同类问题的历史会话。只读取，不修改。":
     "Compare similar past sessions across projects. Read-only.",
   "跳到原始消息": "Jump to original message",
-  "转为定时": "Convert to schedule",
   "转为定时任务": "Convert to scheduled task",
   "转待办": "Convert to todo",
   "轮": " rounds",
@@ -1028,8 +1031,6 @@ export const en: Record<string, string> = {
     "No run profile enabled yet. Pilot proposes candidates after enough runs; they enable after independent review.",
   "还没有回退点。发送一次任务或手动保存一个快照。":
     "No checkpoints yet. Send a task or save a snapshot manually.",
-  "还没有定时任务。Pilot 只会在电脑客户端运行时触发。":
-    "No scheduled tasks. They only fire while the desktop client runs.",
   "还没有工作区": "No workspaces yet",
   "还没有工作区。点击上方的文件夹按钮打开一个本地项目。":
     "No workspace yet. Click the folder button above to open a local project.",
@@ -1081,16 +1082,11 @@ export const en: Record<string, string> = {
   "长期上下文": "Long-term context",
   "问题与建议 ·": "Issues and suggestions ·",
   "间隔": "Interval",
-  "间隔分钟": "Interval (min)",
-  "间隔需要在 1 到 10,080 分钟之间。":
-    "The interval must be between 1 and 10,080 minutes.",
-  "间隔（分钟）": "Interval (minutes)",
   "阅读 README 和核心代码，指出三个最值得改进的地方":
     "Read the README and core code, and point out the three most worthwhile improvements",
   "需要你的确认": "Needs your confirmation",
   "需要先配置 API Key": "Set an API key first",
   "需要处理": "Needs attention",
-  "项": " items",
   "项目": "Project",
   "项目指令 ·": "Project instructions ·",
   "项目知识库": "Project knowledge",
@@ -1104,7 +1100,6 @@ export const en: Record<string, string> = {
   "（这一轮还没有回复）": "(no reply in this round yet)",
   " · {v1} 处修改": " · {v1} edits",
   " · 目标：{v1}": " · Objective: {v1}",
-  " · 上次 {v1}": " · Last {v1}",
   " · 显示最近 {v1} 轮": " · showing the latest {v1} rounds",
   " 上次检查：{v1}。": " Last checked: {v1}.",
   "，{v1} 台在线": ", {v1} online",
@@ -2082,7 +2077,6 @@ export const en: Record<string, string> = {
     "Add one in the todo panel above the input, or select text and add it as a todo.",
   "回到这个会话": "Go to this session",
   " · {v1} 项已发送": " · {v1} sent",
-  "显示已发送 {v1} 项": "Show {v1} sent",
   "发送到该会话": "Send to that session",
   "把这条待办发到「{v1}」？": "Send this todo to “{v1}”?",
   "{v1} 项待发送 · 分布在 {v2} 个会话":
@@ -2113,8 +2107,6 @@ export const en: Record<string, string> = {
   "定时": "Schedules",
   "定时任务在电脑端运行；关闭客户端后不会触发，重新打开时到点未跑的任务会补跑。":
     "Schedules run on the desktop app. They do not fire while it is closed; missed runs catch up when it opens again.",
-  "在会话右上角的三点菜单里打开「定时任务」，就能给这个会话挂一条。":
-    "Open “Scheduled tasks” from the three-dot menu in a session to add one.",
   "删除这条定时任务？": "Delete this scheduled task?",
   "上次执行失败": "Last run failed",
   "上次 {v1}": "Last {v1}",
@@ -2142,4 +2134,69 @@ export const en: Record<string, string> = {
   "未采用": "Not adopted",
   "{v1} 分": "{v1} pts",
   "无评分": "Unscored",
+  // 系统工具面板（左下角「工具」）
+  "系统工具": "System tools",
+  "系统工具：这个工作区能用的全部工具": "System tools: every tool available in this workspace",
+  "工具按工作区装载，因此先选一个工作区才能看到这套工具。":
+    "Tools load per workspace, so pick one before the set appears here.",
+  "选择一个工作区后，这里会列出内置、控制、MCP 与自写工具。":
+    "Once a workspace is selected, built-in, control, MCP and self-written tools are listed here.",
+  "这里是 {v1} 里一次运行可能拿到的全部工具，调用次数是这个工作区所有会话的累计。":
+    "Every tool a run in {v1} can reach. Call counts are cumulative across this workspace's sessions.",
+  "个可用": "enabled",
+  "个用过": "called",
+  "工具来源": "Tool source",
+  "重新读取工具清单": "Reload the tool list",
+  "正在读取工具清单…": "Reading the tool list…",
+  "这一栏没有工具": "No tools in this tab",
+  "换个来源看看，或者让 Pilot 写一个自写工具。":
+    "Try another source, or ask Pilot to write a dynamic tool.",
+  "调用 {v1} 次": "{v1} calls",
+  "累计调用 {v1} 次；这里的次数只统计已经执行过的调用，失败与拒绝的同样计入。":
+    "{v1} calls in total. Only executed calls count, and failures and denials are included.",
+  // 系统资源详情弹框
+  "本机资源使用：点击查看详情": "Local resource usage: click for details",
+  "系统资源详情": "System resource details",
+  "这台电脑当前的负载与本机信息，和顶栏那条读数是同一份数据。":
+    "Current load and machine details; the same readings as the top bar.",
+  "本机信息": "Machine info",
+  "系统负载": "System load",
+  "架构": "Architecture",
+  "总内存": "Total memory",
+  "采样于 {v1}": "Sampled at {v1}",
+  "这次读不到系统资源，稍后再试。": "System resources are unreadable right now; try again later.",
+  "暂时读不到": "Unavailable",
+  "{v1} 个逻辑核心 · {v2}": "{v1} logical cores · {v2}",
+  "型号未知": "Unknown model",
+  "整机占用": "Whole machine",
+  "{v1} 已用 / {v2} 总量 · 空闲 {v3}": "{v1} used of {v2} · {v3} free",
+  "工作区所在卷暂时读不到": "Workspace volume unavailable right now",
+  "工作区所在卷 {v1} 已用 / {v2}": "Workspace volume {v1} used of {v2}",
+  // 会话内定时面板
+  "先写清楚到点要做什么": "Describe what it should do when it fires",
+  "延迟至少 1 分钟": "Delay must be at least 1 minute",
+  "间隔至少 5 分钟": "Interval must be at least 5 minutes",
+  "时间格式要像 09:30": "Time must look like 09:30",
+  "已加入定时任务。": "Added to scheduled tasks.",
+  "{v1} 项 · {v2} 项在等": "{v1} tasks · {v2} waiting",
+  "到点自动加入队列，电脑端执行": "Queued automatically at the set time, run by the desktop app",
+  "到点要让 Pilot 做什么": "What should Pilot do when it fires",
+  "分钟后": "minutes from now",
+  "分钟一次": "minutes",
+  "还没有定时任务：点「新建」或待办上的时钟按钮。":
+    "No scheduled tasks yet: hit “New”, or the clock button on a todo.",
+  "定时任务筛选": "Filter scheduled tasks",
+  "启用中": "Active",
+  "项启用中": "active",
+  "项已暂停": "paused",
+  "没有启用中的定时任务": "No active scheduled tasks",
+  "切到「全部」可以看到已暂停的任务，再点「启用」恢复它。":
+    "Switch to “All” to see paused tasks, then hit “Enable” to resume one.",
+  "在会话输入框上方的「定时任务」面板新建一条，就能给这个会话挂上。":
+    "Create one in the “Scheduled tasks” panel above the composer to attach it to this session.",
+  // 全部待办
+  "待办筛选": "Filter todos",
+  "项待发送": "pending",
+  "项已发送": "sent",
+  "含已发送": "With sent",
 }

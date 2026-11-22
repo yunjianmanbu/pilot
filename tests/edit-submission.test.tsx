@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { editSubmission } from '../src/renderer/src/components/ChatView'
+import { editSubmission } from '../src/renderer/src/components/chat/message-rows'
 
 describe('edit box submission', () => {
   it('submits unchanged text so the button can rerun without an edit', () => {
@@ -30,7 +30,9 @@ describe('edit box submission', () => {
 
 describe('edit box button label', () => {
   const source = readFileSync(
-    fileURLToPath(new URL('../src/renderer/src/components/ChatView.tsx', import.meta.url)),
+    fileURLToPath(
+      new URL('../src/renderer/src/components/chat/message-rows.tsx', import.meta.url),
+    ),
     'utf8',
   )
 

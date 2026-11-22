@@ -310,6 +310,9 @@ export function SettingsDialog({
   const bodyRef = useRef<HTMLDivElement>(null)
   const reviewersRef = useRef<HTMLElement>(null)
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('models')
+  /** 刚加的资源卡片：插在列表第一条，高亮到用户开始填写。 */
+  const [newResourceId, setNewResourceId] = useState('')
+  const pendingResourceFocus = useRef('')
   /** One ref per group; a deep link can scroll to the group it names. */
   const sectionRefs = useRef<Partial<Record<SettingsSectionId, HTMLElement | null>>>({})
 
@@ -327,6 +330,19 @@ export function SettingsDialog({
   }, [activeSection])
 
   const jumpTo = (id: SettingsSectionId) => setActiveSection(id)
+
+  // 新加的资源卡片插在列表最上面：把它滚到视野内并把光标放进名称输入框，
+  // 用户不用再滑到列表末尾去找那张空白卡片。
+  useEffect(() => {
+    const id = pendingResourceFocus.current
+    if (!id) return
+    pendingResourceFocus.current = ''
+    const body = bodyRef.current
+    const row = body?.querySelector<HTMLElement>(`[data-resource-id="${id}"]`)
+    if (!body || !row) return
+    body.scrollTo({ top: 0 })
+    row.querySelector('input')?.focus({ preventScroll: true })
+  }, [resources])
 
   // Preview the appearance while the dialog is open. Cancel restores the saved
   // values; saving updates `settings` and the parent effect takes over.
@@ -431,13 +447,18 @@ export function SettingsDialog({
 
   const patchResource = (id: string, patch: Partial<ResourceDraft>) => {
     setResources((list) => list.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+    if (id === newResourceId) setNewResourceId('')
     if (patch.clearKey || patch.apiKey !== undefined) {
       setResourceResults((current) => ({ ...current, [id]: null }))
     }
   }
 
   const addResource = () => {
-    setResources((list) => (list.length >= MAX_MODEL_RESOURCES ? list : [...list, newResourceDraft()]))
+    if (resources.length >= MAX_MODEL_RESOURCES) return
+    const draft = newResourceDraft()
+    pendingResourceFocus.current = draft.id
+    setNewResourceId(draft.id)
+    setResources((list) => (list.length >= MAX_MODEL_RESOURCES ? list : [draft, ...list]))
   }
 
   const removeResource = (id: string) => {
@@ -795,7 +816,11 @@ export function SettingsDialog({
 
             <div className="judge-list">
               {resources.map((resource) => (
-                <div className="judge-row" key={resource.id}>
+                <div
+                  className={`judge-row${resource.id === newResourceId ? ' is-new' : ''}`}
+                  key={resource.id}
+                  data-resource-id={resource.id}
+                >
                   <div className="model-resource-head">
                     <strong>{resourceTitle(resource)}</strong>
                     <span className={`key-state${resource.hasKey || resource.apiKey ? ' ok' : ''}`}>

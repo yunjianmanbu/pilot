@@ -777,6 +777,9 @@ export function sanitizeWorkspace(value: unknown): PersistedWorkspace | null {
           ...counterField('injected', entry.injected),
           ...(typeof entry.lastUsedAt === 'string' ? { lastUsedAt: entry.lastUsedAt } : {}),
           ...(typeof entry.runId === 'string' ? { runId: entry.runId } : {}),
+          ...(typeof entry.sessionId === 'string' && entry.sessionId
+            ? { sessionId: entry.sessionId }
+            : {}),
         }
       })
       .filter((entry) => entry.content)
@@ -1096,6 +1099,13 @@ export function sanitizeSession(value: unknown): Session | null {
       .filter((item) => item.text)
       .slice(0, 200),
     plan: sanitizePlan(planRaw),
+    ...(Array.isArray(record['memoryIds'])
+      ? {
+          memoryIds: record['memoryIds']
+            .filter((id): id is string => typeof id === 'string' && id.length > 0)
+            .slice(0, 200),
+        }
+      : {}),
     ...(typeof record['summary'] === 'string' && record['summary'].trim()
       ? { summary: record['summary'].trim().slice(0, CONTEXT_SUMMARY_MAX_CHARS) }
       : {}),
@@ -1637,7 +1647,8 @@ export function validShellInterpreter(value: unknown): ShellInterpreter | null {
  */
 export const CONTEXT_SUMMARY_MAX_CHARS = 4_000
 
-export const BODY_KEYS = ['messages', 'queue', 'todos'] as const
+/** Fields kept in the per-session shard and hydrated on demand (never in the index). */
+export const BODY_KEYS = ['messages', 'queue', 'todos', 'memoryIds'] as const
 export const SEARCH_INDEX_MIN_INTERVAL_MS = 5_000
 
 export interface SessionBodyRef {

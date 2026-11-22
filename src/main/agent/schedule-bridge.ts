@@ -35,7 +35,7 @@ export function matchScheduledTask(
  * sessionId：到点后它是往这个会话里发一条普通用户消息，因此工作区、模型和
  * 审批策略都与用户手打的完全一致。
  *
- * 与 ScheduleDialog 共用同一份 store 校验，所以间隔下限、\"HH:mm\" 规范化
+ * 与渲染进程的「定时任务」面板共用同一份 store 校验，所以间隔下限、\"HH:mm\" 规范化
  * 这些规则两边不会漂移。
  */
 export function createScheduleTaskBridge(

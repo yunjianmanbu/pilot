@@ -2,6 +2,7 @@ import './locale-zh.mjs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { ProcessBox } from '../src/renderer/src/components/ProcessBox'
+import { reasoningPeek } from '../src/renderer/src/components/ReasoningBlock'
 import { ToolCard } from '../src/renderer/src/components/ToolCard'
 import { buildTranscript, formatClock, type UIMessage, type ToolView } from '../src/renderer/src/ui'
 import type { StoredMessage } from '../src/shared/types'
@@ -32,6 +33,30 @@ function countSteps(html: string): number {
   const matches = html.match(/class="(?:reasoning-block|process-note|tool-card )/g) ?? []
   return matches.length
 }
+
+describe('reasoning summary line', () => {
+  it('keeps only the first non-empty line, flattened', () => {
+    expect(reasoningPeek('\n\n  先看目录  \n再读文件')).toBe('先看目录')
+    expect(reasoningPeek('第一行\t有   空白\n第二行')).toBe('第一行 有 空白')
+    expect(reasoningPeek('   \n\n')).toBe('')
+  })
+
+  it('clips a long first line with an ellipsis', () => {
+    const long = '甲'.repeat(120)
+    const peek = reasoningPeek(long)
+    expect(peek).toBe(`${'甲'.repeat(80)}…`)
+    expect(reasoningPeek(long, 5)).toBe('甲甲甲甲甲…')
+  })
+
+  it('shows the peek inside the folded summary of a step', () => {
+    const process = processOf([step('m1', '', '先检查依赖\n然后跑测试', ['t1'])])
+    const html = renderToStaticMarkup(<ProcessBox process={process} />)
+    const summary = html.slice(html.indexOf('<summary>'), html.indexOf('</summary>'))
+    expect(summary).toContain('reasoning-peek')
+    expect(summary).toContain('先检查依赖')
+    expect(summary).not.toContain('然后跑测试')
+  })
+})
 
 describe('ProcessBox collapsed rendering', () => {
   it('renders only the five newest steps of a long run', () => {
@@ -76,6 +101,9 @@ describe('ProcessBox collapsed rendering', () => {
     expect(countSteps(html)).toBe(5)
     expect(html).toContain('思考过程')
     expect(html).not.toMatch(/思考过程\s*\d/)
+    // The title carries the first line of that step's thinking instead.
+    expect(html).toContain('思考五')
+    expect(html).toContain('思考六')
     expect(html).not.toContain('思考一')
   })
 

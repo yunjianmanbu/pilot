@@ -4,18 +4,12 @@ import type {
   EvolutionPolicy,
   EvolutionPolicyVersion,
   EvolutionStage,
-  JudgeUsage,
   MemoryEntry,
   ProfileEvidence,
   ProfileExplanation,
   ProfileComparison,
-  ProfileJudgeVerdict,
   ProfileReview,
-  ProfileRuleRemoval,
-  ProfileStrategy,
   ProfileVersion,
-  RunRecord,
-  Session,
 } from '../../shared/types'
 import { describeParent, selectParentProfile } from '../../core/profile-archive'
 import {
@@ -28,14 +22,11 @@ import {
   diffAddendum,
   fallbackExplanation,
   isProtectedRule,
-  normalize,
-  similarity,
 } from '../../shared/profile-diff'
 import type { Store } from '../store'
 import type { ModelClient, ModelRequest } from './loop'
 import {
   ProfileBenchmark,
-  costRegression,
   reusableComparison,
   toProfileComparison,
   type BenchmarkRun,
@@ -44,7 +35,7 @@ import {
 import { createBenchmarkTaskRunner } from './benchmark-runner'
 import { DEFAULT_BENCHMARK_TASKS } from './profile-benchmark-tasks'
 import { isUserTaskTurn } from './context'
-import { coerceScore, coerceTrue, extractJsonObject as extractJson } from './json'
+import { extractJsonObject as extractJson } from './json'
 import {
   JUDGE_IDLE_TIMEOUT_MS,
   JUDGE_TOTAL_TIMEOUT_MS,
@@ -54,364 +45,32 @@ import {
   unparsedResponseReason,
 } from './judge-runtime'
 
-const MAX_EVIDENCE_RUNS = 40
+import {
+  applyActivationGate,
+  applyComparison,
+  judgeVerdict,
+  summarizeReview,
+} from './evolution/verdict'
+import type { JudgePanel, ProfileJudge, ReviewComparisonProvider } from './evolution/verdict'
+import {
+  cycleSummary,
+  evidenceSummary,
+  evidenceText,
+  formatToolFailures,
+  hasChinese,
+  isFailedRun,
+  normalizeStrategy,
+  parseExplanation,
+  percent,
+  policyForPrompt,
+  recentCycleLines,
+  reflectionTranscript,
+  scrub,
+} from './evolution/evidence'
 
-/** One reviewer model, already bound to a client by the runner. */
-export interface ProfileJudge {
-  id: string
-  label: string
-  model: string
-  /** True when the endpoint or model differs from the execution model. */
-  external: boolean
-  client: ModelClient
-}
-
-/** Injectable benchmark for tests and for callers that measured out of band. */
-export type ReviewComparisonProvider = (
-  scope: 'workspace' | 'global',
-  workspacePath: string,
-  profileId: string,
-) => Promise<ProfileComparison | undefined>
-
-function judgeVerdict(
-  judge: ProfileJudge,
-  content: string,
-  gate: { passScore: number; minRuns: number },
-  evidenceRuns: number,
-): ProfileJudgeVerdict | null {
-  const parsed = extractJson(content)
-  if (!parsed) return null
-  const score = coerceScore(parsed['score']) ?? 0
-  const risks = Array.isArray(parsed['risks'])
-    ? parsed['risks']
-        .filter((item): item is string => typeof item === 'string')
-        .slice(0, 8)
-        .map((risk) => scrub(risk, 300))
-    : []
-  const removals = Array.isArray(parsed['removals'])
-    ? (parsed['removals'] as unknown[])
-        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-        .slice(0, 40)
-        .map((item) => {
-          const rule =
-            typeof item['rule'] === 'string'
-              ? item['rule']
-              : typeof item['text'] === 'string'
-                ? item['text']
-                : ''
-          return {
-            rule: scrub(rule, 1_200),
-            justified: item['justified'] === true,
-            reason: typeof item['reason'] === 'string' ? scrub(item['reason'], 1_000) : '',
-          }
-        })
-        .filter((item) => item.rule.trim().length > 0)
-    : []
-  return {
-    id: judge.id,
-    label: judge.label,
-    model: judge.model,
-    external: judge.external,
-    score: Math.round(score),
-    pass: coerceTrue(parsed['pass']) && score >= gate.passScore && evidenceRuns >= gate.minRuns,
-    notes: typeof parsed['notes'] === 'string' ? scrub(parsed['notes'], 2_000) : '',
-    risks,
-    ...(removals.length > 0 ? { removals } : {}),
-  }
-}
-
-interface JudgePanel {
-  judges: ProfileJudge[]
-  verdicts: ProfileJudgeVerdict[]
-  errors: string[]
-  /** Spend of every judge request in this panel, including the ones that failed. */
-  usage: JudgeUsage
-}
-
-/**
- * One review record for the whole panel. Every configured reviewer has to pass
- * and no reviewer may fail: a single working model must not activate a profile
- * the others rejected, and an unreachable reviewer blocks instead of abstaining.
- */
-function sameRule(left: string, right: string): boolean {
-  return normalize(left) === normalize(right) || similarity(left, right) >= 0.75
-}
-
-/**
- * Aggregate every reviewer's rationale for every deleted rule. A missing
- * entry, an empty reason or one rejection makes the whole removal unjustified.
- * The caller turns that into an activation block; it can never be waved through
- * by a high rubric score.
- */
-function summarizeRemovals(
-  panel: JudgePanel,
-  removedRules: string[],
-): ProfileRuleRemoval[] {
-  return removedRules.map((rule) => {
-    const entries = panel.verdicts.map((verdict) => {
-      const found = verdict.removals?.find((entry) => sameRule(entry.rule, rule))
-      return { verdict, found }
-    })
-    const covered = entries.filter(
-      (entry) => entry.found && entry.found.justified && entry.found.reason.trim().length > 0,
-    )
-    const reason = entries
-      .map(({ verdict, found }) =>
-        found
-          ? `${verdict.label}: ${found.reason.trim() || '未说明理由'}`
-          : `${verdict.label}: 未说明理由`,
-      )
-      .join('；')
-    return {
-      rule,
-      justified: entries.length > 0 && covered.length === entries.length,
-      reason: reason || '评审没有覆盖这条删除。',
-      judges: covered.map((entry) => entry.verdict.label),
-    }
-  })
-}
-
-/**
- * Suggestion recorded when the review was a self-check. It never changes the
- * verdict: a profile reviewed by its own run model still scores, it just stops
- * being called independent and the user gets the one setting that fixes it.
- */
-function independenceAdvice(judges: ProfileJudge[]): string {
-  const fallbackOnly = judges.length === 1 && judges[0]?.id === 'default'
-  return fallbackOnly
-    ? '还没有配置评估模型，这次评审由会话模型自评；建议在设置里添加一个不同来源的评估模型后再评审。'
-    : '评估模型与会话模型同源，这次评审等同于自评；建议换一个不同来源的评估模型后再评审。'
-}
-
-function summarizeReview(
-  panel: JudgePanel,
-  fallback: { pass: string; fail: string },
-  removedRules: string[] = [],
-  baselineVersion?: number,
-): ProfileReview {
-  const removals = summarizeRemovals(panel, removedRules)
-  const removalsPass = removals.every((entry) => entry.justified)
-  const pass =
-    panel.errors.length === 0 &&
-    panel.verdicts.every((verdict) => verdict.pass) &&
-    removalsPass
-  const score = Math.round(Math.min(...panel.verdicts.map((verdict) => verdict.score)))
-  const baseNotes =
-    panel.verdicts.length === 1
-      ? panel.verdicts[0]!.notes || (pass ? fallback.pass : fallback.fail)
-      : [...panel.verdicts]
-          .sort((a, b) => a.score - b.score)
-          .map((verdict) => `${verdict.label}（${verdict.score}）: ${verdict.notes}`)
-          .join('\n')
-  const removalNotes =
-    removals.length > 0
-      ? `\n删除规则：${removals
-          .map((entry) => `${entry.justified ? '有理由' : '缺少理由'}（${entry.rule.slice(0, 80)}）`)
-          .join('；')}`
-      : ''
-  const notes = `${baseNotes}${removalNotes}`
-  const risks = Array.from(new Set(panel.verdicts.flatMap((verdict) => verdict.risks))).slice(0, 8)
-  const independent = panel.verdicts.every((verdict) => verdict.external)
-  // Recorded first so a long rubric risk list cannot push the suggestion away.
-  if (!independent) risks.unshift(independenceAdvice(panel.judges))
-  if (!removalsPass) {
-    risks.push('有旧规则被删除但没有得到每位评审的明确理由，不能自动切换。')
-  }
-  return {
-    score,
-    pass,
-    notes: scrub(notes, 2_000),
-    risks: risks.slice(0, 8),
-    at: new Date().toISOString(),
-    model: scrub(panel.judges.map((judge) => judge.model).join(' + '), 300),
-    independent,
-    judges: panel.verdicts,
-    ...(baselineVersion !== undefined ? { baselineVersion } : {}),
-    ...(removals.length > 0 ? { removals } : {}),
-    ...(panel.errors.length > 0 ? { judgeErrors: panel.errors } : {}),
-    // Cost stays visible next to the verdict it paid for, so a review that spent
-    // four judge calls cannot read like a single cheap check.
-    ...(panel.usage.calls > 0 ? { judgeUsage: panel.usage } : {}),
-  }
-}
-
-/**
- * Fold a paired benchmark into the review record. A benchmark that was run and
- * lost blocks activation regardless of the rubric score; a benchmark that was
- * run and won is quoted as evidence; one that could not decide is reported as
- * such and left to the reviewer, so a tiny sample never silently decides.
- */
-export function applyComparison(
-  review: ProfileReview,
-  comparison?: ProfileComparison,
-): ProfileReview {
-  if (!comparison) return review
-  const label =
-    comparison.verdict === 'better'
-      ? '实测更优'
-      : comparison.verdict === 'worse'
-        ? '实测更差'
-        : comparison.verdict === 'inconclusive'
-          ? '实测无显著差异'
-          : '实测样本不足'
-  const cost = costRegression(comparison.current, comparison.candidate)
-  const lines = [
-    `${label}：候选 ${comparison.wins} 胜 / ${comparison.losses} 负 / ${comparison.ties} 平（共 ${comparison.tasks} 组）`,
-    ...comparison.reasons,
-    ...(cost ? [`成本/时长：${cost}`] : []),
-  ]
-  const risks = new Set(review.risks)
-  if (comparison.verdict === 'worse') risks.add('实测能力下降')
-  // A large cost increase is a risk on the review card, not a veto on its own:
-  // `compareBenchmark` already downgrades a marginal win past the ceilings.
-  if (cost && comparison.verdict !== 'better') risks.add('成本或时长明显上升')
-  return {
-    ...review,
-    pass: review.pass && comparison.verdict !== 'worse',
-    notes: scrub(`${lines.join('；')}\n${review.notes}`, 2_000),
-    risks: Array.from(risks).slice(0, 8),
-    comparison,
-  }
-}
-
-/**
- * The final switch decision. Rubric review, deletion rationale and measured
- * behaviour are separate gates; a candidate must clear all three and the
- * measured result must be a clear win. A tie is not enough to replace the
- * version that is already running.
- */
-export function applyActivationGate(
-  review: ProfileReview,
-  comparison: ProfileComparison | undefined,
-  extraReasons: string[] = [],
-): ProfileReview {
-  const reasons: string[] = []
-  if (!review.pass) reasons.push('独立评审未通过')
-  if (review.judgeErrors && review.judgeErrors.length > 0) {
-    reasons.push('有评审模型没有返回结果')
-  }
-  if (review.removals?.some((entry) => !entry.justified)) {
-    reasons.push('删除旧规则缺少评审理由')
-  }
-  if (!comparison) {
-    reasons.push('尚未与当前版本完成实测对比')
-  } else if (comparison.verdict === 'worse') {
-    reasons.push('实测比当前版本更差')
-  } else if (comparison.verdict === 'inconclusive') {
-    reasons.push('实测没有明显优于当前版本')
-  } else if (comparison.verdict === 'insufficient') {
-    reasons.push('实测样本不足，无法证明更好')
-  }
-  const cost = comparison ? costRegression(comparison.current, comparison.candidate) : undefined
-  if (cost && comparison && comparison.verdict !== 'better') {
-    reasons.push('成本或时长明显上升')
-  }
-  for (const reason of extraReasons) {
-    if (reason.trim()) reasons.push(reason.trim())
-  }
-  const unique = Array.from(new Set(reasons))
-  return {
-    ...review,
-    activation: { ready: unique.length === 0, reasons: unique },
-  }
-}
-
-function scrub(text: string, limit: number): string {
-  return text
-    .replace(/(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,})/g, '<redacted>')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, limit)
-}
-
-/**
- * Compact, secret-scrubbed digest of failed tool calls. Reflection is grounded
- * in the actual error text instead of a vague "toolErrors: N" count.
- */
-export function formatToolFailures(
-  messages: Array<{ role: string; name?: string; content: string; isError?: boolean }>,
-  limit = 8,
-): string {
-  const lines: string[] = []
-  for (const message of messages) {
-    if (message.role !== 'tool' || !message.isError) continue
-    const detail = scrub(message.content.replace(/^ERROR:\s*/i, ''), 240)
-    lines.push(`${message.name || 'tool'} → ${detail || '(no error text)'}`)
-  }
-  if (lines.length === 0) return '(none)'
-  return lines
-    .slice(-limit)
-    .map((line, index) => `${index + 1}. ${line}`)
-    .join('\n')
-}
-
-function runEvidence(run: RunRecord, index: number): string {
-  const parts = [
-    `${index + 1}. [${run.status}] ${scrub(run.prompt, 220) || '(no prompt)'}`,
-    `steps=${run.steps}`,
-    `tokens=${run.totalTokens}`,
-    `tools=${run.toolCalls}`,
-    `toolErrors=${run.toolErrors}`,
-    `changed=${run.filesChanged ?? 0}`,
-    `checked=${run.checked === true ? 'yes' : 'no'}`,
-  ]
-  if (run.feedback) {
-    parts.push(`feedback=${run.feedback.rating}${run.feedback.note ? `(${scrub(run.feedback.note, 200)})` : ''}`)
-  }
-  if (run.error) parts.push(`error=${scrub(run.error, 200)}`)
-  return parts.join(' | ')
-}
-
-function evidenceText(runs: RunRecord[]): string {
-  if (runs.length === 0) return '(no runs yet)'
-  return runs.slice(0, MAX_EVIDENCE_RUNS).map(runEvidence).join('\n')
-}
-
-function normalizeStrategy(value: Record<string, unknown>): ProfileStrategy {
-  const strategy: ProfileStrategy = {}
-  if (typeof value['maxSteps'] === 'number' && value['maxSteps'] >= 20 && value['maxSteps'] <= 500) {
-    strategy.maxSteps = Math.round(value['maxSteps'])
-  }
-  if (
-    typeof value['temperature'] === 'number' &&
-    value['temperature'] >= 0 &&
-    value['temperature'] <= 1
-  ) {
-    strategy.temperature = Math.round(value['temperature'] * 100) / 100
-  }
-  return strategy
-}
-
-/**
- * Lenient reader for the model's plain-language fields. Returns undefined when
- * the essentials are missing so callers can fall back to a generated summary
- * instead of showing half a card.
- */
-function parseExplanation(value: unknown, model: string): ProfileExplanation | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const record = value as Record<string, unknown>
-  const headline = typeof record['headline'] === 'string' ? record['headline'].trim() : ''
-  const impact = typeof record['impact'] === 'string' ? record['impact'].trim() : ''
-  if (!headline || !impact) return undefined
-  const list = (input: unknown, cap: number): string[] =>
-    Array.isArray(input)
-      ? input
-          .filter((item): item is string => typeof item === 'string')
-          .map((item) => item.trim())
-          .filter(Boolean)
-          .slice(0, cap)
-      : []
-  return {
-    headline: headline.slice(0, 300),
-    changes: list(record['changes'], 8).map((item) => item.slice(0, 400)),
-    impact: impact.slice(0, 600),
-    risks: list(record['risks'], 6).map((item) => item.slice(0, 400)),
-    recommend: record['recommend'] === 'observe' ? 'observe' : 'enable',
-    reason: typeof record['reason'] === 'string' ? record['reason'].trim().slice(0, 600) : '',
-    model,
-    at: new Date().toISOString(),
-  }
-}
+export { applyComparison, applyActivationGate } from './evolution/verdict'
+export { formatToolFailures, reflectionTranscript } from './evolution/evidence'
+export type { ProfileJudge, ReviewComparisonProvider } from './evolution/verdict'
 
 const CHINESE_OUTPUT_RULE =
   'Language: write every human-readable field (rules, rationale, notes, risks, lessons) in Simplified Chinese, even when the evidence, project memory or existing profile is in English. Keep file names, paths, commands, tool names, code and API identifiers exactly as written; never translate them. If you quote an error, keep the original text and explain it in Chinese.'
@@ -576,63 +235,6 @@ const META_REVIEWER_SYSTEM = [
 
 /** Minimum judge score for a loop-policy change; below it the draft stays inactive. */
 const META_REVIEW_SCORE = 80
-
-function policyForPrompt(policy: EvolutionPolicy): string {
-  return JSON.stringify({
-    autoApply: policy.autoApply,
-    minRuns: policy.minRuns,
-    reviewScore: policy.reviewScore,
-    cooldownRuns: policy.cooldownRuns,
-    evidenceRuns: policy.evidenceRuns,
-    watchRuns: policy.watchRuns,
-    regressionDelta: policy.regressionDelta,
-    metaEvery: policy.metaEvery,
-    focus: policy.focus,
-  })
-}
-
-function isFailedRun(run: RunRecord): boolean {
-  return run.status === 'failed' || run.status === 'interrupted' || run.status === 'max_steps'
-}
-
-function percent(value: number): string {
-  return `${Math.round(value * 1000) / 10}%`
-}
-
-function cycleSummary(cycles: EvolutionCycle[]): string {
-  if (cycles.length === 0) return '(no cycles yet)'
-  const completed = cycles.filter((cycle) => cycle.status === 'completed').length
-  const rejected = cycles.filter((cycle) => cycle.status === 'rejected').length
-  const failed = cycles.filter((cycle) => cycle.status === 'failed').length
-  const activated = cycles.filter((cycle) => cycle.activated).length
-  const rollbacks = cycles.filter((cycle) => cycle.trigger === 'watch').length
-  const scores = cycles
-    .map((cycle) => cycle.score)
-    .filter((score): score is number => typeof score === 'number')
-  const avgScore = scores.length
-    ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length)
-    : 'n/a'
-  return `cycles=${cycles.length}, completed=${completed}, rejected=${rejected}, failed=${failed}, activated=${activated}, autoRollbacks=${rollbacks}, avgReviewScore=${avgScore}`
-}
-
-function recentCycleLines(cycles: EvolutionCycle[], limit = 8): string {
-  if (cycles.length === 0) return '(none)'
-  return cycles
-    .slice(0, limit)
-    .map((cycle) => {
-      const score = typeof cycle.score === 'number' ? `score=${cycle.score}` : 'score=n/a'
-      return `- [${cycle.trigger}/${cycle.status}] ${score}, activated=${cycle.activated}, ${scrub(cycle.summary, 240)}`
-    })
-    .join('\n')
-}
-
-function hasChinese(text: string): boolean {
-  for (const char of text) {
-    const code = char.codePointAt(0) ?? 0
-    if (code >= 0x3400 && code <= 0x9fff) return true
-  }
-  return false
-}
 
 const REFLECTION_SYSTEM = [
   'You are Pilot\'s reflection layer. You read one completed run — especially its tool failures, policy denials and final error — and extract durable lessons that would improve future runs.',
@@ -1928,34 +1530,3 @@ export class EvolutionService {
   }
 }
 
-export function reflectionTranscript(session: Session): string {
-  const parts: string[] = []
-  for (const message of session.messages) {
-    if (message.role === 'user') {
-      // The loop writes continuation prompts, run reminders and turn digests
-      // as user turns. Reflecting on them as `USER:` teaches the profile that
-      // Pilot asked itself to do things, so they are labelled separately.
-      if (!message.content.trim()) continue
-      if (isUserTaskTurn(message)) parts.push(`USER: ${scrub(message.content, 1_500)}`)
-      else parts.push(`INTERNAL: ${scrub(message.content, 500)}`)
-      continue
-    }
-    if (message.role === 'assistant') {
-      if (message.content.trim()) parts.push(`ASSISTANT: ${scrub(message.content, 2_000)}`)
-      for (const call of message.toolCalls ?? []) {
-        const args = scrub(JSON.stringify(call.arguments ?? {}), 300)
-        parts.push(`TOOL CALL ${call.name} ${args}`)
-      }
-      continue
-    }
-    if (message.role === 'tool') {
-      const status = message.isError ? 'ERROR' : 'OK'
-      parts.push(`TOOL ${message.name ?? ''} ${status}: ${scrub(message.content, 600)}`)
-    }
-  }
-  return parts.join('\n')
-}
-
-export function evidenceSummary(evidence: ProfileEvidence): string {
-  return `${evidence.runs} runs · ${evidence.failures} failures · ${evidence.verified ?? 0} verified · ${evidence.avgSteps} avg steps · ${evidence.avgTokens} avg tokens · +${evidence.positive}/-${evidence.negative} feedback`
-}

@@ -35,6 +35,8 @@ import { EvolutionPanel } from './components/EvolutionPanel'
 import { SessionResourcesPanel } from './components/SessionResourcesPanel'
 import { QualityBell } from './components/QualityBell'
 import { ResourceMeters } from './components/ResourceMeters'
+import { SystemResourceDialog } from './components/SystemResourceDialog'
+import { SystemToolsPanel } from './components/SystemToolsPanel'
 import { AllTodosPanel } from './components/AllTodosPanel'
 import { AllScheduledPanel } from './components/AllScheduledPanel'
 import { MemoryPanel } from './components/MemoryPanel'
@@ -43,7 +45,6 @@ import { SelfCheckPanel } from './components/SelfCheckPanel'
 import { PluginsPanel } from './components/PluginsPanel'
 import { ReviewDialog } from './components/ReviewDialog'
 import { ReviewReportDialog } from './components/ReviewReportDialog'
-import { ScheduleDialog } from './components/ScheduleDialog'
 import { SelectMenu } from './components/SelectMenu'
 import type { ResourceTab } from './session-resources'
 import { FeedbackDialog } from './components/FeedbackDialog'
@@ -52,7 +53,6 @@ import { Sidebar } from './components/Sidebar'
 import { TopbarMenu, type TopbarMenuItem } from './components/TopbarMenu'
 import { WorkspaceDialog } from './components/WorkspaceDialog'
 import {
-  ClockIcon,
   CopyIcon,
   DiffIcon,
   DownloadIcon,
@@ -66,6 +66,7 @@ import {
   MoonIcon,
   PhoneIcon,
   PilotLogo,
+  SettingsIcon,
   SunIcon,
   UpdateIcon,
   XIcon,
@@ -363,7 +364,8 @@ export function App() {
   const [artifactSeed, setArtifactSeed] = useState<{ path: string; key: number } | null>(null)
   const artifactSeedKey = useRef(0)
   const [checkpointsOpen, setCheckpointsOpen] = useState(false)
-  const [scheduleOpen, setScheduleOpen] = useState(false)
+  /** 顶栏资源条点开的详情弹框。 */
+  const [resourceDialogOpen, setResourceDialogOpen] = useState(false)
   const [scheduleRevision, setScheduleRevision] = useState(0)
   /** 全量待办视图的刷新信号：任何会话的待办变化都会自增。 */
   const [todosRevision, setTodosRevision] = useState(0)
@@ -2154,9 +2156,9 @@ export function App() {
     [loadSession, pushToast],
   )
 
+  /** 待办上的时钟按钮：把内容带进会话内的定时面板，由面板自己展开表单。 */
   const scheduleTodo = useCallback((todo: TodoItem) => {
     setScheduleSeed({ content: todo.text, todoId: todo.id })
-    setScheduleOpen(true)
   }, [])
 
   const convertScheduledTaskToTodo = useCallback(
@@ -2753,16 +2755,7 @@ export function App() {
         active: changesOpen,
         onSelect: () => setChangesOpen(true),
       })
-      sessionMenuItems.push({
-        key: 'schedule',
-        label: t("定时任务"),
-        icon: <ClockIcon width={15} height={15} />,
-        active: scheduleOpen,
-        onSelect: () => {
-          setScheduleSeed(null)
-          setScheduleOpen(true)
-        },
-      })
+      // 定时任务不再是弹框：入口在输入框上方的待办列表下面，与移动端一致。
     }
   }
 
@@ -2799,8 +2792,21 @@ export function App() {
           </span>
         </div>
         <div className="titlebar-path">{workspace?.path ?? ''}</div>
-        {/* 本机负载常驻在窗口最上边这条栏：切到任何视图都能看。 */}
-        <ResourceMeters workspacePath={detail?.workspace.path ?? activeWorkspace ?? undefined} />
+        {/* 本机负载常驻在窗口最上边这条栏：切到任何视图都能看；点击看详情。 */}
+        <ResourceMeters
+          workspacePath={detail?.workspace.path ?? activeWorkspace ?? undefined}
+          onOpen={() => setResourceDialogOpen(true)}
+        />
+        {/* 设置放在资源条后面：它属于「这台机器」这一组，不跟会话操作混在一起。 */}
+        <button
+          type="button"
+          className={`titlebar-icon${settingsOpen ? ' is-active' : ''}`}
+          title={t("设置")}
+          aria-label={t("设置")}
+          onClick={() => openSettings()}
+        >
+          <SettingsIcon width={15} height={15} />
+        </button>
       </div>
 
       <div className="app-shell">
@@ -2811,7 +2817,6 @@ export function App() {
           activeSession={activeSessionId}
           view={view}
           settings={settings}
-          settingsOpen={settingsOpen}
           feedbackOpen={feedbackOpen}
           version={version}
           update={update}
@@ -2859,7 +2864,9 @@ export function App() {
                 <span className="header-title static">
                   {view === 'memory'
                     ? t("项目记忆")
-                    : view === 'module-check'
+                    : view === 'tools'
+                      ? t("系统工具")
+                      : view === 'module-check'
                       ? t("模块自检")
                       : view === 'todos'
                         ? t("全部待办")
@@ -3076,6 +3083,11 @@ export function App() {
                 onClearSentTodos={clearSentTodos}
                 onScheduleTodo={scheduleTodo}
                 onSetTodoPriority={setTodoPriority}
+                scheduleSeed={scheduleSeed}
+                onScheduleSeedUsed={() => setScheduleSeed(null)}
+                onConvertTodoToSchedule={convertTodoToSchedule}
+                onConvertScheduleToTodo={convertScheduledTaskToTodo}
+                onNotice={(message) => pushToast(message, 'info')}
                 onOpenArtifact={openArtifact}
                 onOpenArtifacts={openArtifacts}
                 />
@@ -3099,6 +3111,8 @@ export function App() {
               onError={showError}
               onNotice={(message) => pushToast(message, 'info')}
             />
+          ) : view === 'tools' ? (
+            <SystemToolsPanel workspace={workspace} onError={showError} />
           ) : view === 'scheduled' ? (
             <AllScheduledPanel
               revision={scheduleRevision}
@@ -3169,6 +3183,14 @@ export function App() {
           tab={resourcesTab}
           onTabChange={setResourcesTab}
           artifactSeed={artifactSeed}
+          memory={detail?.memory ?? []}
+          onAddMemory={addMemory}
+          onDeleteMemory={deleteMemory}
+          onOpenMemoryPanel={() => {
+            setResourcesTab(null)
+            setArtifactSeed(null)
+            setView('memory')
+          }}
           onOpenMessage={openMessage}
           onOpenChanges={() => {
             setResourcesTab(null)
@@ -3220,19 +3242,10 @@ export function App() {
         />
       ) : null}
 
-      {scheduleOpen && session ? (
-        <ScheduleDialog
-          session={session}
-          revision={scheduleRevision}
-          seed={scheduleSeed}
-          onSeedUsed={() => setScheduleSeed(null)}
-          onConvertTodo={convertTodoToSchedule}
-          onConvertToTodo={convertScheduledTaskToTodo}
-          onClose={() => {
-            setScheduleOpen(false)
-            setScheduleSeed(null)
-          }}
-          onError={showError}
+      {resourceDialogOpen ? (
+        <SystemResourceDialog
+          workspacePath={detail?.workspace.path ?? activeWorkspace ?? undefined}
+          onClose={() => setResourceDialogOpen(false)}
         />
       ) : null}
 

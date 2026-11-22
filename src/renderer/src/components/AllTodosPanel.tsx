@@ -30,7 +30,9 @@ export function AllTodosPanel({
 }) {
   const [groups, setGroups] = useState<TodoGroup[] | null>(null)
   const [busyId, setBusyId] = useState('')
-  const [showSent, setShowSent] = useState(false)
+  /** 「待发送」只列还没发的；「含已发送」把已发的也带出来。 */
+  const [tab, setTab] = useState<'pending' | 'all'>('pending')
+  const showSent = tab === 'all'
 
   const load = useCallback(() => {
     setGroups(null)
@@ -147,21 +149,54 @@ export function AllTodosPanel({
               : t('{v1} 项待发送 · 分布在 {v2} 个会话', { v1: totals.pending, v2: totals.sessions })}
           </p>
         </div>
-        <div className="all-todos-actions">
-          {totals.sent > 0 ? (
-            <label className="all-todos-toggle">
-              <input
-                type="checkbox"
-                checked={showSent}
-                onChange={(event) => setShowSent(event.target.checked)}
-              />
-              {t('显示已发送 {v1} 项', { v1: totals.sent })}
-            </label>
-          ) : null}
-          <button type="button" className="icon-button" title={t('刷新')} onClick={load}>
-            <RefreshIcon width={15} height={15} />
-          </button>
+        <div className="stat-strip">
+          <div className="stat">
+            <strong>{totals.pending}</strong>
+            <span>{t('项待发送')}</span>
+          </div>
+          <div className="stat">
+            <strong>{totals.sent}</strong>
+            <span>{t('项已发送')}</span>
+          </div>
+          <div className="stat">
+            <strong>{totals.sessions}</strong>
+            <span>{t('个会话')}</span>
+          </div>
         </div>
+      </div>
+
+      <div className="page-tabs" role="tablist" aria-label={t('待办筛选')}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'pending'}
+          className={`page-tab${tab === 'pending' ? ' is-active' : ''}`}
+          onClick={() => setTab('pending')}
+        >
+          <TodoIcon width={15} height={15} />
+          {t('待发送')}
+          {totals.pending > 0 ? <span className="page-tab-badge">{totals.pending}</span> : null}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'all'}
+          className={`page-tab${tab === 'all' ? ' is-active' : ''}`}
+          onClick={() => setTab('all')}
+        >
+          <SendIcon width={15} height={15} />
+          {t('含已发送')}
+          {totals.sent > 0 ? <span className="page-tab-badge">{totals.sent}</span> : null}
+        </button>
+        <button
+          type="button"
+          className="page-tabs-refresh"
+          title={t('刷新')}
+          aria-label={t('刷新')}
+          onClick={load}
+        >
+          <RefreshIcon width={14} height={14} />
+        </button>
       </div>
 
       <div className="all-todos-body">

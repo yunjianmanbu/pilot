@@ -923,6 +923,58 @@ const state = {
   sheet: null,
   files: { open: false, dir: '.', nodes: [], loading: false, error: '', preview: null },
   artifacts: { loading: false, items: [], error: '', preview: null },
+  checkpoints: { loading: false, items: [], error: '', busy: '' },
+  changes: { loading: false, items: [], error: '', busy: '', expanded: {} },
+  resources: {
+    loading: false,
+    error: '',
+    tab: 'links',
+    links: [],
+    tools: [],
+    memory: [],
+    knowledge: [],
+    files: [],
+    preview: null,
+    loaded: {},
+  },
+  billing: { loading: false, error: '', report: null },
+  models: { loading: false, resources: [], sessionModelId: '', approvalMode: '', error: '', busy: '' },
+  learning: {
+    loading: false,
+    error: '',
+    busy: '',
+    enabled: false,
+    hosts: [],
+    effectiveHosts: [],
+    defaultHosts: [],
+    ledger: '',
+    entryTotal: 0,
+    summary: {},
+    entries: [],
+    hostsDraft: '',
+  },
+  check: {
+    loading: false,
+    error: '',
+    busy: '',
+    enabled: false,
+    lastRunAt: '',
+    nextRunAt: '',
+    historyCount: 0,
+    decisions: 0,
+    proposals: 0,
+    report: null,
+    expanded: {},
+    selfCheck: null,
+  },
+  evolution: {
+    loading: false,
+    error: '',
+    busy: '',
+    workspacePath: '',
+    state: null,
+  },
+  quickCommands: [],  quickCommandsLoaded: false,
   expandedProcess: false,
   expandedItems: {},
   expandedReasoning: {},
@@ -980,6 +1032,7 @@ const ICON_PATHS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4.5 19.5h15"/>',
 }
 
 function icon(name, size = 18, className = '') {
@@ -1263,7 +1316,14 @@ function chatMenu() {
       <button type="button" data-action="rename-session">${icon('settings', 15)}重命名会话</button>
       <button type="button" data-action="open-artifacts">${icon('file', 15)}本次产出文件</button>
       <button type="button" data-action="open-files">${icon('folder', 15)}会话文件</button>
+      <button type="button" data-action="open-resources">${icon('list', 15)}会话资源</button>
+      <button type="button" data-action="open-changes">${icon('terminal', 15)}变更审阅</button>
+      <button type="button" data-action="open-checkpoints">${icon('clock', 15)}回退点</button>
+      <button type="button" data-action="open-models">${icon('spark', 15)}模型与权限</button>
       <button type="button" data-action="open-schedules">${icon('clock', 15)}定时任务</button>
+      <button type="button" data-action="open-learning">${icon('list', 15)}自主学习</button>
+      <button type="button" data-action="open-check">${icon('check', 15)}体检</button>
+      <button type="button" data-action="open-evolution">${icon('spark', 15)}自我进化</button>
       <button type="button" data-action="copy-transcript">${icon('copy', 15)}复制全部对话</button>
       <button type="button" data-action="fork-session">${icon('fork', 15)}创建会话副本</button>
       ${state.session?.running ? '' : `<button type="button" data-action="retry-run">${icon('refresh', 15)}重新执行上一轮</button>`}
@@ -1502,6 +1562,10 @@ function sessionListHtml() {
             <span>${escapeHtml(elapsed ? `已运行 ${elapsed}` : relativeTime(session.updatedAt))}</span>
           </span>
           ${sessionPreview(session) ? `<span class="session-preview">${escapeHtml(sessionPreview(session))}</span>` : ''}
+          <span class="session-shortcuts">${SESSION_SHORTCUTS.map(
+            (entry) =>
+              `<span class="session-chip" data-action="open-session-resources" data-id="${escapeHtml(session.id)}" data-tab="${entry.id}">${entry.label}</span>`,
+          ).join('')}</span>
         </span>
         <span class="session-badges">
           ${running ? `<span class="badge mint">执行中</span>` : ''}
@@ -1956,6 +2020,28 @@ function continueBarHtml() {
   </div>`
 }
 
+function quickCommandLabel(command) {
+  const text = String(command?.content || '').trim().split('\n')[0]
+  return text.length > 16 ? `${text.slice(0, 16)}…` : text || '快捷指令'
+}
+
+/**
+ * 快捷指令是电脑端设置里维护的整段提示词，点一下就填进输入框，
+ * 手机端不提供编辑入口（改文案在桌面端更安全）。
+ */
+function quickCommandsHtml() {
+  const commands = Array.isArray(state.quickCommands) ? state.quickCommands : []
+  if (!commands.length) return ''
+  return `<div class="quick-commands">
+    ${commands
+      .map(
+        (command, index) =>
+          `<button type="button" class="quick-command" data-action="use-quick-command" data-index="${index}" title="${escapeHtml(String(command.content || ''))}">${icon('spark', 11)}${escapeHtml(quickCommandLabel(command))}</button>`,
+      )
+      .join('')}
+  </div>`
+}
+
 function composerHtml() {
   const running = runningNow()
   return `<form class="composer" id="composer" autocomplete="off">
@@ -2010,12 +2096,20 @@ function renderChat() {
         <div id="process-slot">${processHtml()}</div>
         <div id="queue-slot">${queueHtml()}</div>
         <div id="todo-slot">${todosHtml()}</div>
+        <div id="quick-command-slot">${quickCommandsHtml()}</div>
         ${composerHtml()}
       </div>
     </div>
     ${state.sheet === 'files' ? renderFilesSheet() : ''}
     ${state.sheet === 'artifacts' ? renderArtifactsSheet() : ''}
     ${state.sheet === 'schedules' ? renderSchedulesSheet() : ''}
+    ${state.sheet === 'checkpoints' ? renderCheckpointsSheet() : ''}
+    ${state.sheet === 'changes' ? renderChangesSheet() : ''}
+    ${state.sheet === 'resources' ? renderResourcesSheet() : ''}
+    ${state.sheet === 'models' ? renderModelsSheet() : ''}
+    ${state.sheet === 'learning' ? renderLearningSheet() : ''}
+    ${state.sheet === 'check' ? renderCheckSheet() : ''}
+    ${state.sheet === 'evolution' ? renderEvolutionSheet() : ''}
   </div>`
 }
 
@@ -2037,7 +2131,8 @@ function renderFilesSheet() {
       ${
         files.preview
           ? `<button type="button" class="button ghost small" data-action="file-back" style="margin-bottom:10px">${icon('back', 14)}返回文件列表</button>
-             <div class="file-preview">${escapeHtml(files.preview.content)}</div>`
+             <div class="file-preview">${escapeHtml(files.preview.content)}</div>
+             <button type="button" class="button ghost small block" data-action="download-file" data-scope="files" style="margin-top:10px">${icon('download', 14)}下载到手机</button>`
           : files.loading
             ? `<div class="empty-state"><span class="spinner"></span><p>正在读取文件…</p></div>`
             : files.error
@@ -2085,7 +2180,8 @@ function renderArtifactsSheet() {
       ${
         artifacts.preview
           ? `<button type="button" class="button ghost small" data-action="artifact-back" style="margin-bottom:10px">${icon('back', 14)}返回文件列表</button>
-             <div class="file-preview">${escapeHtml(artifacts.preview.content)}</div>`
+             <div class="file-preview">${escapeHtml(artifacts.preview.content)}</div>
+             <button type="button" class="button ghost small block" data-action="download-file" data-scope="artifacts" style="margin-top:10px">${icon('download', 14)}下载到手机</button>`
           : artifacts.loading
             ? `<div class="empty-state"><span class="spinner"></span><p>正在汇总产出文件…</p></div>`
             : artifacts.error
@@ -2192,7 +2288,872 @@ function renderSchedulesSheet() {
   </div>`
 }
 
+/* ── Rendering: checkpoints / changes / resources / models ─────────────── */
+
+function checkpointMeta(checkpoint) {
+  const parts = []
+  if (checkpoint?.createdAt) parts.push(relativeTime(checkpoint.createdAt))
+  if (Number.isFinite(Number(checkpoint?.files))) parts.push(`${Number(checkpoint.files)} 个文件`)
+  if (Number.isFinite(Number(checkpoint?.messageCount))) {
+    parts.push(`${Number(checkpoint.messageCount)} 条消息`)
+  }
+  return parts.join(' · ')
+}
+
+function checkpointTitle(checkpoint) {
+  if (checkpoint?.label) return checkpoint.label
+  if (checkpoint?.baseline) return '初始快照'
+  if (checkpoint?.trigger === 'prerestore') return '回退前安全点'
+  return '快照'
+}
+
+function renderCheckpointsSheet() {
+  const sheet = state.checkpoints
+  const list = Array.isArray(sheet.items) ? sheet.items : []
+  return `<div class="sheet-backdrop" data-action="close-sheet">
+    <div class="sheet tall" data-stop="true">
+      <div class="sheet-grip"></div>
+      <div class="sheet-head">
+        <div>
+          <h3>回退点</h3>
+          <p>把文件或对话恢复到某个快照 · 恢复前会自动存一份安全点</p>
+        </div>
+        <button type="button" class="icon-button" data-action="close-sheet" aria-label="关闭">${icon('close', 18)}</button>
+      </div>
+      <div class="sheet-toolbar">
+        <button type="button" class="button ghost tiny" data-action="load-checkpoints">刷新</button>
+        <span class="sheet-toolbar-hint">${list.length > 0 ? `${list.length} 个快照` : ''}</span>
+        <button type="button" class="button tiny" data-action="create-checkpoint" ${sheet.busy === 'create' ? 'disabled' : ''}>${sheet.busy === 'create' ? '正在保存…' : '新建快照'}</button>
+      </div>
+      <div class="sheet-list">
+        ${
+          sheet.loading
+            ? `<div class="sheet-empty">读取中…</div>`
+            : sheet.error
+              ? `<div class="error-banner">${icon('alert', 15)}<span>${escapeHtml(sheet.error)}</span></div>`
+              : list.length === 0
+                ? `<div class="sheet-empty">这个会话还没有回退点。跑完一轮或手动新建后会出现。</div>`
+                : list
+                    .map(
+                      (checkpoint) => `<div class="sheet-row-block">
+                        <div class="sheet-row">
+                          <span class="sheet-row-icon">${icon('clock', 16)}</span>
+                          <div>
+                            <strong>${escapeHtml(checkpointTitle(checkpoint))}</strong>
+                            <span>${escapeHtml(checkpointMeta(checkpoint))}${checkpoint.complete === false ? ' · 部分文件未快照' : ''}</span>
+                          </div>
+                        </div>
+                        <div class="row-actions">
+                          <button type="button" class="button tiny ghost" data-action="restore-checkpoint" data-id="${escapeHtml(checkpoint.id || '')}" data-mode="code" ${sheet.busy === checkpoint.id ? 'disabled' : ''}>只恢复文件</button>
+                          <button type="button" class="button tiny ghost" data-action="restore-checkpoint" data-id="${escapeHtml(checkpoint.id || '')}" data-mode="both" ${sheet.busy === checkpoint.id ? 'disabled' : ''}>连对话一起恢复</button>
+                        </div>
+                      </div>`,
+                    )
+                    .join('')
+        }
+      </div>
+      <p class="sheet-note">恢复会覆盖当前工作区文件；对话恢复会把该快照之后的消息移出会话</p>
+    </div>
+  </div>`
+}
+
+function changeStatusLabel(status) {
+  if (status === 'added') return '新增'
+  if (status === 'deleted') return '删除'
+  if (status === 'unreadable') return '无法读取'
+  return '修改'
+}
+
+function renderChangesSheet() {
+  const sheet = state.changes
+  const list = Array.isArray(sheet.items) ? sheet.items : []
+  return `<div class="sheet-backdrop" data-action="close-sheet">
+    <div class="sheet tall" data-stop="true">
+      <div class="sheet-grip"></div>
+      <div class="sheet-head">
+        <div>
+          <h3>变更审阅</h3>
+          <p>这个任务改过的文件 · 点一行看差异</p>
+        </div>
+        <button type="button" class="icon-button" data-action="close-sheet" aria-label="关闭">${icon('close', 18)}</button>
+      </div>
+      <div class="sheet-toolbar">
+        <button type="button" class="button ghost tiny" data-action="load-changes">刷新</button>
+        <span class="sheet-toolbar-hint">${list.length > 0 ? `${list.length} 个文件` : ''}</span>
+      </div>
+      <div class="sheet-list">
+        ${
+          sheet.loading
+            ? `<div class="sheet-empty">读取中…</div>`
+            : sheet.error
+              ? `<div class="error-banner">${icon('alert', 15)}<span>${escapeHtml(sheet.error)}</span></div>`
+              : list.length === 0
+                ? `<div class="sheet-empty">这个任务还没改动文件。</div>`
+                : list
+                    .map((change, index) => {
+                      const key = String(change.path || index)
+                      const expanded = Boolean(sheet.expanded[key])
+                      const diff = String(change.diff || '')
+                      return `<div class="sheet-row-block">
+                        <button type="button" class="sheet-row" data-action="toggle-change" data-key="${escapeHtml(key)}">
+                          <span class="sheet-row-icon">${icon('file', 16)}</span>
+                          <div>
+                            <strong>${escapeHtml(change.name || key)} <span class="change-stat add">+${Number(change.added) || 0}</span> <span class="change-stat del">−${Number(change.removed) || 0}</span></strong>
+                            <span>${escapeHtml(change.path || '')}</span>
+                          </div>
+                          <span class="badge ${escapeHtml(String(change.status || 'modified'))}">${escapeHtml(changeStatusLabel(change.status))}</span>
+                        </button>
+                        ${expanded ? `<pre class="change-diff">${escapeHtml(diff.trim() ? (diff.length > 4000 ? `${diff.slice(0, 4000)}\n…` : diff) : change.note || '没有可显示的差异。')}</pre>` : ''}
+                        ${change.canRevert ? `<div class="row-actions"><button type="button" class="button tiny danger" data-action="revert-change" data-path="${escapeHtml(change.path || '')}" ${sheet.busy === change.path ? 'disabled' : ''}>还原这个文件</button></div>` : `
+                          <p class="row-note">${escapeHtml(change.note || '')}</p>`}
+                      </div>`
+                    })
+                    .join('')
+        }
+      </div>
+      <p class="sheet-note">还原前需要等当前任务结束 · 不能撤销二进制文件</p>
+    </div>
+  </div>`
+}
+
+const RESOURCE_TABS = [
+  { id: 'links', label: '链接' },
+  { id: 'tools', label: '工具' },
+  { id: 'memory', label: '记忆' },
+  { id: 'knowledge', label: '知识库' },
+  { id: 'files', label: '文件' },
+]
+
+/** 会话卡片上的快捷入口：点一下就跳到这条会话的对应分类。 */
+const SESSION_SHORTCUTS = [
+  { id: 'files', label: '文件' },
+  { id: 'knowledge', label: '知识库' },
+  { id: 'links', label: '链接' },
+  { id: 'tools', label: '工具' },
+  { id: 'memory', label: '记忆' },
+]
+
+function resourceEmptyText(tab) {
+  if (tab === 'links') return '这个会话还没出现过链接。'
+  if (tab === 'tools') return '这个会话还没调用过工具。'
+  if (tab === 'memory') return '这个会话没有用到项目记忆。'
+  if (tab === 'files') return '这个会话还没写过文件。'
+  return '还没有可以检索的对话内容。'
+}
+
+function resourceListHtml() {
+  const sheet = state.resources
+  const tab = sheet.tab
+  if (tab === 'links') {
+    return sheet.links
+      .map(
+        (link) => `<a class="sheet-row" href="${escapeHtml(link.url || '#')}" target="_blank" rel="noreferrer noopener">
+          <span class="sheet-row-icon">${icon('list', 16)}</span>
+          <div>
+            <strong>${escapeHtml(link.title || link.context || link.url || '')}</strong>
+            <span>${escapeHtml(link.host || link.url || '')}${Number(link.count) > 1 ? ` · 出现 ${Number(link.count)} 次` : ''}</span>
+          </div>
+        </a>`,
+      )
+      .join('')
+  }
+  if (tab === 'tools') {
+    return sheet.tools
+      .map(
+        (tool) => `<div class="sheet-row">
+          <span class="sheet-row-icon">${icon('terminal', 16)}</span>
+          <div>
+            <strong>${escapeHtml(tool.name || '')}</strong>
+            <span>${escapeHtml([tool.source, tool.risk, tool.version ? `v${tool.version}` : ''].filter(Boolean).join(' · '))}</span>
+          </div>
+          <span class="badge ${tool.approved === false ? 'amber' : 'mint'}">${tool.enabled === false ? '已停用' : tool.approved === false ? '待批准' : '可用'}</span>
+        </div>`,
+      )
+      .join('')
+  }
+  if (tab === 'memory') {
+    return sheet.memory
+      .map(
+        (entry) => `<div class="sheet-row">
+          <span class="sheet-row-icon">${icon('spark', 16)}</span>
+          <div>
+            <strong>${escapeHtml(entry.content || '')}</strong>
+            <span>${escapeHtml([entry.category, entry.createdAt ? relativeTime(entry.createdAt) : '', entry.written ? '本次写下' : entry.injected ? '本次注入' : ''].filter(Boolean).join(' · '))}</span>
+          </div>
+        </div>`,
+      )
+      .join('')
+  }
+  if (tab === 'files') {
+    return sheet.files
+      .map(
+        (file) => `<button type="button" class="sheet-row" data-action="resource-file-open" data-path="${escapeHtml(file.path || '')}">
+          <span class="sheet-row-icon">${icon('file', 16)}</span>
+          <div>
+            <strong>${escapeHtml(file.name || file.path || '')}</strong>
+            <span>${escapeHtml(file.path || '')}</span>
+          </div>
+          <span class="badge ${file.action === 'write' ? 'mint' : 'queue'}">${file.action === 'write' ? '新建' : '修改'}</span>
+        </button>`,
+      )
+      .join('')
+  }
+  return sheet.knowledge
+    .map((pair) => {
+      const question = String(pair.instruction || pair.user || '').trim()
+      const answer = String(pair.reply || '').trim()
+      return `<div class="knowledge-pair">
+        <strong>${escapeHtml(question.length > 160 ? `${question.slice(0, 160)}…` : question || '（无提问）')}</strong>
+        <p>${escapeHtml(answer.length > 400 ? `${answer.slice(0, 400)}…` : answer || '（无回答）')}</p>
+        <span class="knowledge-meta">${escapeHtml([pair.instructionAt ? relativeTime(pair.instructionAt) : '', Number(pair.replyCount) > 1 ? `${Number(pair.replyCount)} 条回答` : ''].filter(Boolean).join(' · '))}</span>
+      </div>`
+    })
+    .join('')
+}
+
+function renderResourcesSheet() {
+  const sheet = state.resources
+  const items = resourceListHtml()
+  return `<div class="sheet-backdrop" data-action="close-sheet">
+    <div class="sheet tall" data-stop="true">
+      <div class="sheet-grip"></div>
+      <div class="sheet-head">
+        <div>
+          <h3>会话资源</h3>
+          <p>${RESOURCE_TABS.map((tab) => tab.label).join(' · ')}</p>
+        </div>
+        <button type="button" class="icon-button" data-action="close-sheet" aria-label="关闭">${icon('close', 18)}</button>
+      </div>
+      <div class="tabs">
+        ${RESOURCE_TABS.map(
+          (tab) =>
+            `<button type="button" class="filter-chip${sheet.tab === tab.id ? ' is-active' : ''}" data-action="resource-tab" data-tab="${tab.id}">${tab.label}</button>`,
+        ).join('')}
+      </div>
+      <div class="sheet-list">
+        ${
+          sheet.tab === 'files' && sheet.preview
+            ? `<button type="button" class="button ghost small" data-action="resource-file-back" style="margin-bottom:10px">${icon('back', 14)}返回文件列表</button>
+               <div class="file-preview">${escapeHtml(sheet.preview.content)}</div>`
+            : sheet.loading
+              ? `<div class="sheet-empty">读取中…</div>`
+              : sheet.error
+                ? `<div class="error-banner">${icon('alert', 15)}<span>${escapeHtml(sheet.error)}</span></div>`
+                : items || `<div class="sheet-empty">${resourceEmptyText(sheet.tab)}</div>`
+        }
+      </div>
+      ${
+        sheet.tab === 'knowledge'
+          ? `<p class="sheet-note">只显示前几条提问与回答 · 完整正文在会话里</p>`
+          : sheet.tab === 'files'
+            ? `<p class="sheet-note">${sheet.preview ? '只读预览' : '只列出这个任务里新增或修改的文件'} · 完整正文在电脑上</p>`
+            : ''
+      }
+      ${sheet.tab === 'files' && sheet.preview ? `<button type="button" class="button ghost small block" data-action="download-file" data-scope="resources">${icon('download', 14)}下载到手机</button>` : ''}
+    </div>
+  </div>`
+}
+
+const APPROVAL_MODE_OPTIONS = [
+  { value: 'auto', label: '全部自动', hint: '直接执行工具，不再逐条询问' },
+  { value: 'manual', label: '只读自动', hint: '读取自动执行，写入和命令需要审批' },
+  { value: 'ask', label: '逐条审批', hint: '每次工具调用都等你确认' },
+]
+
+function renderModelsSheet() {
+  const sheet = state.models
+  const resources = Array.isArray(sheet.resources) ? sheet.resources : []
+  const enabled = resources.filter((entry) => entry && entry.enabled !== false)
+  const currentMode = sheet.approvalMode || 'auto'
+  return `<div class="sheet-backdrop" data-action="close-sheet">
+    <div class="sheet" data-stop="true">
+      <div class="sheet-grip"></div>
+      <div class="sheet-head">
+        <div>
+          <h3>模型与权限</h3>
+          <p>只影响这个会话的后续请求</p>
+        </div>
+        <button type="button" class="icon-button" data-action="close-sheet" aria-label="关闭">${icon('close', 18)}</button>
+      </div>
+      ${
+        sheet.loading
+          ? `<div class="sheet-empty">读取模型设置…</div>`
+          : sheet.error
+            ? `<div class="error-banner">${icon('alert', 15)}<span>${escapeHtml(sheet.error)}</span></div>`
+            : ''
+      }
+      <div class="section-label">执行模式</div>
+      <div class="sheet-list">
+        ${APPROVAL_MODE_OPTIONS.map(
+          (option) => `<button type="button" class="sheet-row option-row${currentMode === option.value ? ' is-active' : ''}" data-action="set-approval-mode" data-mode="${option.value}" ${sheet.busy === 'mode' ? 'disabled' : ''}>
+            <span class="sheet-row-icon">${currentMode === option.value ? icon('check', 16) : icon('clock', 16)}</span>
+            <div>
+              <strong>${option.label}</strong>
+              <span>${option.hint}</span>
+            </div>
+          </button>`,
+        ).join('')}
+      </div>
+      <div class="section-label">会话模型</div>
+      <div class="sheet-list">
+        <button type="button" class="sheet-row option-row${sheet.sessionModelId ? '' : ' is-active'}" data-action="set-session-model" data-model="" ${sheet.busy === 'model' ? 'disabled' : ''}>
+          <span class="sheet-row-icon">${sheet.sessionModelId ? icon('spark', 16) : icon('check', 16)}</span>
+          <div>
+            <strong>跟随项目设置</strong>
+            <span>用电脑端当前默认的模型</span>
+          </div>
+        </button>
+        ${enabled
+          .map(
+            (resource) => `<button type="button" class="sheet-row option-row${sheet.sessionModelId === resource.id ? ' is-active' : ''}" data-action="set-session-model" data-model="${escapeHtml(resource.id)}" ${sheet.busy === 'model' ? 'disabled' : ''}>
+              <span class="sheet-row-icon">${sheet.sessionModelId === resource.id ? icon('check', 16) : icon('spark', 16)}</span>
+              <div>
+                <strong>${escapeHtml(resource.label || resource.model || resource.id)}</strong>
+                <span>${escapeHtml([resource.model, resource.tag, resource.hasKey === false ? '未配置密钥' : ''].filter(Boolean).join(' · '))}</span>
+              </div>
+            </button>`,
+          )
+          .join('')}
+      </div>
+      <p class="sheet-note">权限边界（工作区路径、受保护文件、拒绝规则）在任何模式下都生效</p>
+    </div>
+  </div>`
+}
+
+/* ── Rendering: learning ────────────────────────────────────────────────── */
+
+function learningKindLabel(entry) {
+  if (entry?.kind === 'source') return '来源'
+  if (entry?.kind === 'task') return '任务'
+  return '阶段成果'
+}
+
+function learningVerdictLabel(verdict) {
+  if (verdict === 'approved') return '已确认'
+  if (verdict === 'rejected') return '已驳回'
+  return '待确认'
+}
+
+function learningEntryTitle(entry) {
+  if (!entry) return ''
+  if (entry.kind === 'source') return entry.host || entry.url || '来源'
+  if (entry.kind === 'task') return entry.title || '未命名任务'
+  return entry.note || '阶段成果'
+}
+
+/** Second line of a ledger row: what it was, when, and the user verdict. */
+function learningEntryMeta(entry) {
+  const parts = []
+  if (entry?.at) parts.push(relativeTime(entry.at))
+  if (entry?.kind === 'source' && entry.url) parts.push(entry.url)
+  if (entry?.kind === 'task' && entry.goal) parts.push(entry.goal)
+  if (entry?.kind === 'outcome') {
+    parts.push(learningVerdictLabel(entry.verdict))
+    if (typeof entry.quality === 'number' && Number.isFinite(entry.quality)) {
+      parts.push(`质量 ${Math.round(entry.quality * 100)}%`)
+    }
+  }
+  return parts.join(' · ')
+}
+
+/**
+ * 自主学习面板：开关与白名单是电脑端全局设置，账本按当前会话的工作区读。
+ * 手机端只负责开合与看账本，改提示词/策略仍然回桌面端。
+ */
+function renderLearningSheet() {
+  const sheet = state.learning
+  const summary = sheet.summary || {}
+  const entries = Array.isArray(sheet.entries) ? sheet.entries : []
+  const percent = (value) => `${Math.round((Number(value) || 0) * 100)}%`
+  const hostField = sheet.hostsDraft
+  const stats = [
+    { value: Number(summary.sources) || 0, label: '来源' },
+    { value: Number(summary.tasks) || 0, label: '任务' },
+    { value: Number(summary.pending) || 0, label: '待确认' },
+    { value: percent(summary.approvalRate), label: '通过率' },
+  ]
+  return `<div class="sheet-backdrop" data-action="close-sheet">
+    <div class="sheet tall" data-stop="true">
+      <div class="sheet-grip"></div>
+      <div class="sheet-head">
+        <div>
+          <h3>自主学习</h3>
+          <p>只读访问白名单站点，自己挑任务并把过程记进账本</p>
+        </div>
+        <button type="button" class="icon-button" data-action="close-sheet" aria-label="关闭">${icon('close', 18)}</button>
+      </div>
+      ${sheet.error ? `<div class="error-banner">${escapeHtml(sheet.error)}</div>` : ''}
+      ${
+        sheet.loading
+          ? `<div class="sheet-empty">正在读取学习账本…</div>`
+          : `
+        <div class="learning-stats">
+          ${stats
+            .map(
+              (stat) => `<div class="learning-stat">
+                <strong>${escapeHtml(String(stat.value))}</strong>
+                <span>${stat.label}</span>
+              </div>`,
+            )
+            .join('')}
+        </div>
+        <button type="button" class="sheet-row option-row${sheet.enabled ? ' is-active' : ''}" data-action="toggle-learning" ${sheet.busy ? 'disabled' : ''}>
+          <span class="sheet-row-icon">${sheet.enabled ? icon('check', 16) : icon('spark', 16)}</span>
+          <div>
+            <strong>${sheet.enabled ? '已开启' : '已关闭'}</strong>
+            <span>${sheet.enabled ? '下一步探索会先记来源，再做任务' : '开启后才会自己找任务做'}</span>
+          </div>
+        </button>
+        <div class="section-label">白名单 <span>${sheet.effectiveHosts.length} 个生效</span></div>
+        <textarea id="learning-hosts" class="learning-hosts" rows="4" placeholder="每行一个主机名，例如 developer.mozilla.org">${escapeHtml(hostField)}</textarea>
+        <div class="row-actions">
+          <button type="button" class="button tiny ghost" data-action="fill-learning-hosts">填入默认</button>
+          <button type="button" class="button tiny primary" data-action="save-learning-hosts" ${sheet.busy === 'hosts' ? 'disabled' : ''}>保存白名单</button>
+        </div>
+        <p class="row-note">留空则使用内置默认：${escapeHtml(sheet.defaultHosts.join('、') || '无')}</p>
+        <div class="section-label">账本 <span>最近 ${entries.length} 条 / 共 ${sheet.entryTotal} 条</span></div>
+        ${
+          entries.length
+            ? `<div class="sheet-list learning-ledger">
+                ${entries
+                  .map(
+                    (entry) => `<div class="learning-entry">
+                      <div class="learning-entry-top">
+                        <span class="learning-kind ${escapeHtml(String(entry.kind || ''))}">${escapeHtml(learningKindLabel(entry))}</span>
+                        <span class="learning-entry-time">${escapeHtml(entry.at ? relativeTime(entry.at) : '')}</span>
+                      </div>
+                      <strong>${escapeHtml(learningEntryTitle(entry))}</strong>
+                      <span class="learning-entry-meta">${escapeHtml(learningEntryMeta(entry))}</span>
+                    </div>`,
+                  )
+                  .join('')}
+              </div>`
+            : `<div class="sheet-empty">账本还是空的：开启后第一次探索会写下第一条来源记录</div>`
+        }
+        <p class="sheet-note">完整账本留在电脑端 ${escapeHtml(sheet.ledger || '.pilot/learning/ledger.jsonl')}；裁决在电脑端做</p>
+      `
+      }
+    </div>
+  </div>`
+}
+
+/* ── Rendering: module check / self check ──────────────────────────────── */
+
+const SEVERITY_LABEL = { high: '高', medium: '中', low: '低' }
+const SELF_CHECK_LABEL = { ok: '正常', warn: '注意', off: '未启用', broken: '异常' }
+const SELF_CHECK_GROUP_LABEL = {
+  runtime: '运行环境',
+  model: '模型接入',
+  exec: '审批与执行',
+  ext: '扩展',
+  data: '数据',
+}
+
+function checkReportMeta(report) {
+  if (!report) return ''
+  const parts = []
+  if (report.finishedAt) parts.push(relativeTime(report.finishedAt))
+  if (Number.isFinite(Number(report.score))) parts.push(`健康分 ${Number(report.score)}`)
+  if (Number.isFinite(Number(report.risks?.length))) parts.push(`${report.risks.length} 个风险点`)
+  if (Number.isFinite(Number(report.scannedFiles))) parts.push(`扫了 ${report.scannedFiles} 个文件`)
+  return parts.join(' · ')
+}
+
+/**
+ * 体检面板：「模块自检」扫工作区代码风险，「内视」读运行中的服务实例。
+ * 手机端只做「看结果」与「发起扫描」；生成改造提案（会建会话改代码）留在电脑端。
+ */
+function renderCheckSheet() {
+  const sheet = state.check
+  const report = sheet.report
+  const risks = Array.isArray(report?.risks) ? report.risks : []
+  const selfCheck = sheet.selfCheck
+  const counts = selfCheck?.counts || {}
+  const items = Array.isArray(selfCheck?.items) ? selfCheck.items : []
+  const rank = { broken: 0, warn: 1, off: 2, ok: 3 }
+  const ordered = items
+    .slice()
+    .sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9))
+    .slice(0, 12)
+  return `<div class="sheet-backdrop" data-action="close-sheet">
+    <div class="sheet tall" data-stop="true">
+      <div class="sheet-grip"></div>
+      <div class="sheet-head">
+        <div>
+          <h3>体检</h3>
+          <p>模块自检看代码风险，内视看运行中的服务能不能用</p>
+        </div>
+        <button type="button" class="icon-button" data-action="close-sheet" aria-label="关闭">${icon('close', 18)}</button>
+      </div>
+      ${sheet.error ? `<div class="error-banner">${escapeHtml(sheet.error)}</div>` : ''}
+      <div class="section-label">模块自检 <span>${sheet.historyCount ? `历史 ${sheet.historyCount} 份` : '还没跑过'}</span></div>
+      <button type="button" class="sheet-row option-row${sheet.enabled ? ' is-active' : ''}" data-action="toggle-module-check" ${sheet.busy ? 'disabled' : ''}>
+        <span class="sheet-row-icon">${sheet.enabled ? icon('check', 16) : icon('clock', 16)}</span>
+        <div>
+          <strong>定期自检${sheet.enabled ? '已开启' : '已关闭'}</strong>
+          <span>${sheet.nextRunAt ? `下次约 ${relativeTime(sheet.nextRunAt)}` : '开启后按间隔自动扫一遍'}</span>
+        </div>
+      </button>
+      ${
+        sheet.loading
+          ? `<div class="sheet-empty">正在读取自检状态…</div>`
+          : `<div class="check-meta">${escapeHtml(checkReportMeta(report) || '还没有自检报告')}</div>`
+      }
+      <div class="row-actions">
+        <button type="button" class="button tiny primary" data-action="run-module-check" ${sheet.busy ? 'disabled' : ''}>${sheet.busy === 'run' ? '正在扫描…' : '立即自检'}</button>
+        <button type="button" class="button tiny ghost" data-action="run-self-check" ${sheet.busy === 'self' ? 'disabled' : ''}>${sheet.busy === 'self' ? '正在内视…' : '运行内视'}</button>
+      </div>
+      ${
+        risks.length
+          ? `<div class="sheet-list check-list">
+              ${risks
+                .map((risk) => {
+                  const key = String(risk.id || '')
+                  const open = sheet.expanded[key] === true
+                  return `<div class="check-entry">
+                    <button type="button" class="check-entry-head" data-action="toggle-risk" data-key="${escapeHtml(key)}">
+                      <span class="badge ${escapeHtml(String(risk.severity || 'low'))}">${escapeHtml(SEVERITY_LABEL[risk.severity] || '低')}</span>
+                      <strong>${escapeHtml(String(risk.title || ''))}</strong>
+                      <span class="check-entry-count">${Number(risk.count) > 1 ? `×${Number(risk.count)}` : ''}</span>
+                      ${icon(open ? 'chevron' : 'arrow', 13)}
+                    </button>
+                    <span class="check-entry-module">${escapeHtml(String(risk.moduleName || risk.moduleId || ''))}</span>
+                    ${
+                      open
+                        ? `<p class="row-note check-entry-detail">${escapeHtml(String(risk.detail || ''))}</p>
+                           ${risk.recommendation ? `<p class="row-note check-entry-detail">建议：${escapeHtml(String(risk.recommendation))}</p>` : ''}
+                           ${(risk.evidence || []).length ? `<p class="row-note check-entry-evidence">${escapeHtml((risk.evidence || []).slice(0, 4).join('\n'))}</p>` : ''}`
+                        : ''
+                    }
+                  </div>`
+                })
+                .join('')}
+            </div>`
+          : ''
+      }
+      <p class="sheet-note">生成改造提案会在电脑端开会话改源码，这一步只在电脑端做</p>
+      <div class="section-label">内视 <span>${selfCheck ? `${counts.broken || 0} 异常 / ${counts.warn || 0} 注意` : '未运行'}</span></div>
+      ${
+        selfCheck
+          ? `<div class="check-selfcheck">
+              ${['ok', 'warn', 'off', 'broken']
+                .map(
+                  (status) => `<div class="check-count ${status}">
+                    <strong>${counts[status] || 0}</strong>
+                    <span>${SELF_CHECK_LABEL[status]}</span>
+                  </div>`,
+                )
+                .join('')}
+            </div>
+            <div class="sheet-list check-list">
+              ${ordered
+                .map(
+                  (item) => `<div class="check-entry selfcheck">
+                    <div class="check-entry-head static">
+                      <span class="badge ${escapeHtml(String(item.status || 'ok'))}">${escapeHtml(SELF_CHECK_LABEL[item.status] || '正常')}</span>
+                      <strong>${escapeHtml(String(item.title || ''))}</strong>
+                    </div>
+                    <span class="check-entry-module">${escapeHtml(SELF_CHECK_GROUP_LABEL[item.group] || item.group || '')}${item.detail ? ` · ${escapeHtml(String(item.detail))}` : ''}</span>
+                  </div>`,
+                )
+                .join('')}
+            </div>`
+          : `<div class="sheet-empty">内视不读任何路径，只看这台电脑现在的模型、审批、沙箱与扩展状态</div>`
+      }
+    </div>
+  </div>`
+}
+
+/* ── Rendering: self evolution ─────────────────────────────────────────── */
+
+const PROFILE_STATUS_LABEL = { draft: '待评审', active: '已启用', retired: '已退役' }
+const PROFILE_STATUS_BADGE = { draft: 'amber', active: 'mint', retired: '' }
+const CYCLE_STATUS_LABEL = { completed: '完成', rejected: '未通过', failed: '失败' }
+const CYCLE_STATUS_BADGE = { completed: 'mint', rejected: 'amber', failed: 'high' }
+
+/** 进化面板要读哪个工作区：手选优先，其次当前会话，再退到第一个工作区。 */
+function evolutionWorkspacePath() {
+  return (
+    state.evolution.workspacePath ||
+    state.session?.workspacePath ||
+    state.workspaces[0]?.path ||
+    ''
+  )
+}
+
+function evolutionScoreLabel(review) {
+  if (!review) return ''
+  const score = Number(review.score)
+  if (!Number.isFinite(score)) return ''
+  return `${score} 分${review.independent === true ? ' · 独立评审' : ' · 自评'}`
+}
+
+function evolutionProfileHtml(profile, scope) {
+  const status = String(profile.status || 'draft')
+  const badge = PROFILE_STATUS_BADGE[status] || ''
+  const score = evolutionScoreLabel(profile.review)
+  const rationale = String(profile.rationale || '').trim()
+  const scopeLabel = scope === 'global' ? '全局' : '工作区'
+  const acts = []
+  if (status === 'draft') {
+    acts.push(
+      `<button type="button" class="button tiny ghost" data-action="evolution-do" data-op="${
+        scope === 'global' ? 'globalReview' : 'review'
+      }" data-id="${escapeHtml(String(profile.id || ''))}"${state.evolution.busy ? ' disabled' : ''}>评审</button>`,
+    )
+    acts.push(
+      `<button type="button" class="button tiny primary" data-action="evolution-do" data-op="${
+        scope === 'global' ? 'globalActivate' : 'activate'
+      }" data-id="${escapeHtml(String(profile.id || ''))}"${state.evolution.busy ? ' disabled' : ''}>启用</button>`,
+    )
+  } else if (status === 'active') {
+    acts.push(
+      `<button type="button" class="button tiny ghost" data-action="evolution-do" data-op="${
+        scope === 'global' ? 'globalRollback' : 'rollback'
+      }"${state.evolution.busy ? ' disabled' : ''}>回滚</button>`,
+    )
+  }
+  acts.push(
+    `<button type="button" class="button tiny danger" data-action="evolution-do" data-op="${
+      scope === 'global' ? 'globalDelete' : 'delete'
+    }" data-id="${escapeHtml(String(profile.id || ''))}"${state.evolution.busy ? ' disabled' : ''}>删除</button>`,
+  )
+  return `<div class="evo-profile">
+    <div class="evo-profile-head">
+      <span class="badge ${badge}">${scopeLabel} v${Number(profile.version) || 0}</span>
+      <span class="evo-status">${escapeHtml(PROFILE_STATUS_LABEL[status] || status)}</span>
+      ${score ? `<span class="evo-score">${escapeHtml(score)}</span>` : ''}
+    </div>
+    ${rationale ? `<p class="row-note evo-rationale">${escapeHtml(rationale)}</p>` : ''}
+    <div class="evo-actions">${acts.join('')}</div>
+  </div>`
+}
+
+function evolutionCycleHtml(cycle) {
+  const status = String(cycle.status || 'completed')
+  return `<div class="evo-cycle">
+    <div class="evo-cycle-head">
+      <span class="evo-cycle-time">${escapeHtml(relativeTime(cycle.finishedAt || cycle.startedAt))}</span>
+      <span class="badge ${CYCLE_STATUS_BADGE[status] || ''}">${escapeHtml(CYCLE_STATUS_LABEL[status] || status)}</span>
+      ${Number.isFinite(Number(cycle.score)) ? `<span class="evo-score">${Number(cycle.score)} 分</span>` : ''}
+      ${cycle.activated ? '<span class="badge mint">已启用</span>' : ''}
+    </div>
+    ${cycle.summary ? `<p class="row-note evo-summary">${escapeHtml(String(cycle.summary))}</p>` : ''}
+  </div>`
+}
+
+/**
+ * 自我进化面板：手机端只能看快照和点「评审/启用/回滚」，
+ * 改提示词、个人源码版本仍回电脑端。
+ */
+function renderEvolutionSheet() {
+  const sheet = state.evolution
+  const snap = sheet.state
+  const path = evolutionWorkspacePath()
+  const profiles = Array.isArray(snap?.profiles) ? snap.profiles : []
+  const globalProfiles = Array.isArray(snap?.globalProfiles) ? snap.globalProfiles : []
+  const cycles = Array.isArray(snap?.cycles) ? snap.cycles : []
+  const policy = snap?.policy || null
+  const busy = sheet.busy
+  const stats = snap
+    ? [
+        { value: snap.completedRuns, label: '完成运行' },
+        { value: snap.failures, label: '失败' },
+        { value: snap.avgSteps, label: '平均步数' },
+        { value: snap.minRuns, label: '开跑门槛' },
+      ]
+    : []
+  return `<div class="sheet-backdrop" data-action="close-sheet">
+    <div class="sheet tall" data-stop="true">
+      <div class="sheet-grip"></div>
+      <div class="sheet-head">
+        <div>
+          <h3>自我进化</h3>
+          <p>看运行统计，决定要不要让 Pilot 改自己的策略</p>
+        </div>
+        <button type="button" class="icon-button" data-action="close-sheet" aria-label="关闭">${icon('close', 18)}</button>
+      </div>
+      ${sheet.error ? `<div class="error-banner">${icon('alert', 15)}<span>${escapeHtml(sheet.error)}</span></div>` : ''}
+      ${
+        state.workspaces.length > 1
+          ? `<div class="tabs">${state.workspaces
+              .map(
+                (workspace) =>
+                  `<button type="button" class="filter-chip${workspace.path === path ? ' is-active' : ''}" data-action="evolution-workspace" data-path="${escapeHtml(String(workspace.path || ''))}">${escapeHtml(String(workspace.name || workspace.path || ''))}</button>`,
+              )
+              .join('')}</div>`
+          : path
+            ? `<div class="check-meta">${escapeHtml(workspaceNameFor(path))}</div>`
+            : ''
+      }
+      ${
+        !path
+          ? `<div class="sheet-empty">还没有打开过工作区，先在电脑上打开一个项目</div>`
+          : sheet.loading
+            ? `<div class="sheet-empty">正在读取进化状态…</div>`
+            : !snap
+              ? `<div class="sheet-empty">还没有读到进化状态，点刷新再试</div>`
+              : `
+        <div class="evo-stats">${stats
+          .map(
+            (stat) => `<div class="evo-stat">
+              <strong>${Number(stat.value) || 0}</strong>
+              <span>${escapeHtml(stat.label)}</span>
+            </div>`,
+          )
+          .join('')}</div>
+        <button type="button" class="sheet-row option-row${snap.autoEvolve ? ' is-active' : ''}" data-action="evolution-auto" ${busy ? 'disabled' : ''}>
+          <span class="sheet-row-icon">${snap.autoEvolve ? icon('check', 16) : icon('clock', 16)}</span>
+          <div>
+            <strong>自动进化${snap.autoEvolve ? '已开启' : '已关闭'}</strong>
+            <span>每 ${Number(policy?.cooldownRuns) || 0} 次运行后自己挑一轮，评审不过不改策略</span>
+          </div>
+        </button>
+        <div class="row-actions">
+          <button type="button" class="button tiny primary" data-action="evolution-do" data-op="cycle" ${snap.canRunCycle && !busy ? '' : 'disabled'}>${busy === 'cycle' ? '正在跑…' : '跑一轮进化'}</button>
+          <button type="button" class="button tiny ghost" data-action="evolution-do" data-op="improvePolicy" ${busy ? 'disabled' : ''}>${busy === 'improvePolicy' ? '正在改…' : '改进机制'}</button>
+          <button type="button" class="button tiny ghost" data-action="evolution-do" data-op="rollbackPolicy" ${snap.canRollbackPolicy && !busy ? '' : 'disabled'}>回滚机制</button>
+        </div>
+        <div class="check-meta">${
+          snap.hasKey
+            ? `策略 v${Number(snap.activePolicyVersion?.version) || 0} · 评审及格线 ${Number(policy?.reviewScore) || 0} 分 · ${policy?.autoApply ? '评审通过自动启用' : '评审通过也等你手动启用'}`
+            : '电脑上没有配置 API Key，跑不了进化'
+        }</div>
+        <div class="section-label">工作区版本 <span>${profiles.length} 个</span></div>
+        ${profiles.length ? `<div class="sheet-list">${profiles.map((profile) => evolutionProfileHtml(profile, 'workspace')).join('')}</div>` : '<div class="sheet-empty">这个工作区还没生成过进化版本</div>'}
+        <div class="section-label">全局版本 <span>${globalProfiles.length} 个</span></div>
+        ${globalProfiles.length ? `<div class="sheet-list">${globalProfiles.map((profile) => evolutionProfileHtml(profile, 'global')).join('')}</div>` : '<div class="sheet-empty">还没有跨工作区的全局版本</div>'}
+        <div class="section-label">最近轮次 <span>${cycles.length} 条</span></div>
+        ${cycles.length ? `<div class="sheet-list">${cycles.map(evolutionCycleHtml).join('')}</div>` : '<div class="sheet-empty">还没跑过进化轮次</div>'}
+      `
+      }
+      <p class="sheet-note">改提示词、个人源码版本与发布仍在电脑端；手机只负责评审和启用</p>
+    </div>
+  </div>`
+}
+
 /* ── Rendering: settings ───────────────────────────────────────────────── */
+/* ── Billing (余额与费用) ─────────────────────── */
+
+/** 与 `shared/billing.ts` 的 USD_CNY_RATE 保持一致：电脑端存美元，界面显示人民币。 */
+const USD_CNY_RATE = 7.1
+
+const BALANCE_ERROR_TEXT = {
+  'missing-key': '电脑端还没保存 API Key',
+  unauthorized: 'API Key 无效或已过期',
+  unsupported: '当前模型服务不提供余额查询',
+  network: '读取余额超时',
+  'invalid-response': '余额接口返回了无法识别的数据',
+}
+
+function currencySymbol(code) {
+  return String(code || 'CNY').toUpperCase() === 'USD' ? '$' : '¥'
+}
+
+function moneyText(amount, currency) {
+  const value = Number(amount)
+  if (!Number.isFinite(value)) return '—'
+  return `${currencySymbol(currency)}${value.toFixed(2)}`
+}
+
+function tokenText(count) {
+  const value = Number(count)
+  if (!Number.isFinite(value) || value <= 0) return '0'
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`
+  return String(Math.round(value))
+}
+
+function renderBillingCard() {
+  const sheet = state.billing
+  const report = sheet.report
+  const balance = report?.balance || null
+  const usage = report?.usage || null
+  const entry = Array.isArray(balance?.entries) ? balance.entries[0] : null
+  const currency = String(entry?.currency || 'CNY').toUpperCase()
+  const costUsd = Number(usage?.estimatedCostUsd)
+  const cost = Number.isFinite(costUsd) ? (currency === 'USD' ? costUsd : costUsd * USD_CNY_RATE) : null
+  const rows = Array.isArray(usage?.rows) ? usage.rows.slice(0, 4) : []
+  const totalTokens = usage ? Number(usage.promptTokens || 0) + Number(usage.completionTokens || 0) : 0
+  const balanceError = balance && balance.ok === false ? BALANCE_ERROR_TEXT[balance.error] || '读取余额失败' : ''
+  const balanceDetail = balanceError
+    ? balanceError
+    : `可用余额${entry?.grantedBalance ? ` · 赠送 ${moneyText(entry.grantedBalance, currency)}` : ''}${
+        entry?.toppedUpBalance ? ` · 充值 ${moneyText(entry.toppedUpBalance, currency)}` : ''
+      }`
+  return `<div class="page-heading" style="margin-top:24px"><div><h2>模型与费用</h2><p>余额来自模型服务，费用是本机估算</p></div></div>
+  <div class="card">
+    ${
+      sheet.loading && !report
+        ? `<div class="setting-row"><span class="setting-icon"><span class="spinner small"></span></span><div class="setting-body"><strong>正在读取余额…</strong><span>电脑端在向模型服务查询</span></div></div>`
+        : sheet.error
+          ? `<div class="error-banner">${icon('alert', 15)}<span>${escapeHtml(sheet.error)}</span></div>`
+          : !report
+            ? `<div class="setting-row"><span class="setting-icon">${icon('spark', 18)}</span><div class="setting-body"><strong>还没读取</strong><span>点下面的按钮从电脑端取一次余额与用量</span></div></div>`
+            : `<div class="setting-row">
+                 <span class="setting-icon">${icon('spark', 18)}</span>
+                 <div class="setting-body">
+                   <strong>${balanceError ? '余额不可用' : moneyText(entry?.totalBalance, currency)}</strong>
+                   <span>${escapeHtml(balanceDetail)}</span>
+                 </div>
+               </div>
+               <div class="setting-row">
+                 <span class="setting-icon">${icon('terminal', 18)}</span>
+                 <div class="setting-body">
+                   <strong>${cost == null ? '本机费用未估算' : `${moneyText(cost, currency)} 估算`}</strong>
+                   <span>${escapeHtml(
+                     `${Number(usage?.runs || 0)} 次运行 · ${tokenText(totalTokens)} tokens${
+                       currency === 'USD' ? '' : ` · 按 1 美元 ≈ ¥${USD_CNY_RATE} 换算`
+                     }`,
+                   )}</span>
+                 </div>
+               </div>
+               ${rows
+                 .map((row) => {
+                   const rowCostUsd = Number(row.estimatedCostUsd)
+                   const rowCost = Number.isFinite(rowCostUsd)
+                     ? moneyText(currency === 'USD' ? rowCostUsd : rowCostUsd * USD_CNY_RATE, currency)
+                     : '未定价'
+                   const rowTokens = Number(row.promptTokens || 0) + Number(row.completionTokens || 0)
+                   return `<div class="setting-row">
+                     <span class="setting-icon">${icon('list', 18)}</span>
+                     <div class="setting-body">
+                       <strong>${escapeHtml(row.model || '未知模型')}</strong>
+                       <span>${escapeHtml(`${Number(row.runs || 0)} 次 · ${tokenText(rowTokens)} tokens · ${rowCost}`)}</span>
+                     </div>
+                   </div>`
+                 })
+                 .join('')}`
+    }
+    <div class="setting-actions">
+      <button type="button" class="button ghost small" data-action="refresh-billing"${sheet.loading ? ' disabled' : ''}>
+        ${sheet.loading ? '<span class="spinner"></span>' : icon('refresh', 14)}${report ? '刷新余额' : '读取余额'}
+      </button>
+    </div>
+  </div>`
+}
+
+async function loadBilling(refresh) {
+  if (!state.client?.connected) {
+    state.billing.error = '与电脑的连接已断开。'
+    if (state.route === 'settings') render()
+    return
+  }
+  const sheet = state.billing
+  sheet.loading = true
+  sheet.error = ''
+  if (state.route === 'settings') render()
+  try {
+    // 余额要等模型服务的网络往返，给足时间；电脑端自己还有缓存与并发合并。
+    const report = await agentRequest('billing.get', refresh ? { refresh: true } : {}, 20000)
+    sheet.report = report || null
+    sheet.loading = false
+  } catch (error) {
+    sheet.loading = false
+    sheet.error = methodError(error)
+  }
+  if (state.route === 'settings') render()
+}
 
 function renderSettings() {
   const info = state.deviceInfo || {}
@@ -2247,6 +3208,8 @@ function renderSettings() {
             .join('')}
         </div>
       </div>
+
+      ${renderBillingCard()}
 
       <div class="page-heading" style="margin-top:24px"><div><h2>升级</h2><p>只下载有变化的文件，重启后生效</p></div></div>
       <div class="card">
@@ -2537,6 +3500,7 @@ async function loadSession(sessionId, options = {}) {
     state.hasMore = Boolean(data.hasMore)
     state.session.workspaceName = data.workspaceName || state.session.workspaceName
     state.running = Boolean(data.session.running)
+    void loadQuickCommands()
     if (state.running && !state.live) {
       state.live = {
         runId: data.activeRun?.runId || '',
@@ -2873,6 +3837,12 @@ function handleAgentEvent(event) {
       if (state.route === 'settings') render()
       return
     }
+    case 'evolution.changed':
+    case 'profile.changed': {
+      // 进化轮次与评审都是电脑端异步跑的，事件到了才刷新；不抢正在进行的请求。
+      if (state.sheet === 'evolution' && !state.evolution.busy) void loadEvolution()
+      return
+    }
     case 'notice': {
       if (event.message) showToast(event.message, event.level || 'info')
       return
@@ -3068,6 +4038,577 @@ async function clearSentTodos() {
   }
 }
 
+/**
+ * 手机端发起的请求统一入口：没连上就先报错，而不是让 fetch 抛一个看不懂的错误。
+ */
+function agentRequest(method, params = {}, timeout) {
+  if (!state.client?.connected) throw new Error('与电脑的连接已断开。')
+  return Number.isFinite(timeout)
+    ? state.client.request(method, params, timeout)
+    : state.client.request(method, params)
+}
+
+/** 快捷指令：电脑端返回 null 表示用户没改过预设，此时不展示任何 chips。 */
+async function loadQuickCommands() {
+  if (!state.client?.connected || state.quickCommandsLoaded) return
+  state.quickCommandsLoaded = true
+  try {
+    const data = await agentRequest('quickCommands.get')
+    state.quickCommands = Array.isArray(data?.commands) ? data.commands.slice(0, 8) : []
+    const slot = document.getElementById('quick-command-slot')
+    if (slot) slot.innerHTML = quickCommandsHtml()
+  } catch {
+    // 旧版电脑端没有这个方法：静默略过，不打断输入。
+    state.quickCommandsLoaded = false
+  }
+}
+
+async function openCheckpoints() {
+  if (!state.sessionId) return
+  state.menuOpen = false
+  state.sheet = 'checkpoints'
+  state.checkpoints = { loading: true, items: [], error: '', busy: '' }
+  render()
+  await loadCheckpoints()
+}
+
+async function loadCheckpoints() {
+  const sessionId = state.sessionId
+  if (!sessionId) return
+  state.checkpoints.loading = true
+  state.checkpoints.error = ''
+  if (state.sheet === 'checkpoints') render()
+  try {
+    const data = await agentRequest('checkpoints.list', { sessionId })
+    if (state.sheet !== 'checkpoints' || state.sessionId !== sessionId) return
+    state.checkpoints.items = Array.isArray(data?.checkpoints) ? data.checkpoints : []
+    state.checkpoints.loading = false
+    render()
+  } catch (error) {
+    if (state.sessionId !== sessionId) return
+    state.checkpoints.loading = false
+    state.checkpoints.error = methodError(error)
+    if (state.sheet === 'checkpoints') render()
+  }
+}
+
+async function createCheckpoint() {
+  if (!state.sessionId || state.checkpoints.busy) return
+  state.checkpoints.busy = 'create'
+  state.checkpoints.error = ''
+  if (state.sheet === 'checkpoints') render()
+  try {
+    const data = await agentRequest('checkpoints.create', { sessionId: state.sessionId })
+    state.checkpoints.busy = ''
+    const created = data?.checkpoint
+    if (created) state.checkpoints.items = [created, ...state.checkpoints.items]
+    if (state.sheet === 'checkpoints') render()
+    showToast('已创建回退点。', 'info')
+  } catch (error) {
+    state.checkpoints.busy = ''
+    showToast(methodError(error), 'error')
+    if (state.sheet === 'checkpoints') render()
+  }
+}
+
+async function restoreCheckpoint(checkpointId, mode) {
+  if (!state.sessionId || !checkpointId || state.checkpoints.busy) return
+  const both = mode === 'both'
+  const question = both
+    ? '恢复这个快照的文件和对话？该快照之后的消息会从会话里移除。'
+    : '恢复这个快照的文件？当前工作区里同名文件会被覆盖。'
+  if (!window.confirm(question)) return
+  state.checkpoints.busy = checkpointId
+  if (state.sheet === 'checkpoints') render()
+  try {
+    await agentRequest('checkpoints.restore', {
+      sessionId: state.sessionId,
+      checkpointId,
+      mode: both ? 'both' : 'code',
+    })
+    state.checkpoints.busy = ''
+    showToast(both ? '已恢复文件和对话。' : '已恢复文件。', 'info')
+    await loadSession(state.sessionId, { silent: true })
+    if (state.sessionId) await loadCheckpoints()
+  } catch (error) {
+    state.checkpoints.busy = ''
+    showToast(methodError(error), 'error')
+    if (state.sheet === 'checkpoints') render()
+  }
+}
+
+async function openChanges() {
+  if (!state.sessionId) return
+  state.menuOpen = false
+  state.sheet = 'changes'
+  state.changes = { loading: true, items: [], error: '', busy: '', expanded: {} }
+  render()
+  await loadChanges()
+}
+
+async function loadChanges() {
+  const sessionId = state.sessionId
+  if (!sessionId) return
+  state.changes.loading = true
+  state.changes.error = ''
+  if (state.sheet === 'changes') render()
+  try {
+    const data = await agentRequest('changes.list', { sessionId })
+    if (state.sheet !== 'changes' || state.sessionId !== sessionId) return
+    state.changes.items = Array.isArray(data?.changes) ? data.changes : []
+    state.changes.loading = false
+    render()
+  } catch (error) {
+    if (state.sessionId !== sessionId) return
+    state.changes.loading = false
+    state.changes.error = methodError(error)
+    if (state.sheet === 'changes') render()
+  }
+}
+
+async function revertChange(path) {
+  if (!state.sessionId || !path || state.changes.busy) return
+  if (!window.confirm(`把「${path}」还原到这个任务开始前的状态？`)) return
+  state.changes.busy = path
+  if (state.sheet === 'changes') render()
+  try {
+    await agentRequest('changes.revert', { sessionId: state.sessionId, path })
+    state.changes.busy = ''
+    showToast('已还原文件。', 'info')
+    await loadChanges()
+  } catch (error) {
+    state.changes.busy = ''
+    showToast(methodError(error), 'error')
+    if (state.sheet === 'changes') render()
+  }
+}
+
+async function openResources(tab = 'links') {
+  if (!state.sessionId) return
+  state.menuOpen = false
+  state.sheet = 'resources'
+  state.resources = {
+    loading: false,
+    error: '',
+    tab: state.resources?.tab || tab,
+    links: [],
+    tools: [],
+    memory: [],
+    knowledge: [],
+    files: [],
+    preview: null,
+    loaded: {},
+  }
+  render()
+  await loadResourceTab(state.resources.tab)
+}
+
+async function loadResourceTab(tab) {
+  const sessionId = state.sessionId
+  if (!sessionId) return
+  const sheet = state.resources
+  sheet.tab = tab
+  sheet.error = ''
+  if (tab !== 'files') sheet.preview = null
+  if (sheet.loaded[tab]) {
+    render()
+    return
+  }
+  sheet.loading = true
+  render()
+  try {
+    if (tab === 'links') {
+      const data = await agentRequest('sessions.links', { sessionId, limit: 50 })
+      sheet.links = Array.isArray(data?.links) ? data.links : []
+    } else if (tab === 'tools') {
+      const data = await agentRequest('sessions.tools', { sessionId, limit: 50 })
+      sheet.tools = Array.isArray(data?.tools) ? data.tools : []
+    } else if (tab === 'memory') {
+      const data = await agentRequest('memory.session', { sessionId })
+      sheet.memory = Array.isArray(data?.memory) ? data.memory : []
+    } else if (tab === 'files') {
+      const data = await agentRequest('files.session', { sessionId })
+      sheet.files = (Array.isArray(data?.artifacts) ? data.artifacts : []).filter((file) => file && file.path)
+    } else {
+      const data = await agentRequest('sessions.knowledge', { sessionId, limit: 12 })
+      sheet.knowledge = Array.isArray(data?.pairs) ? data.pairs : []
+    }
+    sheet.loaded[tab] = true
+    sheet.loading = false
+    if (state.sheet !== 'resources' || state.sessionId !== sessionId) return
+    render()
+  } catch (error) {
+    if (state.sessionId !== sessionId) return
+    sheet.loading = false
+    sheet.error = methodError(error)
+    if (state.sheet === 'resources') render()
+  }
+}
+
+async function openModels() {
+  if (!state.sessionId) return
+  state.menuOpen = false
+  state.sheet = 'models'
+  state.models = {
+    loading: true,
+    resources: [],
+    sessionModelId: state.session?.sessionModelId || '',
+    approvalMode: state.session?.approvalMode || 'auto',
+    error: '',
+    busy: '',
+  }
+  render()
+  try {
+    const data = await agentRequest('models.get')
+    if (state.sheet !== 'models') return
+    state.models.loading = false
+    state.models.resources = Array.isArray(data?.resources) ? data.resources : []
+    state.models.sessionModelId = state.session?.sessionModelId || data?.sessionModelId || ''
+    render()
+  } catch (error) {
+    if (state.sheet !== 'models') return
+    state.models.loading = false
+    state.models.error = methodError(error)
+    render()
+  }
+}
+
+async function setApprovalMode(mode) {
+  if (!state.sessionId || state.models.busy) return
+  if (mode === state.models.approvalMode) return
+  state.models.busy = 'mode'
+  state.models.error = ''
+  render()
+  try {
+    const updated = await agentRequest('sessions.approvalMode', {
+      sessionId: state.sessionId,
+      approvalMode: mode,
+    })
+    state.models.busy = ''
+    state.models.approvalMode = updated?.approvalMode || mode
+    if (state.session) state.session.approvalMode = state.models.approvalMode
+    if (state.sheet === 'models') render()
+    showToast('执行模式已切换。', 'info')
+  } catch (error) {
+    state.models.busy = ''
+    showToast(methodError(error), 'error')
+    if (state.sheet === 'models') render()
+  }
+}
+
+async function setSessionModel(modelId) {
+  if (!state.sessionId || state.models.busy) return
+  state.models.busy = 'model'
+  state.models.error = ''
+  render()
+  try {
+    const updated = await agentRequest('sessions.model', {
+      sessionId: state.sessionId,
+      modelId: String(modelId || ''),
+    })
+    state.models.busy = ''
+    state.models.sessionModelId = String(updated?.sessionModelId || modelId || '')
+    if (state.session) state.session.sessionModelId = state.models.sessionModelId
+    if (state.sheet === 'models') render()
+    showToast('已切换这个任务的模型。', 'info')
+  } catch (error) {
+    state.models.busy = ''
+    showToast(methodError(error), 'error')
+    if (state.sheet === 'models') render()
+  }
+}
+
+async function openLearning() {
+  if (!state.sessionId) return
+  state.menuOpen = false
+  state.sheet = 'learning'
+  state.learning.loading = true
+  state.learning.error = ''
+  render()
+  await loadLearning()
+}
+
+/** The ledger lives in a workspace, so the panel follows the open session. */
+function learningWorkspacePath() {
+  return state.session?.workspacePath || ''
+}
+
+function applyLearningState(next) {
+  const value = next || {}
+  const hosts = Array.isArray(value.hosts) ? value.hosts.map(String) : []
+  state.learning.enabled = value.enabled === true
+  state.learning.hosts = hosts
+  state.learning.effectiveHosts = Array.isArray(value.effectiveHosts)
+    ? value.effectiveHosts.map(String)
+    : []
+  state.learning.defaultHosts = Array.isArray(value.defaultHosts)
+    ? value.defaultHosts.map(String)
+    : []
+  state.learning.ledger = String(value.ledger || '')
+  state.learning.entryTotal = Number(value.entryTotal) || 0
+  state.learning.summary = value.summary && typeof value.summary === 'object' ? value.summary : {}
+  state.learning.entries = Array.isArray(value.entries) ? value.entries : []
+  state.learning.hostsDraft = hosts.join('\n')
+}
+
+async function loadLearning() {
+  const workspacePath = learningWorkspacePath()
+  if (!workspacePath) {
+    state.learning.loading = false
+    state.learning.error = '这个会话没有关联工作区，读不到学习账本。'
+    if (state.sheet === 'learning') render()
+    return
+  }
+  state.learning.error = ''
+  try {
+    const data = await agentRequest('learning.state', { workspacePath })
+    applyLearningState(data?.state)
+    state.learning.loading = false
+  } catch (error) {
+    state.learning.loading = false
+    state.learning.error = methodError(error)
+  }
+  if (state.sheet === 'learning') render()
+}
+
+/**
+ * 开关和白名单写的是电脑端全局设置。两个动作共用一条通道，
+ * 成功后用电脑端回传的状态覆盖本地，避免手机端自以为是。
+ */
+async function saveLearningSettings(settings, busyKey) {
+  const workspacePath = learningWorkspacePath()
+  if (!workspacePath) return
+  state.learning.busy = busyKey
+  state.learning.error = ''
+  if (state.sheet === 'learning') render()
+  try {
+    const data = await agentRequest('learning.settings', { workspacePath, settings })
+    applyLearningState(data?.state)
+    state.learning.busy = ''
+  } catch (error) {
+    state.learning.busy = ''
+    state.learning.error = methodError(error)
+  }
+  if (state.sheet === 'learning') render()
+}
+
+function toggleLearning() {
+  if (state.learning.busy) return
+  void saveLearningSettings({ enabled: !state.learning.enabled }, 'toggle')
+}
+
+function saveLearningHosts() {
+  if (state.learning.busy) return
+  const field = document.getElementById('learning-hosts')
+  const raw = field ? field.value : state.learning.hostsDraft
+  const hosts = String(raw)
+    .split(/\n|,|\s+/)
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean)
+  const invalid = hosts.filter((host) => !/^[a-z0-9.-]+$/.test(host) || !host.includes('.'))
+  if (invalid.length) {
+    state.learning.hostsDraft = hosts.join('\n')
+    state.learning.error = `只填主机名，不要带协议或路径：${invalid.slice(0, 3).join('、')}`
+    if (state.sheet === 'learning') render()
+    return
+  }
+  state.learning.hostsDraft = hosts.join('\n')
+  void saveLearningSettings({ hosts }, 'hosts')
+}
+
+function fillDefaultLearningHosts() {
+  state.learning.hostsDraft = state.learning.defaultHosts.join('\n')
+  state.learning.error = ''
+  if (state.sheet === 'learning') render()
+}
+
+async function openCheck() {
+  state.menuOpen = false
+  state.sheet = 'check'
+  state.check.loading = true
+  state.check.error = ''
+  render()
+  await loadCheck()
+}
+
+function applyCheckState(next) {
+  const value = next || {}
+  const settings = value.settings || {}
+  state.check.enabled = settings.enabled === true
+  state.check.lastRunAt = String(value.lastRunAt || '')
+  state.check.nextRunAt = String(value.nextRunAt || '')
+  state.check.historyCount = Number(value.historyCount) || 0
+  state.check.decisions = Array.isArray(value.decisions) ? value.decisions.length : 0
+  state.check.proposals = Array.isArray(value.proposals) ? value.proposals.length : 0
+  state.check.report = value.lastReport || null
+}
+
+async function loadCheck() {
+  try {
+    const data = await agentRequest('moduleCheck.state')
+    applyCheckState(data?.state)
+    state.check.loading = false
+  } catch (error) {
+    state.check.loading = false
+    state.check.error = methodError(error)
+  }
+  if (state.sheet === 'check') render()
+}
+
+async function toggleModuleCheck() {
+  if (state.check.busy) return
+  state.check.busy = 'toggle'
+  state.check.error = ''
+  if (state.sheet === 'check') render()
+  try {
+    const data = await agentRequest('moduleCheck.settings', {
+      settings: { enabled: !state.check.enabled },
+    })
+    applyCheckState(data?.state)
+  } catch (error) {
+    state.check.error = methodError(error)
+  }
+  state.check.busy = ''
+  if (state.sheet === 'check') render()
+}
+
+/** 扫描是只读的：不改文件，也不建会话，所以可以直接从手机发起。 */
+async function runModuleCheck() {
+  if (state.check.busy) return
+  state.check.busy = 'run'
+  state.check.error = ''
+  if (state.sheet === 'check') render()
+  try {
+    const data = await agentRequest('moduleCheck.run', {})
+    state.check.report = data?.report || null
+  } catch (error) {
+    state.check.error = methodError(error)
+  }
+  state.check.busy = ''
+  if (state.sheet === 'check') render()
+  await loadCheck()
+}
+
+async function runSelfCheck() {
+  if (state.check.busy) return
+  state.check.busy = 'self'
+  state.check.error = ''
+  if (state.sheet === 'check') render()
+  try {
+    const data = await agentRequest('selfCheck.run')
+    state.check.selfCheck = data?.report || null
+  } catch (error) {
+    state.check.error = methodError(error)
+  }
+  state.check.busy = ''
+  if (state.sheet === 'check') render()
+}
+
+function toggleRisk(key) {
+  if (!key) return
+  state.check.expanded[key] = !state.check.expanded[key]
+  if (state.sheet === 'check') render()
+}
+
+async function openEvolution() {
+  state.menuOpen = false
+  state.sheet = 'evolution'
+  state.evolution.loading = true
+  state.evolution.error = ''
+  render()
+  await loadEvolution()
+}
+
+async function loadEvolution() {
+  const path = evolutionWorkspacePath()
+  if (!path) {
+    state.evolution.loading = false
+    state.evolution.state = null
+    if (state.sheet === 'evolution') render()
+    return
+  }
+  try {
+    const data = await agentRequest('evolution.state', { workspacePath: path }, 60_000)
+    state.evolution.state = data || null
+    state.evolution.error = ''
+  } catch (error) {
+    state.evolution.state = null
+    state.evolution.error = methodError(error)
+  }
+  state.evolution.loading = false
+  if (state.sheet === 'evolution') render()
+}
+
+function selectEvolutionWorkspace(path) {
+  if (!path || path === evolutionWorkspacePath()) return
+  state.evolution.workspacePath = path
+  state.evolution.loading = true
+  state.evolution.state = null
+  if (state.sheet === 'evolution') render()
+  void loadEvolution()
+}
+
+/**
+ * 进化动作统一入口。cycle / improvePolicy 由电脑端异步开跑，立刻返回 started；
+ * review 要等评审模型跑完，所以给它更长超时，并且允许期间面板显示「正在跑」。
+ */
+async function runEvolutionAction(op, extra = {}) {
+  if (!op || state.evolution.busy) return
+  const path = evolutionWorkspacePath()
+  if (!path) return
+  state.evolution.busy = op
+  state.evolution.error = ''
+  if (state.sheet === 'evolution') render()
+  try {
+    await agentRequest(
+      'evolution.action',
+      { action: op, workspacePath: path, ...extra },
+      op.startsWith('global') || op === 'review' || op === 'cycle' ? 120_000 : 60_000,
+    )
+    const labels = {
+      cycle: '已开始跑一轮进化。',
+      improvePolicy: '已开始改进化机制。',
+      rollbackPolicy: '已回滚到上一份机制。',
+      review: '评审完成。',
+      activate: '已启用这个版本。',
+      rollback: '已回滚到上一版。',
+      delete: '已删除这份草稿。',
+      globalReview: '全局版本评审完成。',
+      globalActivate: '已启用全局版本。',
+      globalRollback: '已回滚全局版本。',
+      globalDelete: '已删除全局草稿。',
+      auto: '已更新自动进化开关。',
+    }
+    if (labels[op]) showToast(labels[op])
+  } catch (error) {
+    state.evolution.error = methodError(error)
+  }
+  state.evolution.busy = ''
+  if (state.sheet === 'evolution') render()
+  await loadEvolution()
+}
+
+function toggleAutoEvolve() {
+  const next = state.evolution.state?.autoEvolve !== true
+  void runEvolutionAction('auto', { value: next })
+}
+
+function useQuickCommand(index) {
+  const command = state.quickCommands?.[index]
+  const content = String(command?.content || '')
+  if (!content) return
+  state.composer = state.composer ? `${state.composer}\n${content}` : content
+  render()
+  const input = document.getElementById('composer-input')
+  if (input) {
+    input.value = state.composer
+    resizeComposer(input)
+    input.focus()
+    input.setSelectionRange(input.value.length, input.value.length)
+  }
+  rememberInput(content)
+}
+
 async function openArtifacts() {
   if (!state.client?.connected || !state.sessionId) return
   state.menuOpen = false
@@ -3089,6 +4630,62 @@ async function openArtifacts() {
     state.artifacts.error = methodError(error)
     render()
   }
+}
+
+async function previewResourceFile(path) {
+  if (!state.client?.connected || !state.session || !path) return
+  const sheet = state.resources
+  sheet.loading = true
+  sheet.error = ''
+  render()
+  try {
+    const data = await state.client.request('files.read', {
+      workspacePath: state.session.workspacePath,
+      file: path,
+    })
+    sheet.preview = { path: data.path || path, content: data.content || '' }
+    sheet.loading = false
+    render()
+  } catch (error) {
+    sheet.loading = false
+    sheet.error = methodError(error)
+    render()
+  }
+}
+
+/** 会话列表上的五分类快捷入口：进入会话后自动打开对应分类。 */
+function openSessionResources(sessionId, tab) {
+  if (!sessionId) return
+  const nextTab = RESOURCE_TABS.some((entry) => entry.id === tab) ? tab : 'links'
+  if (state.route === 'chat' && state.sessionId === sessionId && state.session) {
+    void openResources(nextTab)
+    return
+  }
+  navigate({
+    name: 'chat',
+    id: sessionId,
+    after: () => {
+      void openResources(nextTab)
+    },
+  })
+}
+
+/** 把当前预览的文本存到手机：浏览器自己就能落盘，不用再请电脑端发一遍。 */
+function downloadPreviewFile(scope) {
+  const store = scope === 'files' ? state.files : scope === 'artifacts' ? state.artifacts : state.resources
+  const preview = store?.preview
+  if (!preview) return
+  const name = String(preview.path || 'pilot-file').split('/').pop() || 'pilot-file'
+  const blob = new Blob([String(preview.content ?? '')], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 5000)
+  showToast(`已保存到手机：${name}`, 'info')
 }
 
 async function previewArtifact(path) {
@@ -3786,6 +5383,8 @@ function navigate(route) {
     // Sandbox and tool state is only meaningful from the host, so it is read
     // when the page opens instead of on every render.
     void loadRuntime()
+    // 余额取电脑端缓存，首次进入顺带取一次，不强制刷新模型服务。
+    if (!state.billing.report && !state.billing.loading) void loadBilling(false)
     return
   }
   if (route.name === 'chat' && route.id) {
@@ -3810,7 +5409,12 @@ function navigate(route) {
       history.pushState(null, '', `#/chat/${encodeURIComponent(route.id)}`)
     }
     render()
-    void loadSession(route.id)
+    // `after` 让快捷入口等到会话本体（含工作区路径）就绪后再拉资源。
+    void loadSession(route.id).then(() => {
+      if (typeof route.after === 'function' && state.sessionId === route.id && state.route === 'chat') {
+        route.after()
+      }
+    })
   }
 }
 
@@ -3845,6 +5449,9 @@ document.addEventListener('click', (event) => {
       return
     case 'refresh-runtime':
       void loadRuntime()
+      return
+    case 'refresh-billing':
+      void loadBilling(true)
       return
     case 'update-check':
       void runUpdateAction('update.check')
@@ -3932,12 +5539,113 @@ document.addEventListener('click', (event) => {
       state.artifacts.preview = null
       render()
       return
+    case 'open-session-resources':
+      openSessionResources(target.dataset.id, target.dataset.tab)
+      return
+    case 'resource-file-open':
+      if (target.dataset.path) void previewResourceFile(target.dataset.path)
+      return
+    case 'resource-file-back':
+      state.resources.preview = null
+      render()
+      return
+    case 'download-file':
+      downloadPreviewFile(target.dataset.scope || 'resources')
+      return
     case 'open-files':
       state.menuOpen = false
       void openFiles('.')
       return
     case 'open-schedules':
       void openSchedules()
+      return
+    case 'open-learning':
+      void openLearning()
+      return
+    case 'open-check':
+      void openCheck()
+      return
+    case 'open-evolution':
+      void openEvolution()
+      return
+    case 'evolution-workspace':
+      selectEvolutionWorkspace(target.dataset.path || '')
+      return
+    case 'evolution-auto':
+      toggleAutoEvolve()
+      return
+    case 'evolution-do':
+      void runEvolutionAction(target.dataset.op || '', {
+        ...(target.dataset.id ? { profileId: target.dataset.id } : {}),
+      })
+      return
+    case 'toggle-module-check':
+      void toggleModuleCheck()
+      return
+    case 'run-module-check':
+      void runModuleCheck()
+      return
+    case 'run-self-check':
+      void runSelfCheck()
+      return
+    case 'toggle-risk':
+      toggleRisk(target.dataset.key || '')
+      return
+    case 'toggle-learning':
+      toggleLearning()
+      return
+    case 'save-learning-hosts':
+      saveLearningHosts()
+      return
+    case 'fill-learning-hosts':
+      fillDefaultLearningHosts()
+      return
+    case 'open-checkpoints':
+      void openCheckpoints()
+      return
+    case 'load-checkpoints':
+      void loadCheckpoints()
+      return
+    case 'create-checkpoint':
+      void createCheckpoint()
+      return
+    case 'restore-checkpoint':
+      void restoreCheckpoint(target.dataset.id, target.dataset.mode)
+      return
+    case 'open-changes':
+      void openChanges()
+      return
+    case 'load-changes':
+      void loadChanges()
+      return
+    case 'toggle-change': {
+      const key = target.dataset.key || ''
+      if (key) {
+        state.changes.expanded[key] = !state.changes.expanded[key]
+        render()
+      }
+      return
+    }
+    case 'revert-change':
+      void revertChange(target.dataset.path)
+      return
+    case 'open-resources':
+      void openResources('links')
+      return
+    case 'resource-tab':
+      if (target.dataset.tab) void loadResourceTab(target.dataset.tab)
+      return
+    case 'open-models':
+      void openModels()
+      return
+    case 'set-approval-mode':
+      void setApprovalMode(target.dataset.mode)
+      return
+    case 'set-session-model':
+      void setSessionModel(target.dataset.model || '')
+      return
+    case 'use-quick-command':
+      useQuickCommand(Number(target.dataset.index))
       return
     case 'schedule-add':
       void addSchedule()
@@ -4159,6 +5867,10 @@ document.addEventListener('input', (event) => {
   }
   if (target?.id === 'manual-pair-input') {
     state.manualPair = target.value
+    return
+  }
+  if (target?.id === 'learning-hosts') {
+    state.learning.hostsDraft = target.value
     return
   }
   if (target?.id === 'schedule-content') {

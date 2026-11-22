@@ -112,10 +112,81 @@ function readString(
   return text
 }
 
-/** Validates an untrusted latest.json payload. */
+function readSize(record: Record<string, unknown>): number {
+  const value = record['size']
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error('更新清单缺少安装包大小。')
+  }
+  if (value <= 0 || value > MAX_INSTALLER_BYTES) {
+    throw new Error('更新清单的安装包大小超出允许范围。')
+  }
+  return value
+}
+
+function readSha256(record: Record<string, unknown>): string {
+  const sha256 = readString(record, 'sha256', '校验值', 64).toLowerCase()
+  if (!SHA256_PATTERN.test(sha256)) throw new Error('更新清单的 SHA-256 校验值无效。')
+  return sha256
+}
+
+/**
+ * The manifest keeps one top-level installer (Windows) and a `platforms` block
+ * for everything else. A platform entry carries the file the site links to
+ * (usually a dmg) plus an optional `update` block with the artifact the in-app
+ * updater downloads instead — on macOS that is the zip, because a dmg cannot be
+ * mounted and applied by a running app.
+ *
+ * A platform entry may carry its own `version`: the platforms do not ship in
+ * lockstep (macOS can be a release ahead of Windows, Linux behind), so the
+ * top-level version cannot stand in for them. Without the override a client
+ * would compare against the Windows version and never see its own update.
+ */
+function readPlatformEntry(
+  record: Record<string, unknown>,
+  platformKey: string,
+  topVersion: string,
+  allowedHosts: ReadonlySet<string>,
+): { url: string; size: number; sha256: string; platform: string; version: string; notes: string } {
+  const platforms = record['platforms']
+  if (!platforms || typeof platforms !== 'object' || Array.isArray(platforms)) {
+    throw new Error('更新清单没有分平台安装包。')
+  }
+  const entry = (platforms as Record<string, unknown>)[platformKey]
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new Error(`更新清单没有 ${platformKey} 的安装包。`)
+  }
+  const item = entry as Record<string, unknown>
+  const update = item['update']
+  const source =
+    update && typeof update === 'object' && !Array.isArray(update)
+      ? (update as Record<string, unknown>)
+      : item
+  const own = readString(item, 'version', '版本号', 48, false)
+  const version = own ? normalizeVersion(own) : normalizeVersion(topVersion)
+  if (!VERSION_PATTERN.test(version)) throw new Error('更新清单的版本号无效。')
+  return {
+    url: assertReleaseUrl(readString(source, 'url', '下载地址', 2048), allowedHosts).toString(),
+    size: readSize(source),
+    sha256: readSha256(source),
+    platform: readString(item, 'label', '平台', 80, false),
+    version,
+    // Platforms release on their own schedule, so an entry may carry its own
+    // notes; without one the shared top-level notes still apply.
+    notes: readString(item, 'notes', '更新说明', 2000, false),
+  }
+}
+
+/**
+ * Validates an untrusted latest.json payload.
+ *
+ * `platformKey` (for example `mac-arm64`) switches the download target to that
+ * platform's entry; without it the top-level Windows installer is used, which
+ * is what every pre-0.1.89 client does.
+ */
 export function parseRelease(
   raw: unknown,
   allowedHosts: ReadonlySet<string>,
+  platformKey?: string,
 ): UpdateRelease {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('更新清单格式不正确。')
@@ -133,18 +204,27 @@ export function parseRelease(
   const channel = readString(record, 'channel', '更新通道', 24, false) || 'stable'
   if (channel !== 'stable') throw new Error('当前仅支持 stable 更新通道。')
 
+  if (platformKey) {
+    const entry = readPlatformEntry(record, platformKey, version, allowedHosts)
+    return {
+      version: entry.version,
+      channel,
+      platform:
+        entry.platform ||
+        readString(record, 'platform', '平台', 80, false) ||
+        'Windows 10 / 11 · x64',
+      date: readString(record, 'date', '发布日期', 40, false),
+      url: entry.url,
+      size: entry.size,
+      sha256: entry.sha256,
+      notes: entry.notes || readString(record, 'notes', '更新说明', 2000, false),
+    }
+  }
+
   const url = assertReleaseUrl(readString(record, 'url', '下载地址', 2048), allowedHosts)
 
-  const sizeValue = record.size
-  if (typeof sizeValue !== 'number' || !Number.isInteger(sizeValue)) {
-    throw new Error('更新清单缺少安装包大小。')
-  }
-  if (sizeValue <= 0 || sizeValue > MAX_INSTALLER_BYTES) {
-    throw new Error('更新清单的安装包大小超出允许范围。')
-  }
-
-  const sha256 = readString(record, 'sha256', '校验值', 64).toLowerCase()
-  if (!SHA256_PATTERN.test(sha256)) throw new Error('更新清单的 SHA-256 校验值无效。')
+  const sizeValue = readSize(record)
+  const sha256 = readSha256(record)
 
   return {
     version: normalizeVersion(version),

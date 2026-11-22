@@ -6,6 +6,8 @@
  * ranks or selects entries belongs to main/agent/memory.ts, which imports these.
  */
 
+import type { MemoryEntry, Session } from './types'
+
 /**
  * Ordered by how much a category is worth when the prompt budget is scarce;
  * the injection quota pass and the UI filter both follow this order.
@@ -67,4 +69,45 @@ export function memoryCategoryOf(entry: {
   category?: MemoryCategory
 }): MemoryCategory {
   return entry.category ?? inferMemoryCategory(entry.content, entry.source)
+}
+
+/** One entry of 「会话记忆」together with how it relates to this session. */
+export interface SessionMemoryRow {
+  entry: MemoryEntry
+  /** The entry was placed into this session's system prompt at least once. */
+  injected: boolean
+  /** This session wrote the entry (via the remember tool). */
+  written: boolean
+}
+
+/**
+ * What one session remembers.
+ *
+ * Entries stay workspace-wide — only the session's own ids are stored — so this
+ * filters the workspace store instead of keeping a second copy that could
+ * diverge. Order: what the prompt carried first (newest run first), then what
+ * the session wrote but never re-read, newest first.
+ */
+export function sessionMemories(
+  memory: MemoryEntry[],
+  session: Pick<Session, 'id' | 'memoryIds'> | null,
+): SessionMemoryRow[] {
+  if (!session) return []
+  const byId = new Map(memory.map((entry) => [entry.id, entry]))
+  const rows: SessionMemoryRow[] = []
+  const seen = new Set<string>()
+  for (const id of session.memoryIds ?? []) {
+    const entry = byId.get(id)
+    if (!entry || seen.has(entry.id)) continue
+    seen.add(entry.id)
+    rows.push({ entry, injected: true, written: entry.sessionId === session.id })
+  }
+  const written = memory
+    .filter((entry) => entry.sessionId === session.id && !seen.has(entry.id))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  for (const entry of written) {
+    seen.add(entry.id)
+    rows.push({ entry, injected: false, written: true })
+  }
+  return rows
 }

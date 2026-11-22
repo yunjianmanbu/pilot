@@ -2,21 +2,18 @@ import { app, safeStorage } from 'electron'
 import { realpath, stat } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
 import { normalizeModelTag } from '../shared/model-label'
 import type { BillingAccount } from './billing'
-import { isLocaleSetting, resolveLocale, AppLocale } from '../shared/i18n'
+import { resolveLocale, AppLocale } from '../shared/i18n'
 import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionState, JudgeProvider, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResource, ModelResourceInput, ModelSettingsView, MessageSearchFilter, MessageSearchHit, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileStrategy, ProfileVersion, QualityCandidate, QualityState, QuickCommand, QuickCommandInput, ReviewReport, ReviewScope, RunFeedback, RunRecord, ScheduleKind, ScheduledTask, ScheduledTaskGroup, ScheduledTaskInput, Session, SessionKind, SessionSummary, SettingsUpdate, SettingsView, StoredMessage, TodoGroup, TodoItem, TodoPriority, WorkspaceDetail, WorkspaceSummary } from '../shared/types'
-import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, SETTING_CONTEXT_MAX, SETTING_CONTEXT_MIN, SETTING_OUTPUT_MAX, SETTING_OUTPUT_MIN } from '../shared/modelLimits'
-import { normalizeRelayUrl } from '../shared/relay'
 import { normalizeTodoPriority } from '../shared/todos'
 import { evolutionPolicyKey } from '../shared/evolution'
-import { normalizeQualityPublishTarget, sanitizeCandidate, sanitizeQualityState } from '../shared/quality'
+import { sanitizeCandidate, sanitizeQualityState } from '../shared/quality'
 import { pruneProfiles } from '../core/profile-archive'
 import { MEMORY_ENTRY_MAX_CHARS, MEMORY_STORE_LIMIT, inferMemoryCategory } from '../shared/memory'
 import { shellInterpreterStatus } from './shell'
 import { localizeMain, localizeSessionTitle } from './localize'
-import { normalizeSelfSourceSettings } from './self-source-git'
+import { applySettingsUpdate } from './settings-update'
 import { searchSessionMessages } from './search'
 import { SHARD_VERSION, SessionStorage, emptySearchIndex, indexEntryFor, searchRecordsFor, searchRecordsForMessages, sessionFromSearchRecords, SearchIndexFile, SessionIndexEntry } from './session-store'
 
@@ -37,12 +34,10 @@ import {
   defaults,
   normalizeText,
   normalizeOptionalText,
-  normalizeTestTargets,
   isWithin,
   clampNumber,
   SECRET_LIKE_COMMAND,
   sanitizeCommandList,
-  sanitizePermissionRules,
   sanitizeEvolutionPolicy,
   sanitizeEvolutionCycle,
   sanitizeReviewScope,
@@ -59,11 +54,6 @@ import {
   normalizeProviderBaseUrl,
   sanitize,
   validApprovalMode,
-  validTheme,
-  validFontSize,
-  validContrast,
-  validSaturation,
-  validShellInterpreter,
   BODY_KEYS,
   CONTEXT_SUMMARY_MAX_CHARS,
   SEARCH_INDEX_MIN_INTERVAL_MS,
@@ -238,7 +228,12 @@ export class Store {
       try {
         const parsed = sanitizeSession(this.storage().readSessionSync(entry.id))
         if (parsed) {
-          body = { messages: parsed.messages, queue: parsed.queue, todos: parsed.todos }
+          body = {
+            messages: parsed.messages,
+            queue: parsed.queue,
+            todos: parsed.todos,
+            ...(parsed.memoryIds ? { memoryIds: parsed.memoryIds } : {}),
+          }
           ref.messagesOnDisk = parsed.messages.length
           // Old shards kept the transcript inline; the next save migrates it.
           ref.legacyMessages = !this.storage().hasMessagesFile(entry.id)
@@ -981,214 +976,10 @@ export class Store {
         }
       }
     }
-    if (input.maxSteps !== undefined) {
-      this.state.settings.maxSteps = clampNumber(input.maxSteps, 200, 4, 1_000)
-    }
-    if (input.maxTokens !== undefined) {
-      // 0 keeps the budget off; anything else is rounded so the UI cannot send
-      // a fractional cap.
-      this.state.settings.maxTokens = Math.round(clampNumber(input.maxTokens, 0, 0, 20_000_000))
-    }
-    if (input.maxContextTokens !== undefined) {
-      this.state.settings.maxContextTokens = clampNumber(
-        input.maxContextTokens,
-        DEFAULT_CONTEXT_TOKENS,
-        SETTING_CONTEXT_MIN,
-        SETTING_CONTEXT_MAX,
-      )
-    }
-    if (input.maxOutputTokens !== undefined) {
-      this.state.settings.maxOutputTokens = clampNumber(
-        input.maxOutputTokens,
-        DEFAULT_OUTPUT_TOKENS,
-        SETTING_OUTPUT_MIN,
-        SETTING_OUTPUT_MAX,
-      )
-    }
-    if (input.temperature !== undefined) {
-      this.state.settings.temperature = clampNumber(input.temperature, 0.2, 0, 1)
-    }
-    if (input.autoReflect !== undefined) this.state.settings.autoReflect = input.autoReflect
-    if (input.autoEvolve !== undefined) this.state.settings.autoEvolve = input.autoEvolve
-    if (input.autoContinue !== undefined) this.state.settings.autoContinue = input.autoContinue
-    if (input.autoContinueLimit !== undefined) {
-      this.state.settings.autoContinueLimit = Math.round(
-        clampNumber(input.autoContinueLimit, this.state.settings.autoContinueLimit, 1, 10),
-      )
-    }
-    if (input.screenshotFeedback !== undefined) {
-      this.state.settings.screenshotFeedback = input.screenshotFeedback === true
-    }
-    if (input.testTargets !== undefined) {
-      this.state.settings.testTargets = normalizeTestTargets(input.testTargets)
-    }
-    if (input.testCaptchaMode !== undefined) {
-      this.state.settings.testCaptchaMode =
-        input.testCaptchaMode === 'fixture' || input.testCaptchaMode === 'header'
-          ? input.testCaptchaMode
-          : 'off'
-    }
-    if (input.testCaptcha !== undefined) {
-      // 空字符串表示「保持原值」，null 才表示清除，避免密码框留空误删。
-      if (input.testCaptcha === null) this.setTestCaptcha(null)
-      else if (input.testCaptcha !== '') this.setTestCaptcha(input.testCaptcha)
-    }
-    if (input.approvalTimeoutSec !== undefined) {
-      this.state.settings.approvalTimeoutSec = Math.round(
-        clampNumber(input.approvalTimeoutSec, this.state.settings.approvalTimeoutSec, 0, 3_600),
-      )
-    }
-    if (input.shellMode !== undefined) this.state.settings.shellMode = input.shellMode === true
-    if (input.shellInterpreter !== undefined) {
-      this.state.settings.shellInterpreter =
-        validShellInterpreter(input.shellInterpreter) ?? this.state.settings.shellInterpreter
-    }
-    if (input.defaultApprovalMode !== undefined) {
-      this.state.settings.defaultApprovalMode =
-        validApprovalMode(input.defaultApprovalMode) ?? this.state.settings.defaultApprovalMode
-    }
-    if (input.permissionRules !== undefined) {
-      this.state.settings.permissionRules = sanitizePermissionRules(input.permissionRules)
-    }
-    if (input.trustedCommands !== undefined) {
-      this.state.settings.trustedCommands = sanitizeCommandList(input.trustedCommands)
-    }
-    if (input.classifierModel !== undefined) {
-      this.state.settings.classifierModel = normalizeText(
-        input.classifierModel,
-        this.state.settings.classifierModel,
-        200,
-      )
-    }
-    if (input.reviewModel !== undefined) {
-      const value = normalizeOptionalText(input.reviewModel, 200)
-      this.state.settings.reviewModel = value
-      this.state.settings.reviewModelId = value
-        ? (this.state.settings.modelResources.find((resource) => resource.model === value)?.id ?? '')
-        : ''
-    }
-    if (input.sandboxMode !== undefined) {
-      this.state.settings.sandboxMode = input.sandboxMode === 'auto' ? 'auto' : 'off'
-    }
-    if (input.sandboxNetwork !== undefined) {
-      this.state.settings.sandboxNetwork = input.sandboxNetwork !== false
-    }
-    if (input.sandboxAutoAllow !== undefined) {
-      this.state.settings.sandboxAutoAllow = input.sandboxAutoAllow !== false
-    }
-    if (input.allowUnattendedBuild !== undefined) {
-      this.state.settings.allowUnattendedBuild = input.allowUnattendedBuild === true
-    }
-    if (input.learningMode !== undefined) {
-      this.state.settings.learningMode = input.learningMode === true
-    }
-    if (input.learningHosts !== undefined) {
-      this.state.settings.learningHosts = input.learningHosts
-        .filter((value): value is string => typeof value === 'string')
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0)
-        .slice(0, 64)
-    }
-    if (input.learningShellIsolation !== undefined) {
-      this.state.settings.learningShellIsolation = input.learningShellIsolation === true
-    }
-    if (
-      input.selfSourceMode !== undefined ||
-      input.selfSourceGitUrl !== undefined ||
-      input.selfSourceGitRef !== undefined ||
-      input.selfSourceGitPath !== undefined ||
-      input.selfSourceCustomPath !== undefined
-    ) {
-      const next = normalizeSelfSourceSettings({
-        mode: input.selfSourceMode ?? this.state.settings.selfSourceMode,
-        gitUrl: input.selfSourceGitUrl ?? this.state.settings.selfSourceGitUrl,
-        gitRef: input.selfSourceGitRef ?? this.state.settings.selfSourceGitRef,
-        gitPath: input.selfSourceGitPath ?? this.state.settings.selfSourceGitPath,
-        customPath: input.selfSourceCustomPath ?? this.state.settings.selfSourceCustomPath,
-      })
-      this.state.settings.selfSourceMode = next.mode
-      this.state.settings.selfSourceGitUrl = next.gitUrl
-      this.state.settings.selfSourceGitRef = next.gitRef
-      this.state.settings.selfSourceGitPath = next.gitPath
-      this.state.settings.selfSourceCustomPath = next.customPath
-    }
-    if (input.qualityGate !== undefined) {
-      this.state.settings.qualityGate = input.qualityGate === true
-    }
-    if (input.qualityPublishTarget !== undefined) {
-      this.state.settings.qualityPublishTarget = normalizeQualityPublishTarget(
-        input.qualityPublishTarget,
-      )
-    }
-    if (input.qualityTuneEvery !== undefined) {
-      this.state.settings.qualityTuneEvery =
-        Number.isFinite(input.qualityTuneEvery) && input.qualityTuneEvery >= 0
-          ? Math.min(50, Math.round(input.qualityTuneEvery))
-          : 5
-    }
-    if (input.checkpointRetention !== undefined) {
-      this.state.settings.checkpointRetention = Math.round(
-        clampNumber(
-          input.checkpointRetention,
-          this.state.settings.checkpointRetention,
-          5,
-          100,
-        ),
-      )
-    }
-    if (input.checkpointMaxBytes !== undefined) {
-      this.state.settings.checkpointMaxBytes = Math.round(
-        clampNumber(
-          input.checkpointMaxBytes,
-          this.state.settings.checkpointMaxBytes,
-          512 * 1024 * 1024,
-          20 * 1024 * 1024 * 1024,
-        ),
-      )
-    }
-    if (input.checkpointShell !== undefined) {
-      this.state.settings.checkpointShell = input.checkpointShell !== false
-    }
-    if (input.checkpointIgnore !== undefined) {
-      this.state.settings.checkpointIgnore = normalizeCheckpointIgnore(input.checkpointIgnore)
-    }
-    if (input.notifyDesktop !== undefined) {
-      this.state.settings.notifyDesktop = input.notifyDesktop !== false
-    }
-    if (input.hooksEnabled !== undefined) {
-      this.state.settings.hooksEnabled = input.hooksEnabled === true
-    }
-    if (input.mcpEnabled !== undefined) {
-      this.state.settings.mcpEnabled = input.mcpEnabled === true
-    }
-    if (input.relayUrl !== undefined) {
-      const normalized = normalizeRelayUrl(input.relayUrl)
-      if (normalized === null) {
-        throw new Error(
-          '中继地址必须是 wss:// 或 ws:// 地址，可带 #k=准入码，且不能包含用户名或密码。',
-        )
-      }
-      this.state.settings.relayUrl = normalized
-    }
-    if (input.theme !== undefined) {
-      this.state.settings.theme = validTheme(input.theme) ?? this.state.settings.theme
-    }
-    if (input.fontSize !== undefined) {
-      this.state.settings.fontSize = validFontSize(input.fontSize) ?? this.state.settings.fontSize
-    }
-    if (input.contrast !== undefined) {
-      this.state.settings.contrast = validContrast(input.contrast) ?? this.state.settings.contrast
-    }
-    if (input.saturation !== undefined) {
-      this.state.settings.saturation =
-        validSaturation(input.saturation) ?? this.state.settings.saturation
-    }
-    if (input.locale !== undefined) {
-      this.state.settings.locale = isLocaleSetting(input.locale)
-        ? input.locale
-        : this.state.settings.locale
-    }
-    if (input.apiKey !== undefined) this.setApiKey(input.apiKey || null)
+    applySettingsUpdate(this.state.settings, input, {
+      setTestCaptcha: (value) => this.setTestCaptcha(value),
+      setApiKey: (value) => this.setApiKey(value),
+    })
     if (
       input.sessionModelId !== undefined ||
       input.evaluationModelIds !== undefined ||
@@ -1423,6 +1214,7 @@ export class Store {
       queue: session.queue,
       todos: session.todos,
       plan: session.plan,
+      ...(session.memoryIds?.length ? { memoryIds: [...session.memoryIds] } : {}),
       ...(session.summary ? { summary: session.summary } : {}),
     }
   }
@@ -2099,6 +1891,7 @@ export class Store {
     source: MemoryEntry['source'],
     runId?: string,
     category?: MemoryCategory,
+    sessionId?: string,
   ): Promise<MemoryEntry> {
     const workspace = this.workspaceRecord(workspacePath)
     if (!workspace) throw new Error('Workspace not found')
@@ -2114,6 +1907,7 @@ export class Store {
       existing.reinforced = (existing.reinforced ?? 0) + 1
       existing.lastUsedAt = now()
       if (!existing.category) existing.category = category ?? inferMemoryCategory(cleaned, source)
+      if (!existing.sessionId && sessionId) existing.sessionId = sessionId
       await this.save()
       return existing
     }
@@ -2127,6 +1921,7 @@ export class Store {
       injected: 0,
       lastUsedAt: now(),
       ...(runId ? { runId } : {}),
+      ...(sessionId ? { sessionId } : {}),
     }
     workspace.memory.unshift(entry)
     workspace.memory = workspace.memory.slice(0, MEMORY_STORE_LIMIT)
@@ -2134,8 +1929,18 @@ export class Store {
     return entry
   }
 
-  /** Records that these entries were placed into a system prompt. */
-  async noteMemoryInjected(workspacePath: string, memoryIds: string[]): Promise<void> {
+  /**
+   * Records that these entries were placed into a system prompt.
+   *
+   * With a `sessionId` the ids are also stamped on the session, which is what
+   * lets 「会话资源 → 会话记忆」answer "what did THIS task remember" — the
+   * workspace store itself stays the single copy of the entries.
+   */
+  async noteMemoryInjected(
+    workspacePath: string,
+    memoryIds: string[],
+    sessionId?: string,
+  ): Promise<void> {
     if (memoryIds.length === 0) return
     const workspace = this.workspaceRecord(workspacePath)
     if (!workspace) return
@@ -2147,6 +1952,21 @@ export class Store {
       entry.injected = (entry.injected ?? 0) + 1
       entry.lastUsedAt = stamp
       changed = true
+    }
+    if (sessionId) {
+      const session = this.state.sessions.find((entry) => entry.id === sessionId)
+      if (session) {
+        // Newest first, and an id only appears once no matter how many runs use it.
+        const merged = [...memoryIds.filter((id) => !session.memoryIds?.includes(id))]
+        const seen = new Set(merged)
+        const kept = (session.memoryIds ?? []).filter((id) => !seen.has(id))
+        const next = [...merged, ...kept].slice(0, 200)
+        if (next.join('\n') !== (session.memoryIds ?? []).join('\n')) {
+          session.memoryIds = next
+          session.updatedAt = stamp
+          changed = true
+        }
+      }
     }
     if (changed) await this.save()
   }

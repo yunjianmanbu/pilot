@@ -97,3 +97,126 @@ describe('update manifest validation', () => {
     ).toThrow(/凭据/)
   })
 })
+
+describe('platform specific update targets', () => {
+  function withPlatforms(platforms: Record<string, unknown>): Record<string, unknown> {
+    return release({ platforms })
+  }
+
+  it('keeps the top-level installer when no platform key is given', () => {
+    const parsed = parseRelease(
+      withPlatforms({
+        'mac-arm64': {
+          label: 'macOS 12+ · Apple Silicon',
+          file: 'Pilot-0.2.0-mac-arm64.dmg',
+          url: 'https://download.medpilot.cc/pilot/Pilot-0.2.0-mac-arm64.dmg',
+          size: 200,
+          sha256: 'b'.repeat(64),
+        },
+      }),
+      HOSTS,
+    )
+    expect(parsed.url).toContain('x64-setup.exe')
+    expect(parsed.size).toBe(123_000_000)
+  })
+
+  it('prefers the update block of the matching platform entry', () => {
+    const parsed = parseRelease(
+      withPlatforms({
+        'mac-arm64': {
+          label: 'macOS 12+ · Apple Silicon',
+          file: 'Pilot-0.2.0-mac-arm64.dmg',
+          url: 'https://download.medpilot.cc/pilot/Pilot-0.2.0-mac-arm64.dmg',
+          size: 200,
+          sha256: 'b'.repeat(64),
+          update: {
+            file: 'Pilot-0.2.0-mac-arm64.zip',
+            url: 'https://download.medpilot.cc/pilot/Pilot-0.2.0-mac-arm64.zip',
+            size: 150,
+            sha256: 'c'.repeat(64),
+          },
+        },
+      }),
+      HOSTS,
+      'mac-arm64',
+    )
+    expect(parsed.url).toBe('https://download.medpilot.cc/pilot/Pilot-0.2.0-mac-arm64.zip')
+    expect(parsed.size).toBe(150)
+    expect(parsed.sha256).toBe('c'.repeat(64))
+    expect(parsed.platform).toBe('macOS 12+ · Apple Silicon')
+    expect(parsed.version).toBe('0.2.0')
+  })
+
+  it('uses a platform entry version when the platforms ship out of lockstep', () => {
+    // Windows stays on 0.1.88 while macOS already ships 0.1.89: comparing the
+    // macOS download against the top-level version would hide its own update.
+    const parsed = parseRelease(
+      withPlatforms({
+        'mac-x64': {
+          version: '0.1.89',
+          url: 'https://download.medpilot.cc/pilot/Pilot-0.1.89-mac-x64.zip',
+          size: 300,
+          sha256: 'd'.repeat(64),
+        },
+      }),
+      HOSTS,
+      'mac-x64',
+    )
+    expect(parsed.version).toBe('0.1.89')
+    expect(parseRelease(release(), HOSTS).version).toBe('0.2.0')
+  })
+
+  it('rejects an invalid platform version', () => {
+    const bad = withPlatforms({
+      'mac-x64': {
+        version: 'latest',
+        url: 'https://download.medpilot.cc/pilot/Pilot-mac-x64.zip',
+        size: 300,
+        sha256: 'd'.repeat(64),
+      },
+    })
+    expect(() => parseRelease(bad, HOSTS, 'mac-x64')).toThrow(/版本号/)
+  })
+
+  it('falls back to the platform entry when there is no update block', () => {
+    const parsed = parseRelease(
+      withPlatforms({
+        'mac-x64': {
+          url: 'https://download.medpilot.cc/pilot/Pilot-0.2.0-mac-x64.dmg',
+          size: 300,
+          sha256: 'd'.repeat(64),
+        },
+      }),
+      HOSTS,
+      'mac-x64',
+    )
+    expect(parsed.url).toContain('mac-x64.dmg')
+    expect(parsed.size).toBe(300)
+  })
+
+  it('refuses a platform the manifest does not ship', () => {
+    expect(() => parseRelease(release(), HOSTS, 'mac-arm64')).toThrow(/分平台/)
+    expect(() =>
+      parseRelease(withPlatforms({ 'mac-x64': { url: 'x' } }), HOSTS, 'mac-arm64'),
+    ).toThrow(/mac-arm64/)
+  })
+
+  it('validates the platform download host and size', () => {
+    const evil = withPlatforms({
+      'mac-arm64': {
+        url: 'https://evil.example.com/Pilot.zip',
+        size: 10,
+        sha256: 'e'.repeat(64),
+      },
+    })
+    expect(() => parseRelease(evil, HOSTS, 'mac-arm64')).toThrow(/不允许/)
+    const huge = withPlatforms({
+      'mac-arm64': {
+        url: 'https://download.medpilot.cc/pilot/Pilot.zip',
+        size: 2_000_000_000,
+        sha256: 'e'.repeat(64),
+      },
+    })
+    expect(() => parseRelease(huge, HOSTS, 'mac-arm64')).toThrow(/大小/)
+  })
+})

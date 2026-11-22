@@ -21,10 +21,10 @@ import {
   InfoIcon,
   RefreshIcon,
   SearchIcon,
-  SettingsIcon,
   SparkIcon,
   TodoIcon,
   TrashIcon,
+  WrenchIcon,
 } from '../icons'
 import { formatElapsedSince, formatRelative, type MainView } from '../ui'
 import { modelResourceName } from '../../../shared/model-label'
@@ -52,7 +52,6 @@ interface SidebarProps {
   activeSession: string | null
   view: MainView
   settings: SettingsView | null
-  settingsOpen: boolean
   feedbackOpen: boolean
   version: string
   update: UpdateState
@@ -123,21 +122,61 @@ function persistCollapsed(value: Set<string>): void {
  * The full plan stays in the chat panel; this row only answers "is this task's
  * plan moving?" without repeating it.
  */
-const PLAN_MARKS_LIMIT = 8
+const PLAN_MARKS_LIMIT = 5
+/** 超过上限时实际画几个点：当前步为中心最多 3 个，窄侧栏也放得下。 */
+const PLAN_MARKS_WINDOW = 3
 export function PlanMarks({ plan, running }: { plan: Plan; running: boolean }) {
   const total = plan.items.length
   if (total === 0) return null
   const done = plan.items.filter((item) => item.status === 'done').length
   const label = t("计划 {v1}/{v2} 完成", { v1: done, v2: total })
-  // Long plans would overflow the row; the tail is summarised instead of clipped.
-  const shown = plan.items.slice(0, PLAN_MARKS_LIMIT)
-  const rest = total - shown.length
   // 执行完就不再报步骤序号（移动端也是这样）：只留完成数；
   // 还在跑时才把每一步画成彩色圆点，当前步呼吸。
+  const activeIndex = plan.items.findIndex((item) => item.status === 'in_progress')
+  // 步骤多的计划不再从头铺一排点位：窄侧栏放不下，整排会被 overflow 裁掉，
+  // 而用户最想看的「现在跑到第几步」往往正好落在被裁的那侧。超过上限时
+  // 改成以当前步为中心的滑动窗口（最多 3 个点），两侧用 +N 折叠，
+  // 当前步永远在窗口里，不会被裁掉。
+  if (running && total > PLAN_MARKS_LIMIT) {
+    const current = activeIndex >= 0 ? activeIndex : Math.min(done, total - 1)
+    const start = Math.min(
+      Math.max(current - Math.floor(PLAN_MARKS_WINDOW / 2), 0),
+      Math.max(total - PLAN_MARKS_WINDOW, 0)
+    )
+    const windowItems = plan.items.slice(start, start + PLAN_MARKS_WINDOW)
+    return (
+      <span className="session-plan" role="img" aria-label={label} title={label}>
+        {start > 0 ? <i className="session-plan-more">+{start}</i> : null}
+        {windowItems.map((item, offset) => {
+          const index = start + offset
+          const state =
+            item.status === 'done'
+              ? 'done'
+              : item.status === 'in_progress' || index === current
+                ? 'active'
+                : 'pending'
+          return (
+            <i
+              key={item.id}
+              className={`session-plan-dot is-${state}${index === current ? ' is-current' : ''}`}
+            >
+              {index + 1}
+            </i>
+          )
+        })}
+        {start + windowItems.length < total ? (
+          <i className="session-plan-more">+{total - start - windowItems.length}</i>
+        ) : null}
+        <b className="session-plan-count">
+          {done}/{total}
+        </b>
+      </span>
+    )
+  }
   return (
     <span className="session-plan" role="img" aria-label={label} title={label}>
       {running
-        ? shown.map((item, index) => {
+        ? plan.items.map((item, index) => {
             const state =
               item.status === 'done'
                 ? 'done'
@@ -151,7 +190,6 @@ export function PlanMarks({ plan, running }: { plan: Plan; running: boolean }) {
             )
           })
         : null}
-      {running && rest > 0 ? <i className="session-plan-more">+{rest}</i> : null}
       <b className="session-plan-count">
         {done}/{total}
       </b>
@@ -166,7 +204,6 @@ export function Sidebar({
   activeSession,
   view,
   settings,
-  settingsOpen,
   feedbackOpen,
   version,
   update,
@@ -636,6 +673,15 @@ export function Sidebar({
           </button>
           <button
             type="button"
+            className={`footer-nav-item${view === 'tools' ? ' is-active' : ''}`}
+            title={t("系统工具：这个工作区能用的全部工具")}
+            onClick={() => onView('tools')}
+          >
+            <WrenchIcon width={16} height={16} />
+            <span className="footer-nav-label">{t("工具")}</span>
+          </button>
+          <button
+            type="button"
             className={`footer-nav-item${view === 'scheduled' ? ' is-active' : ''}`}
             title={t("全部定时任务：所有会话汇总")}
             onClick={() => onView('scheduled')}
@@ -685,15 +731,6 @@ export function Sidebar({
                 <span className="footer-badge">{draftProfileCount}</span>
               ) : null}
             </span>
-          </button>
-          <button
-            type="button"
-            className={`footer-nav-item${settingsOpen ? ' is-active' : ''}`}
-            title={t("设置")}
-            onClick={onOpenSettings}
-          >
-            <SettingsIcon width={16} height={16} />
-            <span className="footer-nav-label">{t("设置")}</span>
           </button>
           <button
             type="button"

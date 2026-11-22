@@ -800,6 +800,13 @@ export interface Session extends SessionSummary {
    * Stored in the session shard, never sent to the renderer.
    */
   summary?: string
+  /**
+   * Project-memory entries this session was given in its system prompt, newest
+   * first. Only ids are stored: the entries themselves stay workspace-wide, so
+   * 「会话记忆」 can show what this task actually remembered without copying
+   * (and later diverging from) the workspace store.
+   */
+  memoryIds?: string[]
 }
 
 export interface WorkspaceSummary {
@@ -832,6 +839,8 @@ export interface MemoryEntry {
   source: 'user' | 'agent' | 'reflection'
   /** Missing on entries written before categories existed; inferred on read. */
   category?: MemoryCategory
+  /** Session that wrote the entry; absent for user-written ones. */
+  sessionId?: string
   createdAt: string
   /** Times the same insight was re-derived, i.e. how strongly it proved useful. */
   reinforced?: number
@@ -2339,6 +2348,8 @@ export interface PilotBridge {
   sessionLinks(sessionId: string): Promise<SessionLink[]>
   /** Tools a run in this workspace could be offered, from every source. */
   toolsCatalog(sessionId: string): Promise<ToolCatalogEntry[]>
+  /** 同一个工具箱，但按工作区汇总所有会话的调用次数（左下角「工具」用）。 */
+  toolsCatalogForWorkspace(workspacePath: string): Promise<ToolCatalogEntry[]>
   createSession(workspacePath: string): Promise<Session>
   /** Create a read-only review session over explicit roots and session scope. */
   createReviewSession(input: ReviewSessionInput): Promise<Session>

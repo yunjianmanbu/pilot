@@ -33,8 +33,16 @@ function percentText(percent: number | null): string {
  * 数据来自 `resourceUsage()`（主进程一次 ~120ms 的 CPU 差分采样），这里只负责
  * 轮询与绘制。窗口隐藏时停表——后台窗口继续采样 CPU 本身就是它想报告的那种浪费。
  * 读不到的一路留空槽并显示「—」，不用 0% 或满格冒充读数。
+ *
+ * 整条可点击：条上只够放百分比，绝对量与机型信息在 `SystemResourceDialog` 里。
  */
-export function ResourceMeters({ workspacePath }: { workspacePath?: string }) {
+export function ResourceMeters({
+  workspacePath,
+  onOpen,
+}: {
+  workspacePath?: string
+  onOpen?: () => void
+}) {
   const [usage, setUsage] = useState<ResourceUsage | null>(null)
   const [failures, setFailures] = useState(0)
   const targetRef = useRef(workspacePath ?? '')
@@ -126,11 +134,17 @@ export function ResourceMeters({ workspacePath }: { workspacePath?: string }) {
   ]
 
   return (
-    <div className="resource-meters" role="group" aria-label={t('本机资源使用')}>
+    <button
+      type="button"
+      className="resource-meters"
+      onClick={onOpen}
+      title={t('本机资源使用：点击查看详情')}
+      aria-label={t('本机资源使用')}
+    >
       {meters.map((meter) => {
         const level = usageLevel(meter.percent)
         return (
-          <div
+          <span
             key={meter.key}
             className={`resource-meter is-${meter.key} level-${level}`}
             title={meter.title}
@@ -148,9 +162,9 @@ export function ResourceMeters({ workspacePath }: { workspacePath?: string }) {
             </span>
             {/* 数字放在条尾而不是条内：条很短，压字会看不清，也不跟随长度跳动。 */}
             <span className="resource-meter-value">{percentText(meter.percent)}</span>
-          </div>
+          </span>
         )
       })}
-    </div>
+    </button>
   )
 }
