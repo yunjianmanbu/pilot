@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-// 生成「外观 → 对比度 / 饱和度」的 CSS 覆盖层。
+// 生成手机端（pilot-link/App.vue）「对比度 / 饱和度」的 CSS 覆盖层。
 //
-// 两端的调色板是按配色与深浅模式分别写死的自定义属性，没法用一条 color-mix
-// 同时照顾十几套配色（旧版 WebView 也不一定支持 color-mix）。这里直接读取
-// 两端的调色板，按 HSL 计算出每一档的实际色值，再把结果写进带
-// `appearance:begin` / `appearance:end` 标记的区块。
+// 桌面端已经移除了对比度与饱和度设置：最终色值直接写在 styles.css 的调色板里，
+// 本脚本不再为它生成任何规则（桌面端仓库跑 --check 会直接通过）。
+//
+// 手机端仍保留这两项设置。App.vue 的调色板按配色与深浅模式分别写死，没法用一条
+// color-mix 同时照顾十几套配色（旧版 WebView 也不一定支持 color-mix）。这里直接
+// 读取调色板，按 HSL 计算出每一档的实际色值，再写进带 appearance:begin /
+// appearance:end 标记的区块。
 //
 // 标准档以旧版的「低对比度」和「高饱和度」为基准：低/高档不再从原始调色板
 // 出发，而是在标准档上再各走一步，因此三档之间的观感差距比早期版本更均匀。
-//
 // 对比度只动中性色阶梯与文字，饱和度只动主题色与功能色，两组变量互不重叠，
 // 因此两种设置可以同时生效，不受 CSS 规则先后顺序影响。
 //
@@ -16,7 +18,7 @@
 //   node pilot/scripts/gen-appearance-css.mjs           # 重新生成
 //   node pilot/scripts/gen-appearance-css.mjs --check   # 只检查是否最新，退出码 0/1
 //
-// 改动任何配色后重跑一次；两端色值始终以 styles.css / App.vue 为准。
+// 改动任何配色后重跑一次；色值始终以 App.vue 为准。
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,13 +33,11 @@ const pilotDir = resolve(here, '..')
  * 拆仓后如果不认布局，这里会拼出 <repo>/pilot/src/... 这种不存在的路径，CI 里是一句
  * ENOENT 而不是“路径算错”。用 src/renderer 是否存在判定。
  */
-const standalone = existsSync(join(pilotDir, 'src', 'renderer'))
-const CLIENT_CSS = standalone
-  ? join(pilotDir, 'src', 'renderer', 'src', 'styles.css')
-  : join(pilotDir, 'pilot', 'src', 'renderer', 'src', 'styles.css')
-// 手机端源文件只存在于主仓库：独立仓库（pilot）里只有桌面端，那一半得整体跳过，
-// 不能“读不到就报错”——否则桌面端仓库的 CI 永远跑不过。
-const APP_VUE = standalone ? null : join(pilotDir, 'pilot-link', 'App.vue')
+// 手机端源文件只存在于主仓库：独立仓库（桌面端 pilot）里没有 App.vue，
+// 这时没有任何东西需要生成，--check 直接通过而不是报错。
+const APP_VUE = existsSync(join(pilotDir, 'pilot-link', 'App.vue'))
+  ? join(pilotDir, 'pilot-link', 'App.vue')
+  : null
 
 const ACCENTS = [
   'pine',
@@ -51,34 +51,6 @@ const ACCENTS = [
   'orange',
   'celadon',
   'claude'
-]
-
-// 对比度：页面/卡片阶梯（surface）与文字（text）分开计算。
-// `--code-border` 是代码块的 1px 描边，跟着代码块底色一起提亮/压暗才不会
-// 在某一档里凭空消失（它此前不在任何一张表里，三档都一样）。
-const CLIENT_CONTRAST_SURFACE_VARS = [
-  '--bg',
-  '--page',
-  '--bg-elev',
-  '--panel',
-  '--panel-2',
-  '--panel-3',
-  '--panel-hover',
-  '--surface',
-  '--sidebar-bg',
-  '--sidebar-bg-2',
-  '--code-bg',
-  '--code-border'
-]
-
-const CLIENT_CONTRAST_TEXT_VARS = [
-  '--text',
-  '--text-soft',
-  '--muted',
-  '--faint',
-  '--sidebar-text',
-  '--sidebar-muted',
-  '--code-text'
 ]
 
 const APP_CONTRAST_SURFACE_VARS = [
@@ -115,27 +87,6 @@ function lineDeclarations(theme, level) {
     `--line-strong: rgba(${ink}, ${alpha.strong});`
   ]
 }
-
-// 饱和度：主题色、功能色以及它们的半透明叠色。半透明色保留 alpha，
-// 只改 RGB 的饱和度，所以背景/描边的透明度关系不会被破坏。
-const CLIENT_SATURATION_VARS = [
-  '--accent',
-  '--accent-strong',
-  '--sidebar-primary-from',
-  '--sidebar-primary-to',
-  '--blue',
-  '--blue-soft',
-  '--amber',
-  '--amber-soft',
-  '--red',
-  '--red-soft',
-  '--green',
-  '--green-soft',
-  '--violet',
-  '--violet-soft',
-  '--knowledge',
-  '--knowledge-soft'
-]
 
 const APP_SATURATION_VARS = [
   '--accent',
@@ -376,21 +327,6 @@ function declarationLines(names, palette, transform) {
     .map((name) => `${name}: ${transform(palette[name], name)};`)
 }
 
-/**
- * 桌面端只剩暗、浅两套主题：调色板就是 `:root` 与 `:root[data-theme='light']` 两块，
- * 不再有 `[data-accent='…']` 覆盖层，对比度/饱和度也只生成这两条规则。
- * 手机端（App.vue）仍按配色分支，所以 `ACCENTS` 只用于 `appPalettes`。
- */
-function clientPalettes(css) {
-  return [
-    {
-      accent: '',
-      dark: variables(blockOf(css, ':root {')),
-      light: variables(blockOf(css, ":root[data-theme='light'] {"))
-    }
-  ]
-}
-
 function appPalettes(css) {
   const darkBase = variables(blockOf(css, 'page,\n:root {'))
   const lightBase = variables(blockOf(css, '\n.theme-light {'))
@@ -403,41 +339,6 @@ function appPalettes(css) {
     })
   }
   return list
-}
-
-/** 对比度规则：深色/浅色各一档，配色变体按需覆盖对应阶梯。 */
-function clientContrastRules(css, level) {
-  const rules = []
-  for (const palette of clientPalettes(css)) {
-    const attr = palette.accent ? `[data-accent='${palette.accent}']` : ''
-    const dark = indentLines(
-      [
-        ...declarationLines(CLIENT_CONTRAST_SURFACE_VARS, palette.dark, (value) =>
-          contrastColor(value, 'dark', level, 'surface')
-        ),
-        ...declarationLines(CLIENT_CONTRAST_TEXT_VARS, palette.dark, (value, name) =>
-          contrastColor(value, 'dark', level, 'text', DARK_LOW_TEXT_FACTORS[name] ?? 0.93)
-        ),
-        ...lineDeclarations('dark', level)
-      ],
-      '  '
-    )
-    const light = indentLines(
-      [
-        ...declarationLines(CLIENT_CONTRAST_SURFACE_VARS, palette.light, (value) =>
-          contrastColor(value, 'light', level, 'surface')
-        ),
-        ...declarationLines(CLIENT_CONTRAST_TEXT_VARS, palette.light, (value, name) =>
-          contrastColor(value, 'light', level, 'text', LIGHT_LOW_TEXT_FACTORS[name] ?? 0.08)
-        ),
-        ...lineDeclarations('light', level)
-      ],
-      '  '
-    )
-    rules.push(`:root[data-contrast='${level}']${attr} {\n${dark}\n}`)
-    rules.push(`:root[data-theme='light'][data-contrast='${level}']${attr} {\n${light}\n}`)
-  }
-  return rules.join('\n\n')
 }
 
 function appContrastRules(css, level) {
@@ -470,34 +371,6 @@ function appContrastRules(css, level) {
     )
     rules.push(`.contrast-${level}${suffix} {\n${dark}\n}`)
     rules.push(`.theme-light.contrast-${level}${suffix} {\n${light}\n}`)
-  }
-  return rules.join('\n\n')
-}
-
-function clientSaturationRules(css, level) {
-  const rules = []
-  for (const palette of clientPalettes(css)) {
-    const attr = palette.accent ? `[data-accent='${palette.accent}']` : ''
-    const dark = indentLines(
-      [
-        ...declarationLines(CLIENT_SATURATION_VARS, palette.dark, (value) =>
-          saturateValue(value, level)
-        ),
-        ...inkLine(palette.dark, level)
-      ],
-      '  '
-    )
-    const light = indentLines(
-      [
-        ...declarationLines(CLIENT_SATURATION_VARS, palette.light, (value) =>
-          saturateValue(value, level)
-        ),
-        ...inkLine(palette.light, level)
-      ],
-      '  '
-    )
-    rules.push(`:root[data-saturation='${level}']${attr} {\n${dark}\n}`)
-    rules.push(`:root[data-theme='light'][data-saturation='${level}']${attr} {\n${light}\n}`)
   }
   return rules.join('\n\n')
 }
@@ -593,40 +466,32 @@ function replaceSection(source, content, title, insertBefore) {
   return `${source.replace(/\s+$/, '')}\n\n${section}\n`
 }
 
-const clientSource = stripLegacyTone(readFileSync(CLIENT_CSS, 'utf8'))
 const appSource = APP_VUE ? stripLegacyTone(readFileSync(APP_VUE, 'utf8')) : null
 
-const LEVELS = ['standard', 'low', 'high']
-const clientContent = [
-  ...LEVELS.map((level) => clientContrastRules(clientSource, level)),
-  ...LEVELS.map((level) => clientSaturationRules(clientSource, level))
-].join('\n\n')
-const appContent = appSource
-  ? [
-      ...LEVELS.map((level) => appContrastRules(appSource, level)),
-      ...LEVELS.map((level) => appSaturationRules(appSource, level))
-    ].join('\n\n')
-  : null
-
-const clientNext = replaceSection(clientSource, clientContent, '对比度与饱和度（桌面端）')
-const appNext = appSource ? replaceSection(appSource, appContent, '对比度与饱和度（手机端）', '</style>') : null
-
-const check = process.argv.includes('--check')
-if (check) {
-  const stale = []
-  if (clientNext !== readFileSync(CLIENT_CSS, 'utf8')) stale.push('pilot/src/renderer/src/styles.css')
-  if (appNext !== null && appNext !== readFileSync(APP_VUE, 'utf8')) stale.push('pilot-link/App.vue')
-  if (stale.length) {
-    console.error(`✗ 外观样式不是最新：${stale.join('、')}`)
-    console.error('  运行 node pilot/scripts/gen-appearance-css.mjs 重新生成。')
-    process.exit(1)
-  }
-  console.log(`✓ 外观样式已是最新${appSource ? '' : '（独立仓库只校桌面端）'}`)
+if (!appSource) {
+  console.log('✓ 没有对比度/饱和度样式需要生成（本仓库不含手机端 App.vue）')
   process.exit(0)
 }
 
-if (clientNext !== readFileSync(CLIENT_CSS, 'utf8')) writeFileSync(CLIENT_CSS, clientNext)
-if (appNext !== null && appNext !== readFileSync(APP_VUE, 'utf8')) writeFileSync(APP_VUE, appNext)
+const LEVELS = ['standard', 'low', 'high']
+const appContent = [
+  ...LEVELS.map((level) => appContrastRules(appSource, level)),
+  ...LEVELS.map((level) => appSaturationRules(appSource, level))
+].join('\n\n')
+
+const appNext = replaceSection(appSource, appContent, '对比度与饱和度（手机端）', '</style>')
+
+const check = process.argv.includes('--check')
+if (check) {
+  if (appNext !== readFileSync(APP_VUE, 'utf8')) {
+    console.error('✗ 外观样式不是最新：pilot-link/App.vue')
+    console.error('  运行 node pilot/scripts/gen-appearance-css.mjs 重新生成。')
+    process.exit(1)
+  }
+  console.log('✓ 外观样式已是最新')
+  process.exit(0)
+}
+
+if (appNext !== readFileSync(APP_VUE, 'utf8')) writeFileSync(APP_VUE, appNext)
 console.log('✓ 已生成对比度与饱和度样式')
-console.log('  pilot/src/renderer/src/styles.css')
-if (appSource) console.log('  pilot-link/App.vue')
+console.log('  pilot-link/App.vue')

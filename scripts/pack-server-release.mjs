@@ -17,6 +17,7 @@
  * it never points at a file that is not there yet.
  */
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 
@@ -117,6 +118,20 @@ async function main() {
   }
   if (!base.pathname.endsWith('/')) throw new Error('--base 必须以 / 结尾')
   const baseUrl = base.toString()
+
+  // 浏览器里的桌面界面是 `out/web`（与桌面客户端同一份 renderer 构建）。缺了它
+  // 服务器照样能起，但 `pilot serve` 打开就是 404 或回落到手机面板，而这种缺口
+  // 只会在用户升级之后才被发现，所以在这里直接拦住。判据是「真实安装树」：
+  // `bin/pilot.js` 是 CLI 入口，只有 npm 包/安装目录才有，临时 fixture 没有它。
+  if (
+    existsSync(join(root, 'bin', 'pilot.js')) &&
+    existsSync(join(root, 'out', 'server', 'main.js')) &&
+    !existsSync(join(root, 'out', 'web', 'index.html'))
+  ) {
+    throw new Error(
+      `安装目录缺少 out/web/index.html：浏览器控制台由桌面渲染构建提供，请在 pilot/pilot 执行 \`npm run build:web\` 后再打包`,
+    )
+  }
 
   const files = await walk(root)
   if (files.length === 0) throw new Error(`${root} 下没有可发布的文件`)

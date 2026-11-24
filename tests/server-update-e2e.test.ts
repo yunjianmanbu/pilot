@@ -19,7 +19,7 @@ afterEach(async () => {
   while (cleanups.length) await cleanups.pop()?.()
 })
 
-const SCRIPT = fileURLToPath(new URL('../../scripts/pack-server-release.mjs', import.meta.url))
+const SCRIPT = fileURLToPath(new URL('../scripts/pack-server-release.mjs', import.meta.url))
 
 async function tempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), prefix))

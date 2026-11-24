@@ -82,8 +82,8 @@ Windows 下入口是 `Pilot.exe`。同名目录不会覆盖；每次构建都保
 维护者审阅贡献包：
 
 ```bash
-node ../scripts/contribution-review.mjs inspect <贡献包>
-node ../scripts/contribution-review.mjs apply <贡献包> --yes
+node ./scripts/contribution-review.mjs inspect <贡献包>
+node ./scripts/contribution-review.mjs apply <贡献包> --yes
 ```
 
 `apply` 会校验校验和、路径、密钥和基线哈希；官方源码在提交后发生变化时会拒绝应用。应用成功后仍需人工审阅 diff、跑门禁并走正式发版流程，不会自动合并或发布。

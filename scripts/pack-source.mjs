@@ -37,7 +37,11 @@ const excludes = [
   'pilot/pilot/.selfdev-build',
   'pilot/pilot/release-selfdev',
   'pilot/pilot/build/self-source-package.json',
-  'pilot/release',
+  // 通配而不是 'pilot/release'：electron-builder 遇到 EBUSY 时会换输出目录
+  // （-c.directories.output=../release-1.0.4 之类），那些兄弟目录同样不能进
+  // 源码包——曾经的 7 个 release-* 目录共 3.6 GB，压出 2.2 GB 的包，
+  // 连 readFileSync 都读不了（ERR_FS_FILE_TOO_LARGE）。
+  'pilot/release*',
   'pilot/pilot-link/node_modules',
   'pilot/pilot-link/unpackage',
   'pilot/pilot-link/.build',
