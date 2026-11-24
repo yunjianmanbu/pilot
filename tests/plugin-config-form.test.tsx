@@ -1,8 +1,13 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { setLocale } from '../src/renderer/src/i18n'
 import { PluginConfigForm } from '../src/renderer/src/components/PluginConfigForm'
 import type { PluginRecordView } from '../src/shared/types'
+
+// The assertions pin the Chinese source copy; navigator.language is en-US on
+// the Linux CI runner, so pin the effective locale before rendering.
+setLocale('zh-CN')
 
 /**
  * `PluginConfigForm` is what turns `settings[]` in a manifest into fields the

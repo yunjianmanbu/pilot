@@ -1,7 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { setLocale } from '../src/renderer/src/i18n'
 import { PluginFacts, triggerLabel } from '../src/renderer/src/components/PluginFacts'
 import type { PluginRecordView } from '../src/shared/types'
+
+// The assertions pin the Chinese source copy; navigator.language is en-US on
+// the Linux CI runner, so pin the effective locale before rendering.
+setLocale('zh-CN')
 
 /**
  * The installed-plugin card is the only place a user can see what a plugin

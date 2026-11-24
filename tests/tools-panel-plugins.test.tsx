@@ -1,8 +1,13 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { setLocale } from '../src/renderer/src/i18n'
 import { ToolCard } from '../src/renderer/src/components/SystemToolsPanel'
 import { toolSourceLabel } from '../src/renderer/src/components/SessionResourcesPanel'
 import type { ToolCatalogEntry } from '../src/shared/types'
+
+// The assertions pin the Chinese source copy; navigator.language is en-US on
+// the Linux CI runner, so pin the effective locale before rendering.
+setLocale('zh-CN')
 
 /**
  * 插件工具最终能不能被用户看见，取决于两个面板怎么标注来源。

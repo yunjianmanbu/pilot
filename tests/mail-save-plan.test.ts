@@ -6,11 +6,16 @@
  * 会把同一张表里的「网页服务」一起拦下，表现成「没绑邮箱就开不了网页服务」。
  */
 import { describe, expect, it } from 'vitest'
+import { setLocale } from '../src/renderer/src/i18n'
 import {
   mailSettingsDraftFrom,
   notifyToggleForSave,
   validateMailSettings,
 } from '../src/renderer/src/mail-save'
+
+// The assertions pin the Chinese source copy; navigator.language is en-US on
+// the Linux CI runner, so pin the effective locale before rendering.
+setLocale('zh-CN')
 
 function draftOf(overrides: Record<string, unknown> = {}) {
   return {
