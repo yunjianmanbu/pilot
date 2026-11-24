@@ -137,6 +137,18 @@ export function createBenchmarkTaskRunner(options: BenchmarkRunnerOptions): Task
       maxTokens: options.maxTokens ?? 120_000,
       temperature: 0.2,
       signal,
+      /*
+       * The benchmark workspace is a throwaway temp directory holding one
+       * fixture, the tool set is fixed above and no user is present. Without a
+       * policy, the loop resolves every write and exec call to `ask`; with no
+       * approval handler attached it refunds the call with
+       * "Approval is required, but no approval handler is connected". Every task
+       * then failed on both sides, every comparison became a 0-0-N tie, and the
+       * activation gate could never open — the whole feature measured nothing.
+       * Auto here is not a relaxation of the user's approval mode: it is the
+       * only way a measured run can touch the fixture at all.
+       */
+      policy: () => 'auto',
       executeTool: (execution) =>
         executePilotTool(execution.call.name, execution.call.arguments, host, signal),
     })
