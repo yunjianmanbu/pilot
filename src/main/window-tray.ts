@@ -1,8 +1,10 @@
 // 窗口与托盘：主窗口创建、主题应用、显示置前与托盘菜单。
 import { appState } from './app-state'
-import type { RunEvent, ThemeMode, ContrastPreference, UpdateState } from '../shared/types'
+import type { RunEvent, ThemeMode, UpdateState } from '../shared/types'
 import { appIconPath } from './app-icon'
 import { localizeUpdateState } from './localize'
+import { instructionTitle } from './notify/instruction-title'
+import { sendToRenderers } from './renderer-sink'
 import { trayClickAction } from './window-action'
 import { windowPalette } from './window-platform'
 import {
@@ -20,7 +22,7 @@ import { join } from 'node:path'
 
 function focusWindow(sessionId: string): void {
   if (!focusMainWindow()) return
-  appState.mainWindow?.webContents.send('pilot:focus-session', sessionId)
+  sendToRenderers('pilot:focus-session', sessionId)
 }
 
 /** Bring Pilot to the front without navigating anywhere. */
@@ -33,8 +35,17 @@ export function focusMainWindow(): boolean {
 }
 
 /**
+ * 桌面通知的标题：用户这一次说的话，不是自动生成的会话名。
+ * 「Pilot · 任务完成 · 新任务」看不出做完了什么，指令原文才看得出。
+ */
+function taskTitle(sessionId: string, runId: string | undefined, english: boolean): string {
+  const messages = appState.store.session(sessionId)?.messages ?? []
+  return instructionTitle(messages, runId, { fallback: english ? 'Current task' : '当前任务' })
+}
+
+/**
  * Desktop notifications are opt-out, only fire while Pilot is not focused,
- * and never carry message contents — just the session title and event.
+ * and never carry message contents — just the user's instruction and the event.
  */
 export function notifyEvent(event: RunEvent): void {
   // 质量闸门只在需要人做决定时发系统通知（bell=true）；一次例行复测不弹窗。
@@ -49,7 +60,7 @@ export function notifyEvent(event: RunEvent): void {
     })
     notification.on('click', () => {
       if (!focusMainWindow()) return
-      appState.mainWindow?.webContents.send('pilot:focus-quality', event.workspacePath)
+      sendToRenderers('pilot:focus-quality', event.workspacePath)
     })
     notification.show()
     return
@@ -65,30 +76,28 @@ export function notifyEvent(event: RunEvent): void {
   if (!Notification.isSupported()) return
   if (BrowserWindow.getFocusedWindow()) return
   const english = appState.store.uiLocale() === 'en'
-  const currentTask = english ? 'Current task' : '当前任务'
   let sessionId = ''
   let title = 'Pilot'
   let body = ''
   if (event.type === 'tool.approval_required') {
     sessionId = event.sessionId
-    title = english ? 'Pilot · Approval needed' : 'Pilot · 需要确认'
-    const session = appState.store.session(sessionId)
+    title = taskTitle(sessionId, event.runId, english)
     body = english
-      ? `${session?.title ?? currentTask}\nRequests to run ${event.call.name} and is waiting for your approval.`
-      : `${session?.title ?? currentTask}\n请求执行 ${event.call.name}，等待你的批准。`
+      ? `Approval needed · ${event.call.name}${event.reason ? ` · ${event.reason}` : ''}`
+      : `需要确认 · ${event.call.name}${event.reason ? ` · ${event.reason}` : ''}`
   } else if (event.type === 'run.failed') {
     sessionId = event.sessionId
-    title = english ? 'Pilot · Run failed' : 'Pilot · 运行失败'
-    const session = appState.store.session(sessionId)
-    body = `${session?.title ?? currentTask}\n${event.message.slice(0, 160)}`
+    title = taskTitle(sessionId, event.runId, english)
+    body = english
+      ? `Run failed · ${event.message.slice(0, 160)}`
+      : `运行失败 · ${event.message.slice(0, 160)}`
   } else if (event.type === 'run.completed' && event.status === 'completed') {
     sessionId = event.sessionId
-    title = english ? 'Pilot · Task complete' : 'Pilot · 任务完成'
-    const session = appState.store.session(sessionId)
+    title = taskTitle(sessionId, event.runId, english)
     const seconds = Math.max(1, Math.round(event.durationMs / 1000))
     body = english
-      ? `${session?.title ?? currentTask}\nFinished in ${seconds}s.`
-      : `${session?.title ?? currentTask}\n已完成，用时 ${seconds} 秒。`
+      ? `Task complete · finished in ${seconds}s`
+      : `任务完成 · 用时 ${seconds} 秒`
   } else {
     return
   }
@@ -99,16 +108,14 @@ export function notifyEvent(event: RunEvent): void {
 
 export function broadcastUpdate(state: UpdateState): void {
   const localized = localizeUpdateState(state, appState.store.uiLocale())
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('pilot:update-state', localized)
-  }
+  sendToRenderers('pilot:update-state', localized)
   // Paired phones show the same progress; they may also have started it.
   appState.companion?.publish({ type: 'update.changed', state: localized })
 }
 
-export function applyTheme(theme: ThemeMode, contrast: ContrastPreference): void {
+export function applyTheme(theme: ThemeMode): void {
   if (!appState.mainWindow || appState.mainWindow.isDestroyed()) return
-  const palette = windowPalette(theme, contrast)
+  const palette = windowPalette(theme)
   appState.mainWindow.setBackgroundColor(palette.color)
   if (process.platform === 'win32' || process.platform === 'linux') {
     try {
@@ -121,7 +128,7 @@ export function applyTheme(theme: ThemeMode, contrast: ContrastPreference): void
 
 export function createWindow(): void {
   const theme = appState.store.settingsView().theme
-  const palette = windowPalette(theme, appState.store.settingsView().contrast)
+  const palette = windowPalette(theme)
 
   const iconPath = appIconPath()
   appState.mainWindow = new BrowserWindow({

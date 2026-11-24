@@ -10,6 +10,20 @@
  *   勾选后生成一个普通编码会话，走和手写任务完全相同的沙箱与审批策略。
  */
 
+import {
+  SPLIT_SCAN,
+  SPLIT_SCAN_AT,
+  SPLIT_VERDICTS,
+  normalizeSplitPath,
+  splitConstraints,
+  splitDecisionIndex,
+  splitDecisionKindLabel,
+  splitScanIndex,
+  sanitizeSplitDecisions,
+  type SplitDecision,
+  type SplitVerdictCode,
+} from './split-decisions'
+
 export type ModuleCheckSeverity = 'high' | 'medium' | 'low'
 /**
  * 扫描触发源。`self-modify` 表示「用户刚做完一次自改，自动重扫以刷新提案」，
@@ -62,8 +76,24 @@ export interface ModuleRisk {
   count: number
   /** 证据位置：`file` 或 `file:line`，不含任何被命中的原文。 */
   evidence: string[]
+  /** 这条建议建立在什么事实上（阈值、判据码、规则口径）；没有就不写。 */
+  basis?: string
   /** 问题不能自动修改（例如疑似密钥），只能人工确认。 */
   manual: boolean
+}
+
+/** 扫描到的一个大文件。给内视与反思复核用，不代表任何拆分结论。 */
+export interface LargeFileFact {
+  /** 相对自检源码根的路径。 */
+  path: string
+  lines: number
+  /** 是否已有拆分决策（见 `split-decisions.ts`）。 */
+  decided: boolean
+  /**
+   * 已量过的判据码（`split-candidates.mjs --scan` 的实测结果）。
+   * 缺失就表示「还没量过」——行数已经超阈值但没有任何判据支持或反对拆分。
+   */
+  verdict?: SplitVerdictCode
 }
 
 export interface ModuleCheckReport {
@@ -79,6 +109,10 @@ export interface ModuleCheckReport {
   risks: ModuleRisk[]
   scannedFiles: number
   scannedLines: number
+  /** 本次扫描命中的已记录决策（拆分决策等），供内视、反思与界面复核。 */
+  decisions?: SplitDecision[]
+  /** 超过行数阈值的文件及其是否已决策；行数本身不是结论。 */
+  largeFiles?: LargeFileFact[]
   /** 0-100，越高越健康。 */
   score: number
 }
@@ -168,7 +202,8 @@ export const DEFAULT_MODULE_CHECK_SETTINGS: ModuleCheckSettings = {
 
 export const MODULE_INTERVAL_CHOICES = [6, 12, 24, 72, 168] as const
 
-const OVERSIZED_MEDIUM = 800
+/** 行数阈值：超过它只说明「需要量化一次」，不是「该拆」。 */
+export const OVERSIZED_MEDIUM = 800
 const OVERSIZED_HIGH = 1500
 const TODO_THRESHOLD = 3
 const MIN_DUPLICATE_BYTES = 4096
@@ -294,6 +329,7 @@ interface RiskDraft {
   recommendation: string
   count: number
   evidence: string[]
+  basis?: string
   manual?: boolean
 }
 
@@ -310,6 +346,7 @@ function toRisk(module: { id: string; name: string }, draft: RiskDraft): ModuleR
     count: draft.count,
     evidence: draft.evidence.slice(0, 8),
     manual: draft.manual === true,
+    ...(draft.basis ? { basis: draft.basis } : {}),
   }
 }
 
@@ -324,6 +361,8 @@ export function evaluateModule(input: {
   id: string
   name: string
   files: ModuleFileFact[]
+  /** 已记录的拆分决策；给了就不再对已决策的文件重复给建议。 */
+  decisions?: readonly SplitDecision[]
 }): ModuleRisk[] {
   const module = { id: input.id, name: input.name }
   const risks: ModuleRisk[] = []
@@ -335,22 +374,66 @@ export function evaluateModule(input: {
     return []
   }
 
-  // 1) 超大文件：拆分成本和 review 成本都随行数超线性上升。
+  // 1) 超大文件：行数只说明「需要量化一次」，不说明「该拆」。
+  //
+  // 这条规则以前直接按行数给「按职责拆成小文件」的建议，而拆分到底值不值得做
+  // 取决于文件里有没有能切开、且切开后各自读得懂的边界（见 split-candidates.mjs
+  // 的判据码）。仓库里已经决策过的目标记在 split-decisions.ts：那些文件不再出现
+  // 在建议里，未决策的只提示「先量化再决定」，并且不再因为行数多就判 high。
   const oversized = files
     .filter((file) => file.lines > OVERSIZED_MEDIUM)
     .sort((a, b) => b.lines - a.lines)
-  const worst = oversized[0]
-  if (oversized.length > 0 && worst) {
+  const decisionIndex = splitDecisionIndex(input.decisions)
+  const scanIndex = splitScanIndex()
+  const decidedCount = oversized.filter((file) => decisionIndex.has(normalizeSplitPath(file.path))).length
+  const pending = oversized.filter((file) => !decisionIndex.has(normalizeSplitPath(file.path)))
+  // 未决策的文件再分两类：已有判据码（只差一条决策）和还没量过（连判据都没有）。
+  // 两者给的下一步不一样，混成一堆“建议拆分”就是原来那条主观建议的根源。
+  const measured = pending.filter((file) => scanIndex.has(normalizeSplitPath(file.path)))
+  const unmeasured = pending.filter((file) => !scanIndex.has(normalizeSplitPath(file.path)))
+  const worst = pending[0]
+  if (worst) {
+    const decidedNote =
+      decidedCount > 0
+        ? `另有 ${decidedCount} 个同类文件已有拆分决策（见报告的 decisions），不在此重复建议。`
+        : ''
+    const urgency = worst.lines > OVERSIZED_HIGH ? `最大 ${worst.lines} 行，已超过 ${OVERSIZED_HIGH} 行，优先处理。` : ''
+    const measuredNote =
+      measured.length > 0
+        ? `${measured.length} 个已有判据码（${measured
+            .slice(0, 3)
+            .map((file) => `${file.path} ${scanIndex.get(normalizeSplitPath(file.path))!.verdict}`)
+            .join('、')}），只差一条决策；`
+        : ''
+    const unmeasuredNote = `${unmeasured.length} 个还没量过。`
     risks.push(
       toRisk(module, {
         rule: 'oversized-file',
-        severity: worst.lines > OVERSIZED_HIGH ? 'high' : 'medium',
-        title: `${oversized.length} 个文件超过 ${OVERSIZED_MEDIUM} 行`,
-        detail: `最大的是 ${worst.path}（${worst.lines} 行）。单文件过大时，改动冲突面和单次阅读成本都会明显上升。`,
-        recommendation:
-          '按职责把大文件拆成协作更紧密的小文件；拆分前先确认有测试覆盖被移动的导出，避免把重构变成静默回归。',
-        count: oversized.length,
-        evidence: oversized.slice(0, 6).map((file) => `${file.path} (${file.lines} 行)`),
+        // 固定 low：它是一条「待量化」提示，不是已确认的缺陷，也不该单独拉低分数。
+        severity: 'low',
+        // 拆不拆必须由人按判据决定，自改会话不得据此自动拆文件。
+        manual: true,
+        title: `${pending.length} 个大文件还没有拆分决策`,
+        detail: `阈值 ${OVERSIZED_MEDIUM} 行。${urgency}${measuredNote}${unmeasuredNote}行数只说明阅读与改动成本，不能单独证明该拆。${decidedNote}`,
+        recommendation: [
+          measured.length > 0
+            ? '已量过的按判据码收尾：DATA / SHARED / REVIEW 记成“决定不拆”并写明原因，DOMAIN / METHOD 只有在能说明拆分后定位或修改更快时才拆。'
+            : '',
+          unmeasured.length > 0 ? '还没量过的先量一次：在 pilot/pilot 里跑 `node ../scripts/split-candidates.mjs <文件>`。' : '',
+          '结论记进 src/shared/split-decisions.ts（带判据码与证据），之后自检、内视、反思都不会再重复这条建议。',
+        ]
+          .filter(Boolean)
+          .join(''),
+        count: pending.length,
+        evidence: [...measured, ...unmeasured].slice(0, 6).map((file) => {
+          const fact = scanIndex.get(normalizeSplitPath(file.path))
+          return fact
+            ? `${file.path} (${file.lines} 行，判据 ${fact.verdict}：${fact.signature})`
+            : `${file.path} (${file.lines} 行，未量化)`
+        }),
+        basis: `oversized-file 阈值 ${OVERSIZED_MEDIUM} 行（>${OVERSIZED_HIGH} 行优先量化）；判据码 ${Object.keys(SPLIT_VERDICTS).join(
+          '/',
+        )}；实测表 SPLIT_SCAN（${SPLIT_SCAN_AT}，${SPLIT_SCAN.length} 个文件）`,
       }),
     )
   }
@@ -588,9 +671,13 @@ export function buildReport(input: {
   risks: ModuleRisk[]
   scannedFiles: number
   scannedLines: number
+  /** 本次扫描命中的已记录决策；空就不写进报告。 */
+  decisions?: readonly SplitDecision[]
+  /** 超过行数阈值的文件；空就不写。 */
+  largeFiles?: readonly LargeFileFact[]
 }): ModuleCheckReport {
   const risks = sortRisks(input.risks)
-  return {
+  const report: ModuleCheckReport = {
     id: input.id,
     trigger: input.trigger,
     startedAt: input.startedAt,
@@ -603,6 +690,9 @@ export function buildReport(input: {
     scannedLines: input.scannedLines,
     score: moduleCheckScore(risks),
   }
+  if (input.decisions && input.decisions.length > 0) report.decisions = [...input.decisions]
+  if (input.largeFiles && input.largeFiles.length > 0) report.largeFiles = [...input.largeFiles]
+  return report
 }
 
 export function severityLabel(severity: ModuleCheckSeverity): string {
@@ -614,7 +704,8 @@ export function severityLabel(severity: ModuleCheckSeverity): string {
 export function ruleLabel(rule: ModuleRuleId): string {
   switch (rule) {
     case 'oversized-file':
-      return '超大文件'
+      // 措辞刻意不写「超大文件」：行数只说明该量化一次，这个标签不该读成「该拆」。
+      return '大文件待量化'
     case 'todo-backlog':
       return '待办积压'
     case 'debug-logging':
@@ -659,7 +750,27 @@ export function buildOptimizePrompt(report: ModuleCheckReport, risks: ModuleRisk
       `   位置：${risk.evidence.join('；')}`,
       `   建议：${risk.recommendation}`,
     )
+    // 依据原样带上，执行者才看得出这条建议是从哪条事实推出来的。
+    if (risk.basis) lines.push(`   依据：${risk.basis}`)
   })
+  // 涉及拆分的提案必须带上判据与既有决策，否则模型会按“行数大就拆”重来一遍。
+  const decisions = report.decisions ?? []
+  const splitRelated = accepted.some((risk) => risk.rule === 'oversized-file')
+  if (splitRelated || decisions.length > 0) {
+    if (decisions.length > 0) {
+      lines.push(
+        '',
+        '已有拆分决策（不得推翻；除非你有新证据，并写明推翻的是哪一条）：',
+        ...decisions.map(
+          (decision) =>
+            `- ${decision.path}：${splitDecisionKindLabel(decision.kind)}${decision.rule ? `（${decision.rule}）` : ''}——${decision.reason}`,
+        ),
+      )
+    }
+    if (splitRelated) {
+      lines.push('', '拆分相关的硬约束：', ...splitConstraints(false).map((entry) => `- ${entry}`))
+    }
+  }
   if (manual.length > 0) {
     lines.push(
       '',
@@ -749,6 +860,7 @@ function sanitizeRisk(value: unknown): ModuleRisk | null {
       ? record['evidence'].filter((item): item is string => typeof item === 'string').slice(0, 8)
       : [],
     manual: record['manual'] === true,
+    ...(asString(record['basis']) ? { basis: asString(record['basis']) as string } : {}),
   }
 }
 
@@ -778,7 +890,7 @@ export function sanitizeReport(value: unknown): ModuleCheckReport | null {
     const raw = record[key]
     return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : 0
   }
-  return {
+  const report: ModuleCheckReport = {
     id,
     trigger,
     startedAt,
@@ -793,6 +905,28 @@ export function sanitizeReport(value: unknown): ModuleCheckReport | null {
     scannedLines: numeric('scannedLines'),
     score: Math.max(0, Math.min(100, typeof record['score'] === 'number' ? Math.round(record['score']) : 100)),
   }
+  const decisions = sanitizeSplitDecisions(record['decisions'])
+  if (decisions.length > 0) report.decisions = decisions
+  const largeFiles: LargeFileFact[] = Array.isArray(record['largeFiles'])
+    ? record['largeFiles']
+        .map((item): LargeFileFact | null => {
+          if (!item || typeof item !== 'object') return null
+          const entry = item as Record<string, unknown>
+          const path = asString(entry['path'])
+          if (!path) return null
+          const lines = typeof entry['lines'] === 'number' && entry['lines'] > 0 ? Math.round(entry['lines']) : 0
+          const fact: LargeFileFact = { path, lines, decided: entry['decided'] === true }
+          const verdict = entry['verdict']
+          if (typeof verdict === 'string' && verdict in SPLIT_VERDICTS) {
+            fact.verdict = verdict as SplitVerdictCode
+          }
+          return fact
+        })
+        .filter((item): item is LargeFileFact => item !== null)
+        .slice(0, 50)
+    : []
+  if (largeFiles.length > 0) report.largeFiles = largeFiles
+  return report
 }
 
 export function sanitizeProposal(value: unknown): ModuleProposal | null {

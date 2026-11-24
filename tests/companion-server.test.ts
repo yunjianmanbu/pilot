@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -20,6 +20,7 @@ vi.mock('electron', () => ({
 
 import type { Store } from '../src/main/store'
 import { CompanionServer } from '../src/main/companion/server'
+import { stopSharedPluginHosts } from '../src/main/plugins/shared'
 import { SERVER_CAPABILITIES, type HostCapabilities } from '../src/shared/capabilities'
 import type { CompanionPairRequest } from '../src/shared/types'
 import {
@@ -117,6 +118,8 @@ async function createServer(
     withoutUpdate?: boolean
     workspacePath?: string
     surface?: 'desktop' | 'phone'
+    /** 浏览器界面（`out/web`）产物目录；不给时 `/` 回落到手机面板。 */
+    desktopDir?: string
     pluginRoot?: string
     /** How the fake desktop answers the pairing prompt; 'ignore' never does. */
     pairApproval?: 'approve' | 'reject' | 'ignore'
@@ -143,6 +146,10 @@ async function createServer(
   moduleAccepted: Array<{ reportId: string; riskIds: string[]; selfModify: boolean }>
   /** How many times the phone asked for an introspection report. */
   selfCheckCalls: () => number
+  /** 手机端发起的反思动作，按顺序记录（run / testMail / clear）。 */
+  reflectCalls: string[]
+  /** 手机端最后提交的反思设置补丁。 */
+  reflectUpdates: Array<Record<string, unknown>>
 }> {
   const dataDir = await mkdtemp(join(tmpdir(), 'pilot-companion-'))
   const modelUpdates: unknown[] = []
@@ -254,6 +261,9 @@ async function createServer(
           quickCommands: () => null,
           saveQuickCommands: async (items: Array<{ id?: string; content: string }>) =>
             items.map((item, index) => ({ id: item.id ?? `quick-${index}`, content: item.content })),
+          // 反思路由按 id 取单份详情，读的是 store 里保存的完整报告。
+          reflectionReports: () => reflectionStored,
+          clearReflectionReports: async () => undefined,
         }
       : {}),
   } as unknown as Store
@@ -327,6 +337,70 @@ async function createServer(
   }
   const moduleAccepted: Array<{ reportId: string; riskIds: string[]; selfModify: boolean }> = []
   let selfCheckCalls = 0
+  const reflectCalls: string[] = []
+  const reflectUpdates: Array<Record<string, unknown>> = []
+  // 手机侧看到的反思状态：密码永远不出现，只有 hasPassword。
+  const reflectSettings = {
+    enabled: false,
+    modelId: '',
+    triggers: { onError: true, onSchedule: false },
+    scheduleMode: 'interval' as const,
+    intervalMinutes: 720,
+    dailyTime: '09:00',
+    topics: ['compaction-drift'],
+    lastRunAt: '',
+    emailEnabled: false,
+    emailTo: 'ops@example.com',
+    smtpHost: 'smtp.example.com',
+    smtpPort: 465,
+    smtpSecurity: 'tls' as const,
+    hasPassword: true,
+  }
+  let reflectRunning = false
+  // 完整报告：摘要/依据都远超手机端上限，用来验证截断而不是被整段推下去。
+  const reflectionStored = Array.from({ length: 20 }, (_, index) => ({
+    id: `reflect-${index}`,
+    createdAt: '2026-11-20T00:00:00.000Z',
+    trigger: 'manual' as const,
+    model: 'deepseek-chat',
+    topics: ['compaction-drift'],
+    summary: '摘'.repeat(240),
+    findings: [
+      {
+        topic: 'compaction-drift' as const,
+        severity: 'high' as const,
+        observation: '观'.repeat(500),
+        suggestion: '建议',
+      },
+      {
+        topic: 'code-quality' as const,
+        severity: 'medium' as const,
+        observation: '短',
+        suggestion: '短',
+      },
+    ],
+    evidence: 'e'.repeat(2_000),
+    durationMs: 1_234,
+    email: null,
+  }))
+  const reflectReports = reflectionStored.map((report) => ({
+    id: report.id,
+    createdAt: report.createdAt,
+    trigger: report.trigger,
+    model: report.model,
+    topics: report.topics,
+    summary: report.summary,
+    findings: report.findings.length,
+    severity: { high: 1, medium: 1, low: 0 },
+    email: null,
+  }))
+  const reflectState = () => ({
+    settings: reflectSettings,
+    running: reflectRunning,
+    reportTotal: reflectReports.length,
+    // 电脑端只把最近若干份推到手机上。
+    reports: reflectReports.slice(0, 12),
+  })
   // 内视报告的最小形状：手机端只做展示，不参与判定。
   const selfCheckReport = {
     at: 1_760_000_000_000,
@@ -432,6 +506,26 @@ async function createServer(
               return selfCheckReport as never
             },
           },
+          reflect: {
+            state: () => reflectState() as never,
+            update: async (input: Record<string, unknown>) => {
+              reflectUpdates.push(input)
+              return reflectState() as never
+            },
+            run: async () => {
+              reflectCalls.push('run')
+              reflectRunning = true
+              return { started: true }
+            },
+            testMail: async (to: string) => {
+              reflectCalls.push(`mail:${to}`)
+              return { ok: true }
+            },
+            clearReports: async () => {
+              reflectCalls.push('clear')
+              return reflectState() as never
+            },
+          },
         }
       : {}),
     dataDir,
@@ -496,6 +590,7 @@ async function createServer(
     relayUrl: '',
     appUrl: '',
     ...(options.surface ? { surface: options.surface } : {}),
+    ...(options.desktopDir ? { desktopDir: options.desktopDir } : {}),
     ...(options.pairApprovalTtlMs === undefined
       ? {}
       : { pairApprovalTtlMs: options.pairApprovalTtlMs }),
@@ -523,6 +618,8 @@ async function createServer(
     retriedSessions,
     moduleAccepted,
     selfCheckCalls: () => selfCheckCalls,
+    reflectCalls,
+    reflectUpdates,
     modelUpdates,
     sessionModelUpdates,
     billingInvalidations: () => billingInvalidations,
@@ -1464,6 +1561,9 @@ describe('CompanionServer pairing and relay', () => {
     expect(String(refused.error)).toContain('至少要保留一个工作区')
   })
 
+  // `sandbox.status` 在这条用例里会被真的探测一次：Windows 上要拉起 wsl.exe 跑
+  // bubblewrap 检查（探测自身给 8s 上限），并发跑全量时实测 3.4s 左右，默认 5s
+  // 会在机器忙时判成超时。探测量的是宿主机真实状态，不该跳过断言，只放宽时限。
   it('answers sandbox.status, system.info and tools.list from the host', async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), 'pilot-ws-'))
     const { server, status } = await createServer({ workspacePath })
@@ -1489,7 +1589,7 @@ describe('CompanionServer pairing and relay', () => {
     expect(info.node).toBeTruthy()
     expect(info.disk).toBeTruthy()
     expect((env.data as { info: Record<string, unknown> }).info['hostname']).toBeUndefined()
-  })
+  }, 30_000)
 
   it('routes checkpoints, changes, memory, quick commands and message edits', async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), 'pilot-features-'))
@@ -1685,6 +1785,102 @@ describe('CompanionServer pairing and relay', () => {
     expect(selfCheckCalls()).toBe(1)
   })
 
+  it('routes reflection settings, reports and phone-triggered runs', async () => {
+    const { server, status, reflectCalls, reflectUpdates } = await createServer({
+      featureStubs: true,
+    })
+    const { call } = await authenticatePhone(server, status)
+
+    const state = await call('req-1', 'reflect.state')
+    expect(state).toMatchObject({ type: 'response', id: 'req-1', ok: true })
+    const phoneState = state.data as {
+      settings: Record<string, unknown> & { hasPassword: boolean }
+      running: boolean
+      reportTotal: number
+      reports: Array<{ id: string; findings: number; summary: string }>
+    }
+    // 授权码不出主进程：手机只看到 hasPassword。
+    expect(phoneState.settings).not.toHaveProperty('smtpPassword')
+    expect(phoneState.settings.hasPassword).toBe(true)
+    expect(phoneState.reportTotal).toBe(20)
+    // 概要只推最近 12 份，详情走 reflect.report。
+    expect(phoneState.reports).toHaveLength(12)
+    expect(phoneState.reports[0]?.id).toBe('reflect-0')
+    expect(phoneState.reports[0]?.findings).toBe(2)
+
+    // 手机只提交改动过的字段：越界的间隔被夹到 30 分钟，空授权码不覆盖已存的。
+    const saved = await call('req-2', 'reflect.settings', {
+      settings: { enabled: true, intervalMinutes: 5, smtpPassword: '   ' },
+    })
+    expect(saved).toMatchObject({ type: 'response', id: 'req-2', ok: true })
+    expect(reflectUpdates).toHaveLength(1)
+    expect(reflectUpdates[0]).toMatchObject({ reflectEnabled: true, reflectIntervalMinutes: 30 })
+    expect(reflectUpdates[0]).not.toHaveProperty('reflectSmtpPassword')
+
+    // null 才是“清掉授权码”，与桌面设置弹框同义。
+    const clearedPassword = await call('req-3', 'reflect.settings', {
+      settings: { smtpPassword: null },
+    })
+    expect(clearedPassword).toMatchObject({ ok: true })
+    expect(reflectUpdates[1]).toMatchObject({ reflectSmtpPassword: null })
+
+    const badTopics = await call('req-4', 'reflect.settings', { settings: { topics: 'x' } })
+    expect(badTopics).toMatchObject({ ok: false })
+    expect(String(badTopics.error)).toContain('反思问题域格式不正确')
+
+    const empty = await call('req-5', 'reflect.settings', { settings: {} })
+    expect(empty).toMatchObject({ ok: false })
+    expect(String(empty.error)).toContain('没有需要保存的反思设置')
+
+    // 报告详情按手机屏幕截断：发现与依据截短，摘要保持全文供详情页展示。
+    const report = await call('req-6', 'reflect.report', { reportId: 'reflect-3' })
+    expect(report).toMatchObject({ ok: true })
+    const detail = (report.data as {
+      report: {
+        summary: string
+        evidence: string
+        durationMs: number
+        findings: Array<{ severity: string; observation: string }>
+      }
+    }).report
+    expect(detail.summary).toHaveLength(240)
+    expect(detail.evidence).toHaveLength(1_201)
+    expect(detail.durationMs).toBe(1_234)
+    expect(detail.findings).toHaveLength(2)
+    expect(detail.findings[0]?.severity).toBe('high')
+    expect(detail.findings[0]?.observation).toHaveLength(401)
+
+    const missing = await call('req-7', 'reflect.report', { reportId: 'nope' })
+    expect(missing).toMatchObject({ ok: false })
+    expect(String(missing.error)).toContain('反思报告不存在')
+
+    // 手动触发立即返回；正在跑时不重复启动。
+    const now = await call('req-8', 'reflect.now', {})
+    expect(now).toMatchObject({ ok: true })
+    expect(now.data).toMatchObject({ started: true })
+    const again = await call('req-9', 'reflect.now', {})
+    expect(again).toMatchObject({ ok: true })
+    expect(again.data).toMatchObject({ started: false })
+    expect(reflectCalls.filter((entry) => entry === 'run')).toHaveLength(1)
+
+    const mail = await call('req-10', 'reflect.mail.test', { to: ' me@example.com ' })
+    expect(mail).toMatchObject({ ok: true })
+    expect(reflectCalls).toContain('mail:me@example.com')
+
+    const clearedReports = await call('req-11', 'reflect.reports.clear', {})
+    expect(clearedReports).toMatchObject({ ok: true })
+    expect(reflectCalls).toContain('clear')
+  })
+
+  it('tells the phone to update when this desktop build has no reflection service', async () => {
+    const { server, status } = await createServer()
+    const { call } = await authenticatePhone(server, status)
+
+    const state = await call('req-1', 'reflect.state')
+    expect(state).toMatchObject({ type: 'response', id: 'req-1', ok: false })
+    expect(String(state.error)).toContain('不支持手机设置反思')
+  })
+
   it('reports optional phone services that this desktop build lacks', async () => {
     const { server, status } = await createServer()
     const { call } = await authenticatePhone(server, status)
@@ -1775,6 +1971,151 @@ describe('CompanionServer panel surface', () => {
     expect(page.body).not.toContain('desktop.css')
     expect(page.body).toContain('theme-color" content="#080c11"')
   })
+
+  /** 一份最小 `out/web`：入口 HTML + 一个带哈希的 asset。 */
+  async function makeDesktopBuild(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'pilot-web-'))
+    cleanups.push(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+    await mkdir(join(dir, 'assets'), { recursive: true })
+    await writeFile(
+      join(dir, 'index.html'),
+      '<!doctype html><html lang="zh-CN"><head><title>Pilot</title></head><body><div id="root"></div><script type="module" src="/assets/app-abc123.js"></script></body></html>',
+      'utf8',
+    )
+    await writeFile(join(dir, 'assets', 'app-abc123.js'), 'window.__pilotDesktop = 1', 'utf8')
+    return dir
+  }
+
+  it('serves the desktop build on / instead of sending browsers to the phone PWA', async () => {
+    const desktopDir = await makeDesktopBuild()
+    const { status } = await createServer({ surface: 'desktop', desktopDir })
+
+    const page = await fetchPanel(status.port, '/')
+    expect(page.status).toBe(200)
+    expect(page.type).toContain('text/html')
+    // 与桌面客户端同一份 renderer 构建，不是手机面板。
+    expect(page.body).toContain('<div id="root"></div>')
+    expect(page.body).toContain('/assets/app-abc123.js')
+    expect(page.body).not.toContain('data-surface')
+    expect(page.body).not.toContain('desktop.css')
+    // 旧的「探测来源→重定向 /pwa/」引导已移除；只剩手机扫码时的一条跳转。
+    expect(page.body).not.toContain('dry=1')
+    expect(page.body).not.toContain("location.replace('/pwa/')")
+    expect(page.body).toContain("location.replace('/pwa/' + location.hash)")
+    // 入口 HTML 不可缓存，asset 带内容哈希可长缓存。
+    const asset = await fetchPanel(status.port, '/assets/app-abc123.js')
+    expect(asset.status).toBe(200)
+    expect(asset.body).toContain('__pilotDesktop')
+
+    // 旧版注册在 `/` 上的手机 Service Worker 由这条自我注销脚本接管。
+    const sw = await fetchPanel(status.port, '/sw.js')
+    expect(sw.status).toBe(200)
+    expect(sw.body).toContain('self.registration.unregister()')
+  })
+
+  it('hands the desktop build to a remote browser only after a page ticket is approved', async () => {
+    // 回环地址直接放行，走审批路径必须从非回环地址发起。
+    const lan = Object.values(networkInterfaces())
+      .flat()
+      .find((info) => info && info.family === 'IPv4' && !info.internal)?.address
+    if (!lan) return
+
+    const { server, status, pairRequests } = await createServer({
+      surface: 'desktop',
+      desktopDir: await makeDesktopBuild(),
+      pairApproval: 'approve',
+    })
+    const base = `http://${lan}:${status.port}`
+
+    const opened = await fetch(`${base}/`)
+    expect(opened.status).toBe(200)
+    expect(await opened.text()).toContain('<div id="root"></div>')
+
+    const created = await fetch(`${base}/bridge/ticket`, { method: 'POST' })
+    expect(created.status).toBe(200)
+    const ticket = (await created.json()) as { ok: boolean; id?: string; local?: boolean }
+    expect(ticket.ok).toBe(true)
+    // 远端浏览器拿不到本机直连，必须留下一条待批申请。
+    expect(ticket.local).toBeUndefined()
+    expect(ticket.id).toBeTruthy()
+
+    await vi.waitFor(() => {
+      expect(pairRequests.length).toBe(1)
+    })
+    expect(pairRequests[0]).toMatchObject({ platform: 'browser', mode: 'browser' })
+
+    const id = String(ticket.id)
+    let state: { state?: string; token?: string; role?: string } = {}
+    await vi.waitFor(async () => {
+      const polled = await fetch(`${base}/bridge/ticket?id=${id}`)
+      state = (await polled.json()) as typeof state
+      expect(state.state).toBe('approved')
+    })
+    expect(state.role).toBe('host')
+    expect(typeof state.token).toBe('string')
+    // 审批通过后才落下一条「浏览器」设备记录，token 只存哈希。
+    const phone = server.state.phones[`web-${id}`]
+    expect(phone).toMatchObject({ platform: 'browser', via: 'browser', role: 'host' })
+    expect(phone?.tokenHash ?? '').not.toContain(String(state.token))
+
+    // 同一个浏览器地址（刷新页面、另开一个标签页）再来申请时，直接拿回同一条
+    // token，不再弹第二遍审批——重复弹框正是「点一次允许又重新申请」的观感。
+    const again = await fetch(`${base}/bridge/ticket`, { method: 'POST' })
+    const reused = (await again.json()) as {
+      ok: boolean
+      id?: string
+      state?: string
+      token?: string
+    }
+    expect(reused.ok).toBe(true)
+    expect(reused.state).toBe('approved')
+    expect(reused.id).toBe(id)
+    expect(reused.token).toBe(state.token)
+    expect(pairRequests.length).toBe(1)
+
+    // 但用户已经在设置里解除这次授权时，旧 token 不能再发回去：发回去只会让页面
+    // 连不上、清凭据、再申请，变成无限循环。
+    delete server.state.phones[`web-${id}`]
+    const afterRevoke = await fetch(`${base}/bridge/ticket`, { method: 'POST' })
+    const fresh = (await afterRevoke.json()) as { ok: boolean; id?: string; state?: string }
+    expect(fresh.ok).toBe(true)
+    expect(fresh.id).not.toBe(id)
+    await vi.waitFor(() => {
+      expect(pairRequests.length).toBe(2)
+    })
+  })
+
+  it('keeps one pending page ticket per browser address so a refresh does not ask twice', async () => {
+    const lan = Object.values(networkInterfaces())
+      .flat()
+      .find((info) => info && info.family === 'IPv4' && !info.internal)?.address
+    if (!lan) return
+
+    // 'ignore' = 用户还没点授权：这正是「刷新一次页面就多一个审批框」的场景。
+    const { server, status, pairRequests } = await createServer({
+      surface: 'desktop',
+      desktopDir: await makeDesktopBuild(),
+      pairApproval: 'ignore',
+      pairApprovalTtlMs: 30_000,
+    })
+    const base = `http://${lan}:${status.port}`
+    const request = async () =>
+      (await (await fetch(`${base}/bridge/ticket`, { method: 'POST' })).json()) as {
+        ok: boolean
+        id?: string
+        state?: string
+      }
+
+    const first = await request()
+    const second = await request()
+    expect(first.ok).toBe(true)
+    expect(first.state).toBe('pending')
+    // 同一地址再来一次：还是那条申请，不会多出一个待批准的框。
+    expect(second.id).toBe(first.id)
+    expect(second.state).toBe('pending')
+    expect(server.pageTickets.size).toBe(1)
+    expect(pairRequests.length).toBe(1)
+  })
 })
 
 describe('CompanionServer plugin surface', () => {
@@ -1818,10 +2159,16 @@ describe('CompanionServer plugin surface', () => {
     // Static panel routes still work and keep their GET-only contract.
     const page = await fetch(`${base}/healthz`)
     expect(page.status).toBe(200)
-    const rejected = await fetch(`${base}/healthz`, { method: 'POST' })
+    const rejected = await fetch(`${base}/healthz`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(10_000),
+    })
     expect(rejected.status).toBe(405)
 
     await server.stop()
+    // 上一步的 register 真的拉起了插件子进程；共享宿主是进程级常驻的，
+    // 不停掉它的话这个子进程仍以临时工作区为 cwd，Windows 上 rm 会一直重试。
+    await stopSharedPluginHosts()
     await rm(workspace, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 })
   }, 30_000)
 

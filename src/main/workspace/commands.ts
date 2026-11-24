@@ -2,7 +2,7 @@
 // Split out of src/main/workspace.ts; statements are moved verbatim.
 import { spawn, type ChildProcess } from 'node:child_process'
 import { realpath, stat } from 'node:fs/promises'
-import { basename, isAbsolute, join, resolve } from 'node:path'
+import { basename, isAbsolute, resolve } from 'node:path'
 import type { ShellInterpreter } from '../../shared/types'
 import {
   mediaFileUrlFor,
@@ -17,7 +17,9 @@ import { ephemeralDirSegment, looksEphemeralDirPath } from '../../shared/checkpo
 import { buildSandboxPlan } from '../sandbox'
 import { gitBashLoginEnvironment, resolveShellLaunch } from '../shell'
 import { diskSpace, diskWarning } from '../system-info'
+import { autonomyPathDenial } from '../../shared/autonomy'
 import { assertInside, MAX_COMMAND_OUTPUT_BYTES, resolveExisting, workspaceRoot } from './shared'
+import { killWindowsTree } from './process-tree'
 
 export interface CommandOutput {
   ok: boolean
@@ -91,13 +93,45 @@ export interface PlannedCommand {
 }
 
 /**
- * Validate a `run_command`-shaped request and resolve its workspace-jailed
- * cwd/executable. Shared by one-shot commands and managed long-lived
- * processes so both obey the same deny list and path checks.
+ * 执行范围。默认就是工作区 jail；完全自主档下把 `cwd` 与可执行文件放到工作区外，
+ * 但写入边界不变（沙箱仍只给工作区与 Pilot 自身源码可写）。
+ */
+export interface CommandScope {
+  fullAutonomy?: boolean
+}
+
+/**
+ * 完全自主档下的 cwd 解析：接受工作区外的绝对路径，隐私路径仍然拒绝。
+ * 非自主档不走这里，`resolveExisting` 的工作区 jail 保持不变。
+ */
+async function resolveOpenCwd(base: string, input: string): Promise<string> {
+  const raw = input.trim() === '' ? '.' : input
+  const target = isAbsolute(raw) ? resolve(raw) : resolve(base, raw)
+  const denial = autonomyPathDenial(target)
+  if (denial) throw new Error(denial)
+  let resolved: string
+  try {
+    resolved = await realpath(target)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`Path does not exist: ${raw} (current workspace: ${base}). Check the spelling.`)
+    }
+    throw error
+  }
+  const info = await stat(resolved)
+  if (!info.isDirectory()) throw new Error('cwd is not a directory')
+  return resolved
+}
+
+/**
+ * Validate a `run_command`-shaped request and resolve its cwd/executable.
+ * Shared by one-shot commands and managed long-lived processes so both obey the
+ * same deny list and path checks.
  */
 export async function planCommand(
   root: string,
   args: Record<string, unknown>,
+  scope: CommandScope = {},
 ): Promise<PlannedCommand> {
   const command = typeof args['command'] === 'string' ? args['command'].trim() : ''
   if (!command || command.includes('\0')) throw new Error('command must be a non-empty string')
@@ -107,20 +141,30 @@ export async function planCommand(
   const argv = rawArgs.map((item) => String(item))
   const base = await workspaceRoot(root)
   const cwdInput = typeof args['cwd'] === 'string' ? args['cwd'] : '.'
-  const cwd = await resolveExisting(root, cwdInput)
-  const cwdInfo = await stat(cwd)
-  if (!cwdInfo.isDirectory()) throw new Error('cwd is not a directory')
-  assertInside(base, cwd)
+  const open = scope.fullAutonomy === true
+  const cwd = open ? await resolveOpenCwd(base, cwdInput) : await resolveExisting(root, cwdInput)
+  if (!open) {
+    const cwdInfo = await stat(cwd)
+    if (!cwdInfo.isDirectory()) throw new Error('cwd is not a directory')
+    assertInside(base, cwd)
+  }
 
   // Bare program names are resolved through PATH. Anything with a separator is
-  // a filesystem path, so it must resolve inside the workspace (including
-  // through symlinks). This blocks "../../evil" style escapes.
+  // a filesystem path, so it is checked explicitly: 非自主档必须落在工作区内
+  // （含符号链接解析后的真实路径），完全自主档允许工作区外但隐私路径仍拒。
   if (isAbsolute(command) || command.includes('/') || command.includes('\\')) {
     const candidate = isAbsolute(command) ? command : resolve(cwd, command)
-    assertInside(base, candidate)
-    const real = await realpath(candidate).catch(() => null)
-    if (real) assertInside(base, real)
-    else throw new Error('Command executable was not found')
+    if (open) {
+      const denial = autonomyPathDenial(candidate)
+      if (denial) throw new Error(denial)
+      const real = await realpath(candidate).catch(() => null)
+      if (!real) throw new Error('Command executable was not found')
+    } else {
+      assertInside(base, candidate)
+      const real = await realpath(candidate).catch(() => null)
+      if (real) assertInside(base, real)
+      else throw new Error('Command executable was not found')
+    }
   }
   return { command, argv, cwd, base }
 }
@@ -129,8 +173,9 @@ export async function runCommand(
   root: string,
   args: Record<string, unknown>,
   signal: AbortSignal,
+  scope: CommandScope = {},
 ): Promise<CommandOutput> {
-  const { command, argv, cwd, base } = await planCommand(root, args)
+  const { command, argv, cwd, base } = await planCommand(root, args, scope)
   const timeoutMs = Math.min(600_000, Math.max(1_000, Number(args['timeoutMs'] ?? 120_000) || 120_000))
   const startedAt = Date.now()
   // Cheap statfs before every command: a nearly full volume explains an
@@ -192,10 +237,9 @@ export async function runCommand(
     const killTree = (): void => {
       if (!child.pid) return
       if (process.platform === 'win32') {
-        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
-          windowsHide: true,
-          stdio: 'ignore',
-        })
+        // 不用 `taskkill /T /F`：它会把用户开着的 Word/Excel 一起强杀（写文档的
+        // 命令超时时就会发生）。`killWindowsTree` 先摘掉这些 GUI 应用。
+        killWindowsTree(child.pid)
       } else {
         try {
           process.kill(-child.pid, 'SIGKILL')
@@ -240,17 +284,21 @@ export async function runShell(
   root: string,
   args: Record<string, unknown>,
   signal: AbortSignal,
-  sandbox?: { network: boolean } | null,
+  sandbox?: { network: boolean; writableRoots?: string[] } | null,
   shellInterpreter: ShellInterpreter = 'auto',
+  scope: CommandScope = {},
 ): Promise<CommandOutput> {
   const command = typeof args['command'] === 'string' ? args['command'].trim() : ''
   if (!command || command.includes('\0')) throw new Error('command must be a non-empty string')
   const base = await workspaceRoot(root)
   const cwdInput = typeof args['cwd'] === 'string' ? args['cwd'] : '.'
-  const cwd = await resolveExisting(root, cwdInput)
-  const cwdInfo = await stat(cwd)
-  if (!cwdInfo.isDirectory()) throw new Error('cwd is not a directory')
-  assertInside(base, cwd)
+  const open = scope.fullAutonomy === true
+  const cwd = open ? await resolveOpenCwd(base, cwdInput) : await resolveExisting(root, cwdInput)
+  if (!open) {
+    const cwdInfo = await stat(cwd)
+    if (!cwdInfo.isDirectory()) throw new Error('cwd is not a directory')
+    assertInside(base, cwd)
+  }
 
   const timeoutMs = Math.min(600_000, Math.max(1_000, Number(args['timeoutMs'] ?? 120_000) || 120_000))
   const sandboxPlan = sandbox
@@ -259,6 +307,9 @@ export async function runShell(
         cwd,
         command,
         network: sandbox.network,
+        ...(sandbox.writableRoots && sandbox.writableRoots.length > 0
+          ? { writableRoots: sandbox.writableRoots }
+          : {}),
       })
     : null
   if (sandbox && !sandboxPlan) {
@@ -381,20 +432,11 @@ export async function runShell(
       if (process.platform === 'win32') {
         // Absolute path: the login environment merged into `env` may not
         // include System32, and spawn() resolves against PATH.
-        const taskkill = process.env['SystemRoot']
-          ? join(process.env['SystemRoot'], 'System32', 'taskkill.exe')
-          : 'taskkill'
-        const killer = spawn(taskkill, ['/pid', String(child.pid), '/T', '/F'], {
-          windowsHide: true,
-          stdio: 'ignore',
-        })
-        killer.on('error', () => {
-          try {
-            child.kill('SIGKILL')
-          } catch {
-            // The process is already gone.
-          }
-        })
+        //
+        // 先单杀根，再取进程快照把用户开着的 Word/Excel 从待杀树里摘掉：写文档
+        // 的命令会把 `WINWORD.EXE` 挂在命令树下面，`/T /F` 会连同用户的其它文档
+        // 一起强杀，模型重试一次就是再关一次。任何路径都不再发 `/T`。
+        killWindowsTree(child.pid)
         // A launcher process may have exited while its real child lives on.
         // Kill the direct child too; the force timer below guarantees the
         // tool call settles even if the tree cannot be reached.
@@ -467,13 +509,18 @@ export async function runGit(
   root: string,
   args: string[],
   signal: AbortSignal,
+  scope: CommandScope = {},
 ): Promise<CommandOutput> {
-  return runCommand(root, { command: 'git', args, timeoutMs: 30_000 }, signal)
+  return runCommand(root, { command: 'git', args, timeoutMs: 30_000 }, signal, scope)
 }
 
-export async function gitStatus(root: string, signal: AbortSignal): Promise<string> {
-  const branch = await runGit(root, ['branch', '--show-current'], signal)
-  const status = await runGit(root, ['status', '--porcelain=v1', '-b'], signal)
+export async function gitStatus(
+  root: string,
+  signal: AbortSignal,
+  scope: CommandScope = {},
+): Promise<string> {
+  const branch = await runGit(root, ['branch', '--show-current'], signal, scope)
+  const status = await runGit(root, ['status', '--porcelain=v1', '-b'], signal, scope)
   return `${branch.output}\n${status.output}`.trim()
 }
 
@@ -481,12 +528,13 @@ export async function gitDiff(
   root: string,
   options: { path?: string; staged?: boolean; stat?: boolean },
   signal: AbortSignal,
+  scope: CommandScope = {},
 ): Promise<string> {
   const args = ['diff', '--no-color']
   if (options.staged) args.push('--cached')
   if (options.stat) args.push('--stat')
   if (options.path) args.push('--', String(options.path))
-  const result = await runGit(root, args, signal)
+  const result = await runGit(root, args, signal, scope)
   return result.output
 }
 
@@ -494,9 +542,10 @@ export async function gitLog(
   root: string,
   options: { limit?: number; path?: string },
   signal: AbortSignal,
+  scope: CommandScope = {},
 ): Promise<string> {
   const args = ['log', `-${Math.min(50, Math.max(1, Number(options.limit ?? 20) || 20))}`, '--date=short', '--pretty=format:%h %ad %an: %s']
   if (options.path) args.push('--', String(options.path))
-  const result = await runGit(root, args, signal)
+  const result = await runGit(root, args, signal, scope)
   return result.output
 }

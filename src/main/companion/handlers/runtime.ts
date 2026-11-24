@@ -8,6 +8,7 @@ import { normalizeRelayUrl, splitRelayUrl } from '../../../shared/relay'
 import { DEFAULT_PORT, STATE_VERSION } from '../constants'
 import { publicPhone } from '../helpers'
 import type { CompanionState } from '../types'
+import { currentCompanionScope, type CompanionRole } from '../scope'
 import type { CompanionServer } from '../server'
 
 export function blankState(
@@ -152,10 +153,14 @@ export function notify(
   host: CompanionServer,
   event: RunEvent,
 ): void {
-  try {
-    host.options.onEvent?.(event)
-  } catch {
-    // The desktop mirror is best-effort.
+  // 客户机用户的动态只属于它自己：桌面窗口与主机手机都不该看到另一个
+  // 用户会话里的待办、计划与增量。`publish` 会按作用域投递给它自己的连接。
+  if (currentCompanionScope()?.role !== 'client') {
+    try {
+      host.options.onEvent?.(event)
+    } catch {
+      // The desktop mirror is best-effort.
+    }
   }
   host.publish(event)
 }
@@ -163,9 +168,15 @@ export function notify(
 export function publish(
   host: CompanionServer,
   event: RunEvent,
+  role?: CompanionRole,
 ): void {
   if (event.type === 'companion.changed') return
+  // 事件归属哪一套数据面：显式声明优先（客户机 runner 的 emit 走这里），
+  // 否则跟随请求链（handler 里 emitTodos 等），都不在时是主机后台任务。
+  const target: CompanionRole = role ?? currentCompanionScope()?.role ?? 'host'
   for (const phoneId of host.phoneSockets) {
+    // 跨作用域投递就是数据泄露：客户机看不到主机会话，反之亦然。
+    if (host.scopeRoleOfPhone(phoneId) !== target) continue
     host.sendEncrypted(phoneId, { type: 'event', data: event }).catch(() => {
       // A phone that dropped mid-event will reconnect; the session can be reloaded.
     })

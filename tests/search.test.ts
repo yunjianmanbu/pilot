@@ -207,4 +207,28 @@ describe('knowledgePairsFor', () => {
   it('returns nothing for a query that matches no pair', () => {
     expect(knowledgePairsFor(messages, '不存在的关键词')).toEqual({ pairs: [], total: 0 })
   })
+
+  const longRound = [
+    message({ id: 'u1', role: 'user', content: 'x'.repeat(2_000) }),
+    message({ id: 'a1', role: 'assistant', content: 'y'.repeat(4_000) }),
+  ]
+
+  it('keeps clipping by default, which is what the phone relay reads', () => {
+    const [pair] = knowledgePairsFor(longRound, '', 60).pairs
+    expect(pair?.instruction).toHaveLength(1_601)
+    expect(pair?.reply).toHaveLength(3_201)
+    expect(pair?.replyTruncated).toBe(true)
+  })
+
+  it('returns whole instructions and replies when the desktop asks for no clipping', () => {
+    const [pair] = knowledgePairsFor(longRound, '', 60, { clip: false }).pairs
+    expect(pair?.instruction).toHaveLength(2_000)
+    expect(pair?.reply).toHaveLength(4_000)
+    expect(pair?.instructionTruncated).toBeUndefined()
+    expect(pair?.replyTruncated).toBeUndefined()
+    // The unclipped copy must still be the same round, not a new one.
+    expect(pair?.instructionId).toBe('u1')
+    expect(pair?.replyId).toBe('a1')
+    expect(pair?.replyCount).toBe(1)
+  })
 })

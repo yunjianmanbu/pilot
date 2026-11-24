@@ -51,6 +51,16 @@ export function requireEvolution(
   return evolution
 }
 
+export function requireReflect(
+  host: CompanionServer,
+): NonNullable<CompanionOptions['reflect']> {
+  const reflect = host.options.reflect
+  if (!reflect) {
+    throw new Error('当前电脑端版本不支持手机设置反思，请先在电脑上更新 Pilot。')
+  }
+  return reflect
+}
+
 export function scheduleInput(
   host: CompanionServer,
   params: Record<string, unknown>,

@@ -6,6 +6,7 @@ import type {
   ToolCall,
 } from '../../shared/types'
 import { detectUploadVector } from './learning'
+import { autonomyPathDenial, isPrivateShellTarget } from '../../shared/autonomy'
 
 export type PermissionAction = 'allow' | 'ask' | 'deny' | 'classify'
 
@@ -43,6 +44,11 @@ export interface PermissionInput {
    * 学习模式才会接管 shell 的联网与外发；默认关，任务会话按常规审批运行。
    */
   learningIsolateShell?: boolean
+  /**
+   * 完全自主档已生效（设置开启 + 全部自动 + token/步数上限达标）。
+   * 它只放开功能边界，不放开隐私边界：凭据类路径仍在这里被拒。
+   */
+  fullAutonomy?: boolean
 }
 
 type RuleDecision = 'allow' | 'ask' | 'deny'
@@ -75,18 +81,23 @@ const TOOL_ALIASES: Record<string, Set<string>> = {
   Write: new Set(['write_file']),
 }
 
-/** Configuration files an agent must not rewrite even with an allow rule. */
-const PROTECTED_PATHS = [
+/**
+ * Configuration files an agent must not rewrite even with an allow rule.
+ * `.pilot/` 与 `.mcp.json` 属于「Pilot 自身配置」，完全自主档会把它们放出；
+ * `.git` 与 shell 启动配置则永远是禁令，与档位无关。
+ */
+const ALWAYS_PROTECTED_PATHS = [
   /(^|\/)\.git(\/|$)/i,
   /(^|\/)\.claude(\/|$)/i,
-  /(^|\/)\.mcp\.json$/i,
-  /(^|\/)\.pilot(\/|$)/i,
   /(^|\/)\.bashrc$/i,
   /(^|\/)\.zshrc$/i,
   /(^|\/)\.bash_profile$/i,
   /(^|\/)\.profile$/i,
   /(^|\/)\.config\/fish\/config\.fish$/i,
 ]
+/** Pilot 自身配置：默认受保护，完全自主档放行，但每次写入都记审计。 */
+const SELF_CONFIG_PATHS = [/(^|\/)\.mcp\.json$/i, /(^|\/)\.pilot(\/|$)/i]
+const PROTECTED_PATHS = [...ALWAYS_PROTECTED_PATHS, ...SELF_CONFIG_PATHS]
 
 const READ_ONLY_COMMANDS = new Set([
   'ls',
@@ -212,19 +223,30 @@ function broadExecAllow(rule: ParsedRule, toolName: string): boolean {
   return spec === '*' || /^[A-Za-z0-9_.-]+\*$/.test(spec)
 }
 
-function isProtectedWrite(toolName: string, args: Record<string, unknown>): boolean {
+function isProtectedWrite(
+  toolName: string,
+  args: Record<string, unknown>,
+  fullAutonomy = false,
+): boolean {
   if (!EDIT_TOOL_NAMES.has(toolName)) return false
   const path = toolPath(args)
   if (!path) return false
-  return PROTECTED_PATHS.some((pattern) => pattern.test(path))
+  // 完全自主档要把「改自身配置」变成能力：.pilot/（技能、记忆、动态工具、钩子）
+  // 与会话级 .mcp.json 放行。.git 与 shell 启动配置仍受保护：前者是回滚能力本身，
+  // 后者一旦写坏会让后续所有命令都跑不起来。
+  const patterns = fullAutonomy ? ALWAYS_PROTECTED_PATHS : PROTECTED_PATHS
+  return patterns.some((pattern) => pattern.test(path))
 }
+
+const ALWAYS_PROTECTED_COMMAND =
+  /(?:^|[\s/\\])\.(?:git|claude)(?:[/\\\s]|$)|(?:^|[\s/\\])\.(?:bashrc|zshrc|bash_profile|profile)(?:[\s]|$)|\.config[/\\]fish[/\\]config\.fish/i
 
 const PROTECTED_COMMAND =
   /(?:^|[\s/\\])\.(?:git|claude|pilot)(?:[/\\\s]|$)|(?:^|[\s/\\])\.mcp\.json(?:[\s]|$)|(?:^|[\s/\\])\.(?:bashrc|zshrc|bash_profile|profile)(?:[\s]|$)|\.config[/\\]fish[/\\]config\.fish/i
 
 /** Sandbox auto-approval must not cover commands aimed at protected config. */
-function mentionsProtectedPath(command: string): boolean {
-  return PROTECTED_COMMAND.test(command)
+function mentionsProtectedPath(command: string, fullAutonomy = false): boolean {
+  return (fullAutonomy ? ALWAYS_PROTECTED_COMMAND : PROTECTED_COMMAND).test(command)
 }
 
 /** Script names that turn editable source into a runnable build. */
@@ -796,6 +818,9 @@ function ruleVerdict(parsed: ParsedRule, decision: RuleDecision): PermissionVerd
 export function evaluatePermission(input: PermissionInput): PermissionVerdict {
   const { tool, call, mode } = input
   const args = call.arguments ?? {}
+  // 隐私边界与学习隔离都要看命令行，所以先算一次；后面的受保护路径检查复用同一个值。
+  const command = commandLine(args)
+  const readLike = tool.risk === 'read' || tool.risk === 'control'
 
   // 学习探索期间，若用户确实开启了 shell 隔离，任何带上传意图的 shell 命令都是硬拒绝：
   // 先于模式与规则判断，所以“全部自动”模式也无法把它放行。默认未隔离时，
@@ -805,8 +830,7 @@ export function evaluatePermission(input: PermissionInput): PermissionVerdict {
     input.learningIsolateShell === true &&
     SHELL_TOOL_NAMES.has(tool.name)
   ) {
-    const uploadCommand = commandLine(args)
-    const upload = uploadCommand ? detectUploadVector(uploadCommand) : null
+    const upload = command ? detectUploadVector(command) : null
     if (upload) {
       return {
         action: 'deny',
@@ -816,9 +840,26 @@ export function evaluatePermission(input: PermissionInput): PermissionVerdict {
     }
   }
 
-  const readLike = tool.risk === 'read' || tool.risk === 'control'
+  // 完全自主档下的隐私硬边界：凭据、私钥、浏览器会话库、密码库一律不给读写，
+  // 也不允许用执行命令去碰。这一条先于模式与规则，所以「全部自动」+「完全自主」
+  // 也绕不过它：放开的是功能边界，不是别人的秘密。
+  if (input.fullAutonomy === true) {
+    const target = toolPath(args)
+    const privacy = target ? autonomyPathDenial(target) : null
+    if (privacy) {
+      return { action: 'deny', source: 'protected', reason: privacy }
+    }
+    if (command && isPrivateShellTarget(command)) {
+      return {
+        action: 'deny',
+        source: 'protected',
+        reason:
+          '完全自主档仍不触碰隐私文件（凭据、私钥、浏览器会话、密码库）。需要这些内容时请由你本人查看并只把必要片段贴进对话。',
+      }
+    }
+  }
 
-  if (isProtectedWrite(tool.name, args)) {
+  if (isProtectedWrite(tool.name, args, input.fullAutonomy === true)) {
     return {
       action: 'deny',
       source: 'protected',
@@ -832,8 +873,7 @@ export function evaluatePermission(input: PermissionInput): PermissionVerdict {
 
   // Shell commands can also target protected config paths. Read-only inspection
   // stays available; anything that may mutate them is refused in every mode.
-  const command = commandLine(args)
-  if (command && mentionsProtectedPath(command) && !isReadOnlyShellCommand(command)) {
+  if (command && mentionsProtectedPath(command, input.fullAutonomy === true) && !isReadOnlyShellCommand(command)) {
     return {
       action: 'deny',
       source: 'protected',
@@ -857,12 +897,14 @@ export function evaluatePermission(input: PermissionInput): PermissionVerdict {
     // explicit setting, off by default, and never applies to a manual mode:
     // this step is the last human gate between editable source and a runnable
     // program.
-    if (mode === 'auto' && input.allowUnattendedBuild === true) {
+    if (mode === 'auto' && (input.allowUnattendedBuild === true || input.fullAutonomy === true)) {
       return {
         action: 'allow',
         source: 'mode',
         reason:
-          '已在设置中允许无人值守构建：全部自动模式直接执行，构建产物仍写入 release-selfdev。',
+          input.fullAutonomy === true
+            ? '完全自主档：个人实验版构建直接执行，产物仍写入 release-selfdev，可用 git 回滚。'
+            : '已在设置中允许无人值守构建：全部自动模式直接执行，构建产物仍写入 release-selfdev。',
       }
     }
     return {

@@ -866,6 +866,10 @@ const state = {
   client: null,
   route: 'sessions',
   pendingPayload: null,
+  // 直接打开这台电脑的服务地址时的自助接入状态（不走二维码）：
+  // idle 未处理 / checking 正在申请 / choose 等待选定身份 / error 申请失败 /
+  // unavailable 这个页面不是本机服务提供的（照旧扫码或粘贴配对链接）。
+  access: { status: 'idle', local: false, requestedRole: 'client', error: '', busy: false },
   manualEntry: false,
   fatal: '',
   connection: 'idle',
@@ -1321,9 +1325,9 @@ function chatMenu() {
       <button type="button" data-action="open-checkpoints">${icon('clock', 15)}回退点</button>
       <button type="button" data-action="open-models">${icon('spark', 15)}模型与权限</button>
       <button type="button" data-action="open-schedules">${icon('clock', 15)}定时任务</button>
-      <button type="button" data-action="open-learning">${icon('list', 15)}自主学习</button>
-      <button type="button" data-action="open-check">${icon('check', 15)}体检</button>
-      <button type="button" data-action="open-evolution">${icon('spark', 15)}自我进化</button>
+      ${canManageHost() ? `<button type="button" data-action="open-learning">${icon('list', 15)}自主学习</button>` : ''}
+      ${canManageHost() ? `<button type="button" data-action="open-check">${icon('check', 15)}体检</button>
+      <button type="button" data-action="open-evolution">${icon('spark', 15)}自我进化</button>` : ''}
       <button type="button" data-action="copy-transcript">${icon('copy', 15)}复制全部对话</button>
       <button type="button" data-action="fork-session">${icon('fork', 15)}创建会话副本</button>
       ${state.session?.running ? '' : `<button type="button" data-action="retry-run">${icon('refresh', 15)}重新执行上一轮</button>`}
@@ -1365,6 +1369,36 @@ function updateVersionLabel() {
 function capabilities() {
   const declared = state.deviceInfo && state.deviceInfo.capabilities
   return declared && typeof declared === 'object' ? declared : null
+}
+
+/**
+ * 这次页面是以谁的身份在用这台电脑。服务端在 device.info 里下发四档：
+ * local（本机）/ paired（扫码配对的本机手机）/ host（被批准为主机用户的远端）
+ * / client（客户机用户，独立身份与独立数据）。
+ *
+ * 不认识的取值一律按 client：主机升级后下发的新身份不能因为这份前端没更新
+ * 就被当成「本机」，宁可少几个入口也不能多给权限。旧主机不发这个字段，
+ * 才是真的本机页面（那里也没有远端访问）。
+ */
+function accessLevel() {
+  const level = state.deviceInfo && state.deviceInfo.accessLevel
+  if (level === 'local' || level === 'paired' || level === 'host') return level
+  if (level === 'client') return 'client'
+  return level === undefined || level === null ? 'local' : 'client'
+}
+
+/** 客户机用户：独立身份，只有工作内容，动不了这台电脑本身。 */
+function isClientUser() {
+  return accessLevel() === 'client'
+}
+
+/**
+ * 能不能改这台电脑本身（升级、进化、反思、计费、挂载目录、改模型）。
+ * 本机、扫码配对的本机手机、以及被批准为主机用户的远端都是全部功能；
+ * 客户机用户只给工作内容。
+ */
+function canManageHost() {
+  return !isClientUser()
 }
 
 function updateDetailLabel() {
@@ -1440,14 +1474,19 @@ function renderPair() {
   const pending = state.pendingPayload
   const paired = state.pairing
   const error = state.fatal
-  const manual = !pending && (!paired || state.manualEntry)
+  const access = state.access
+  // 直接打开服务地址时的自助接入：只在尚未拿到配对凭据时占用这个页面。
+  const accessView =
+    !pending &&
+    (access.status === 'checking' || access.status === 'choose' || access.status === 'error')
+  const manual = !pending && !accessView && (!paired || state.manualEntry)
   const device = pending?.deviceName || paired?.deviceName || '电脑'
   const address = pending?.relayUrl?.replace(/^ws/, 'http')?.replace(/\/ws$/, '') || ''
   return `<div class="pair-page">
     <div class="pair-hero">
       <span class="pair-logo">${brandMark(44)}</span>
-      <h1>${pending ? '连接 Pilot' : 'Pilot 手机端'}</h1>
-      <p>${pending ? '确认连接后，你可以在手机上继续电脑上的任务、查看执行过程并审批工具调用。' : paired && !manual ? '已保存这台电脑的配对，可以继续使用，也可以扫描新的二维码重新配对。' : '在电脑上打开 Pilot，点击顶栏的手机图标生成二维码，然后用手机扫描；也可以粘贴电脑上复制的配对链接。'}</p>
+      <h1>${pending ? '连接 Pilot' : accessView ? '访问这台电脑' : 'Pilot 手机端'}</h1>
+      <p>${pending ? '确认连接后，你可以在手机上继续电脑上的任务、查看执行过程并审批工具调用。' : accessView ? '这个页面由电脑上的 Pilot 直接提供。选定以什么身份使用它，再由电脑前的人确认。' : paired && !manual ? '已保存这台电脑的配对，可以继续使用，也可以扫描新的二维码重新配对。' : '在电脑上打开 Pilot，点击顶栏的手机图标生成二维码，然后用手机扫描；也可以粘贴电脑上复制的配对链接。'}</p>
     </div>
 
     <div class="card">
@@ -1465,7 +1504,9 @@ function renderPair() {
             </div>
             <button type="button" class="button primary block" id="pair-button" data-action="confirm-pair">${icon('link', 17)}确认配对</button>
             <div class="pair-note">${icon('spark', 16)}<span>手机与电脑之间的消息使用端到端加密，配对完成后凭证只保存在这台手机和电脑上。</span></div>`
-            : paired && !manual
+            : accessView
+              ? renderAccessCard(access)
+              : paired && !manual
               ? `<h3>已配对</h3>
               <p>这台手机已经可以连接 ${escapeHtml(device)}。</p>
               <div class="device-chip">
@@ -1499,6 +1540,39 @@ function renderPair() {
     }
     <div class="pair-note" style="margin-top:18px">${icon('alert', 16)}<span>请只在可信网络中开启手机连接。Pilot 不会上传会话内容或 API Key，也不会要求登录。</span></div>
   </div>`
+}
+
+/**
+ * 远端浏览器的身份选择。两种身份的区别写在按钮下面，因为这一步决定了
+ * 对方能不能看到这台电脑上的历史会话、能不能改这台电脑本身。
+ */
+function renderAccessCard(access) {
+  if (access.status === 'checking') {
+    return `<h3>正在申请访问</h3>
+      <p>正在向这台电脑确认这个地址是否可以接入…</p>`
+  }
+  if (access.status === 'error') {
+    return `<h3>没能接入这台电脑</h3>
+      <p>${escapeHtml(access.error || '申请访问失败，请重试')}</p>
+      <button type="button" class="button primary block" data-action="access-host">${icon('link', 17)}以主机用户重试</button>
+      <div class="pair-actions">
+        <button type="button" class="button ghost block" data-action="access-client">以客户机用户重试</button>
+        <button type="button" class="button ghost block" data-action="access-skip">改用配对链接</button>
+      </div>`
+  }
+  return `<h3>选择接入身份</h3>
+    <p>申请后需要电脑前的人确认；对方也可以改成另一种身份。</p>
+    <button type="button" class="button primary block" data-action="access-host" ${access.busy ? 'disabled' : ''}>
+      ${icon('phone', 17)}以主机用户接入
+    </button>
+    <div class="pair-note">${icon('spark', 16)}<span>主机用户：看到和电脑上相同的会话、文件与设置，也能改这台电脑本身。</span></div>
+    <button type="button" class="button ghost block" data-action="access-client" ${access.busy ? 'disabled' : ''}>
+      ${icon('list', 17)}以客户机用户接入
+    </button>
+    <div class="pair-note">${icon('alert', 16)}<span>客户机用户：独立的会话与工作区，看不到这台电脑上其他会话，也动不了它的设置、升级或计费。</span></div>
+    <div class="pair-actions">
+      <button type="button" class="button ghost block" data-action="access-skip">我有配对链接</button>
+    </div>`
 }
 
 /* ── Rendering: sessions ───────────────────────────────────────────────── */
@@ -1578,10 +1652,28 @@ function sessionListHtml() {
     .join('')}</div>`
 }
 
+/**
+ * 浏览器直连时的能力说明。
+ * 比“点了才报错”更直接：进来就知道自己能做什么、不能做什么。
+ */
+function remoteAccessNotice() {
+  if (accessLevel() === 'client') {
+    return `<div class="notice-banner" style="margin:0 0 12px;padding:10px 12px;border-radius:10px;background:rgba(255,176,32,.12);display:flex;gap:8px;align-items:flex-start">
+      ${icon('alert', 15)}
+      <div style="font-size:13px;line-height:1.5">
+        <strong>客户机用户</strong><br/>
+        这里只属于你自己：会话、工作区与记忆都是独立的一份，看不到这台电脑上其他人的内容。升级、进化、反思、计费与挂载目录由电脑上的人操作。
+      </div>
+    </div>`
+  }
+  return ''
+}
+
 function renderSessions() {
   return `<div class="sessions-page">
     ${sessionsHeader()}
     <div class="page">
+      ${remoteAccessNotice()}
       <div class="search-box">
         ${icon('search', 17)}
         <input id="session-search" type="search" value="${escapeHtml(state.search)}" placeholder="搜索会话或工作区" autocomplete="off" />
@@ -1682,13 +1774,15 @@ function renderWorkspaceSheet() {
         <button type="button" class="icon-button" data-action="close-sheet" aria-label="关闭">${icon('close', 18)}</button>
       </div>
       <div class="sheet-list">
-        ${renderWorkspaceCreate()}
+        ${canManageHost() ? renderWorkspaceCreate() : ''}
         ${
           state.workspaces.length === 0
             ? `<div class="empty-state"><strong>电脑上还没有打开工作区</strong><p>${
-                state.workspaceRoots.length > 0
-                  ? '可以在上方输入名称新建一个工作区。'
-                  : '请在电脑端先打开一个工作区，或在「手机连接」里授权可创建的目录。'
+                !canManageHost()
+                  ? '远程访问不能挂载或新建目录，请让电脑上的人先打开一个工作区。'
+                  : state.workspaceRoots.length > 0
+                    ? '可以在上方输入名称新建一个工作区。'
+                    : '请在电脑端先打开一个工作区，或在「手机连接」里授权可创建的目录。'
               }</p></div>`
             : state.workspaces
                 .map(
@@ -1911,6 +2005,14 @@ function updateApprovalCountdowns() {
   })
 }
 
+/**
+ * 能不能放行一条待批调用。命令类工具（risk=exec）批一次就等于把这台电脑的
+ * 命令行交给远端浏览器，所以只留给电脑前的人；读和写在工作区限制内，远端可以批。
+ */
+function canApprove(approval) {
+  return canManageHost() || approval.risk !== 'exec'
+}
+
 function approvalsHtml() {
   if (!state.approvals.length) return ''
   return state.approvals
@@ -1926,10 +2028,15 @@ function approvalsHtml() {
             ? `<div class="approval-shell-warning">${icon('alert', 12)}Shell 命令可访问工作区之外的文件和网络；当前模式下需要你确认。</div>`
             : ''
         }
+        ${
+          canApprove(approval)
+            ? ''
+            : `<div class="approval-shell-warning">${icon('alert', 12)}这条命令会在这台电脑上执行，只能由电脑前的人批准。你也可以拒绝。</div>`
+        }
         <div class="approval-actions">
           <button type="button" class="deny" data-action="approval-deny" data-call="${escapeHtml(approval.callId)}">拒绝</button>
-          <button type="button" data-action="approval-always" data-call="${escapeHtml(approval.callId)}" data-session="${escapeHtml(approval.sessionId)}">本会话改为全部自动</button>
-          <button type="button" class="allow" data-action="approval-allow" data-call="${escapeHtml(approval.callId)}">允许</button>
+          ${canApprove(approval) ? `<button type="button" data-action="approval-always" data-call="${escapeHtml(approval.callId)}" data-session="${escapeHtml(approval.sessionId)}">本会话改为全部自动</button>
+          <button type="button" class="allow" data-action="approval-allow" data-call="${escapeHtml(approval.callId)}">允许</button>` : ''}
         </div>
       </section>`,
     )
@@ -2030,6 +2137,8 @@ function quickCommandLabel(command) {
  * 手机端不提供编辑入口（改文案在桌面端更安全）。
  */
 function quickCommandsHtml() {
+  // 快捷命令的保存是本机专属，受限访问者只看得到别人的命令列表没意义。
+  if (!canManageHost()) return ''
   const commands = Array.isArray(state.quickCommands) ? state.quickCommands : []
   if (!commands.length) return ''
   return `<div class="quick-commands">
@@ -2235,7 +2344,7 @@ function renderSchedulesSheet() {
         </div>
         <button type="button" class="icon-button" data-action="close-sheet" aria-label="关闭">${icon('close', 18)}</button>
       </div>
-      <form class="schedule-form" data-schedule-form="true">
+      ${canManageHost() ? `<form class="schedule-form" data-schedule-form="true">
         <textarea id="schedule-content" class="schedule-content" rows="3" maxlength="4000" placeholder="例如：检查项目测试结果，失败则修复并重新运行">${escapeHtml(
           schedules.content,
         )}</textarea>
@@ -2255,7 +2364,7 @@ function renderSchedulesSheet() {
           <button type="button" class="button primary schedule-add" data-action="schedule-add"${schedules.busy ? ' disabled' : ''}>${schedules.busy ? '<i class="spinner small"></i>' : icon('plus', 14)}添加</button>
         </div>
         ${schedules.error ? `<div class="error-banner">${icon('alert', 14)}<span>${escapeHtml(schedules.error)}</span></div>` : ''}
-      </form>
+      </form>` : `<p class="sheet-note">远程访问只能查看定时任务；新增、暂停与删除请在这台电脑上操作。</p>`}
       <div class="schedule-list">
         ${
           schedules.loading
@@ -2275,8 +2384,12 @@ function renderSchedulesSheet() {
                         <small>${task.enabled ? `下次 ${escapeHtml(scheduleLocal(task.nextRunAt))}` : '已暂停'}${task.lastRunAt ? ` · 上次 ${escapeHtml(scheduleLocal(task.lastRunAt))}` : ''}</small>
                       </div>
                       <div class="schedule-item-actions">
-                        <button type="button" class="schedule-toggle" data-action="schedule-toggle" data-id="${escapeHtml(task.id)}"${schedules.busy === task.id ? ' disabled' : ''}>${task.enabled ? '暂停' : '启用'}</button>
-                        <button type="button" class="schedule-remove" data-action="schedule-remove" data-id="${escapeHtml(task.id)}" aria-label="删除定时任务"${schedules.busy === task.id ? ' disabled' : ''}>${icon('trash', 13)}</button>
+                        ${
+                          canManageHost()
+                            ? `<button type="button" class="schedule-toggle" data-action="schedule-toggle" data-id="${escapeHtml(task.id)}"${schedules.busy === task.id ? ' disabled' : ''}>${task.enabled ? '暂停' : '启用'}</button>
+                        <button type="button" class="schedule-remove" data-action="schedule-remove" data-id="${escapeHtml(task.id)}" aria-label="删除定时任务"${schedules.busy === task.id ? ' disabled' : ''}>${icon('trash', 13)}</button>`
+                            : ''
+                        }
                       </div>
                     </div>`,
                   )
@@ -2582,7 +2695,9 @@ function renderModelsSheet() {
             ? `<div class="error-banner">${icon('alert', 15)}<span>${escapeHtml(sheet.error)}</span></div>`
             : ''
       }
-      <div class="section-label">执行模式</div>
+      ${
+        canManageHost()
+          ? `<div class="section-label">执行模式</div>
       <div class="sheet-list">
         ${APPROVAL_MODE_OPTIONS.map(
           (option) => `<button type="button" class="sheet-row option-row${currentMode === option.value ? ' is-active' : ''}" data-action="set-approval-mode" data-mode="${option.value}" ${sheet.busy === 'mode' ? 'disabled' : ''}>
@@ -2593,7 +2708,18 @@ function renderModelsSheet() {
             </div>
           </button>`,
         ).join('')}
-      </div>
+      </div>`
+          : `<div class="section-label">执行模式</div>
+      <div class="sheet-list">
+        <div class="sheet-row">
+          <span class="sheet-row-icon">${icon('clock', 16)}</span>
+          <div>
+            <strong>由电脑端决定</strong>
+            <span>远程访问不能降低审批门槛，需要在这台电脑上切换</span>
+          </div>
+        </div>
+      </div>`
+      }
       <div class="section-label">会话模型</div>
       <div class="sheet-list">
         <button type="button" class="sheet-row option-row${sheet.sessionModelId ? '' : ' is-active'}" data-action="set-session-model" data-model="" ${sheet.busy === 'model' ? 'disabled' : ''}>
@@ -3164,6 +3290,7 @@ function renderSettings() {
   return `<div class="settings-page">
     ${settingsHeader()}
     <div class="page">
+      ${remoteAccessNotice()}
       <div class="page-heading">
         <div>
           <h2>连接</h2>
@@ -3209,9 +3336,11 @@ function renderSettings() {
         </div>
       </div>
 
-      ${renderBillingCard()}
+      ${canManageHost() ? renderBillingCard() : ''}
 
-      <div class="page-heading" style="margin-top:24px"><div><h2>升级</h2><p>只下载有变化的文件，重启后生效</p></div></div>
+      ${
+        canManageHost()
+          ? `<div class="page-heading" style="margin-top:24px"><div><h2>升级</h2><p>只下载有变化的文件，重启后生效</p></div></div>
       <div class="card">
         <div class="setting-row">
           <span class="setting-icon">${icon('refresh', 18)}</span>
@@ -3221,7 +3350,18 @@ function renderSettings() {
           </div>
         </div>
         <div class="setting-actions">${updateActionsHtml()}</div>
-      </div>
+      </div>`
+          : `<div class="page-heading" style="margin-top:24px"><div><h2>升级与维护</h2><p>由电脑上的人操作</p></div></div>
+      <div class="card">
+        <div class="setting-row">
+          <span class="setting-icon">${icon('refresh', 18)}</span>
+          <div class="setting-body">
+            <strong>升级、进化、反思、体检</strong>
+            <span>这些会改变电脑上的软件与配置，只能在电脑前操作</span>
+          </div>
+        </div>
+      </div>`
+      }
 
       <div class="page-heading" style="margin-top:24px"><div><h2>运行环境</h2><p>沙箱与自写工具（来自电脑端）</p></div></div>
       <div class="card">
@@ -3264,9 +3404,13 @@ function renderSettings() {
           <p>手机与电脑使用 ECDH P-256 + HKDF + AES-256-GCM。中继只看到密文，电脑上的 API Key 不会发到手机。</p>
         </div>
       </div>
-      <div class="danger-zone">
+      ${
+        canManageHost()
+          ? `<div class="danger-zone">
         <button type="button" class="button danger" data-action="unpair">${icon('trash', 15)}解除配对</button>
-      </div>
+      </div>`
+          : ''
+      }
     </div>
   </div>`
 }
@@ -5211,14 +5355,111 @@ async function renameSession() {
   }
 }
 
-async function startPairing(payload) {
+/* ── 浏览器直连：当场向这台电脑申请访问 ────────────────────────────────── */
+
+/**
+ * 别人把地址发给同事时，对方不用扫码：页面向同一个进程申请一份一次性接入凭据。
+ *
+ * 返回的结构和扫码用的一样（`validatePayload` 归一化），所以后面走完全相同的
+ * 加密握手与审批通道；区别只在服务端如何定身份：
+ * 回环地址直接是主机用户，其他地址要等电脑前的人选定「主机 / 客户机」。
+ */
+async function fetchAccessGrant(role) {
+  const params = new URLSearchParams()
+  if (role) params.set('role', role)
+  const query = params.toString() ? `?${params.toString()}` : ''
+  const response = await fetch(`/access${query}`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    cache: 'no-store',
+    credentials: 'same-origin',
+  })
+  const type = String(response.headers.get('content-type') || '')
+  // 手机上装着同一份页面的 H5 站点没有这个端点：拿到 HTML 就说明当前地址
+  // 不是 `pilot serve` 直接提供的，退回「扫码 / 粘贴配对链接」。
+  if (!type.includes('application/json')) throw new Error('not-served')
+  const body = await response.json().catch(() => null)
+  if (!response.ok) {
+    const reason = body && typeof body.error === 'string' ? body.error : ''
+    throw new Error(reason === 'local_only' ? '请在这台电脑上打开这个页面' : `电脑拒绝了这次申请（${response.status}）`)
+  }
+  if (!body || body.ok !== true) throw new Error('电脑没有返回接入凭据')
+  const local = body.local === true
+  const requestedRole = body.requestedRole === 'host' ? 'host' : 'client'
+  if (body.dry === true) return { payload: null, local, requestedRole }
+  if (!body.payload) throw new Error('电脑没有返回接入凭据')
+  return {
+    payload: validatePayload(body.payload),
+    local,
+    requestedRole,
+  }
+}
+
+async function beginAccess() {
+  state.access.status = 'checking'
+  state.access.error = ''
+  render()
+  let probe
+  try {
+    probe = await fetchAccessGrant('')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    state.access.status = message === 'not-served' ? 'unavailable' : 'error'
+    state.access.error = message === 'not-served' ? '' : message
+    render()
+    return
+  }
+  if (!probe.local) {
+    // 远端页面：先让使用者选定身份，再带着期望值去申请（审批页可改成另一种）。
+    state.access.local = false
+    state.access.requestedRole = probe.requestedRole
+    state.access.status = 'choose'
+    render()
+    return
+  }
+  // 本机浏览器：服务端会直接放行，就是坐在电脑前的人，不必再多一步点击。
+  state.access.local = true
+  state.access.requestedRole = 'host'
+  state.access.status = 'idle'
+  await chooseAccessRole('host', { probe: true })
+}
+
+/** 页面选定身份后正式申请：期望值会带进审批页作默认选项。 */
+async function chooseAccessRole(role, options) {
+  if (state.access.busy) return
+  state.access.busy = true
+  state.access.error = ''
+  state.access.requestedRole = role
+  render()
+  let grant
+  try {
+    grant = await fetchAccessGrant(role)
+    if (!grant.payload) throw new Error('电脑没有返回接入凭据')
+  } catch (error) {
+    state.access.busy = false
+    state.access.status = 'error'
+    state.access.error = error instanceof Error ? error.message : String(error)
+    render()
+    return
+  }
+  state.access.local = grant.local
+  state.access.requestedRole = grant.requestedRole
+  state.access.status = 'idle'
+  state.access.busy = false
+  await startPairing(
+    grant.payload,
+    options?.probe ? '正在连接…' : role === 'host' ? '正在申请主机权限…' : '正在申请访问…',
+  )
+}
+
+async function startPairing(payload, busyLabel) {
   if (!payload) return
   state.fatal = ''
   state.pairing = null
   state.route = 'pair'
   state.pendingPayload = payload
   render()
-  setPairBusy(true)
+  setPairBusy(true, busyLabel)
   try {
     const pairing = await joinPairing(payload)
     savePairing(pairing)
@@ -5227,6 +5468,8 @@ async function startPairing(payload) {
     state.manualEntry = false
     state.manualPair = ''
     state.fatal = ''
+    state.access.status = 'idle'
+    state.access.error = ''
     history.replaceState(null, '', `${location.pathname}${location.search}`)
     state.route = 'sessions'
     connectClient()
@@ -5342,6 +5585,13 @@ async function boot() {
   const route = parseRoute()
   if (!state.pairing) {
     state.route = 'pair'
+    // 直接打开这台电脑的服务地址：先当场申请访问。本机（回环）由服务端直接
+    // 放行并作为主机用户进入；其他机器进「主机 / 客户机」选择页。手机上的
+    // H5 站点没有这个端点，beginAccess 会判定 not-served 并回到扫码页。
+    if (/^https?:$/.test(location.protocol)) {
+      void beginAccess()
+      return
+    }
     render()
     return
   }
@@ -5788,6 +6038,19 @@ document.addEventListener('click', (event) => {
       void startPairing(state.pendingPayload)
       return
     }
+    case 'access-host':
+      void chooseAccessRole('host')
+      return
+    case 'access-client':
+      void chooseAccessRole('client')
+      return
+    case 'access-skip':
+      // 显式放弃自助接入，回到扫码 / 粘贴配对链接。
+      state.access.status = 'unavailable'
+      state.manualEntry = false
+      state.fatal = ''
+      render()
+      return
     case 'manual-pair': {
       const payload = readManualPayload()
       if (payload) void startPairing(payload)

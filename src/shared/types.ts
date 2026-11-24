@@ -1,9 +1,11 @@
 /** Types shared by the main process, preload bridge and renderer. */
 
 import type { FeedbackDraft, FeedbackRecord } from './feedback'
+import type { HostKind } from './capabilities'
 import type { AppLocale, LocaleSetting } from './i18n'
 import type { MemoryCategory } from './memory'
 import type { PreviewKind } from './media'
+import type { NotifyEventId } from './notify-events'
 import type {
   ModuleCheckReport,
   ModuleCheckSettings,
@@ -11,9 +13,22 @@ import type {
   ModuleTarget,
 } from './module-check'
 import type { QualityComparison, QualityMetricSet, QualityScore } from './quality'
+import type {
+  ReflectionReport,
+  ReflectionScheduleMode,
+  ReflectionTopicId,
+  ReflectionTriggers,
+} from './reflect'
 import type { UploadBatch } from './uploads'
+import type { SupervisorRound, SupervisorSettings, SupervisorState } from './supervisor'
 
 export type { ModuleCheckReport, ModuleCheckSettings, ModuleCheckState, ModuleTarget }
+export type { SupervisorRound, SupervisorSettings, SupervisorState }
+export type { ReflectionReport, ReflectionScheduleMode, ReflectionTopicId, ReflectionTriggers }
+export type { NotifyEventDef, NotifyEventId } from './notify-events'
+
+/** Reflection mail transport: implicit TLS (465), STARTTLS (587) or plain. */
+export type ReflectionSmtpSecurity = 'tls' | 'starttls' | 'none'
 
 export type ToolRisk = 'read' | 'write' | 'exec' | 'control'
 
@@ -54,17 +69,6 @@ export type ThemeMode = 'dark' | 'light'
  * spacing and control sizes stay put.
  */
 export type FontSizePreference = 'standard' | 'large' | 'xlarge'
-/**
- * Contrast between text and the page/card ladder. `standard` keeps the palette
- * as designed; `high` deepens the ladder and sharpens text, `low` softens both
- * without dropping below the 4.5:1 readability floor.
- */
-export type ContrastPreference = 'low' | 'standard' | 'high'
-/**
- * Saturation of accent and functional colors. Lightness and hue are kept, so
- * text contrast does not change; `standard` is the palette as designed.
- */
-export type SaturationPreference = 'low' | 'standard' | 'high'
 /**
  * Captcha handling for authorized test targets. `off` never injects a value;
  * `fixture` injects a fixed test code; `header` injects a header value the
@@ -344,7 +348,7 @@ export interface AgentToolDefinition {
   description: string
   inputSchema: Record<string, unknown>
   risk: ToolRisk
-  source?: 'builtin' | 'control' | 'mcp'
+  source?: 'builtin' | 'control' | 'mcp' | 'plugin'
   /**
    * Marks tools that ask in the read-only-auto fallback policy. The canonical
    * evaluatePermission path derives approval from the execution mode, so this
@@ -552,7 +556,7 @@ export interface SessionLink {
 }
 
 /** Where a tool in the session catalog comes from. */
-export type ToolCatalogSource = 'builtin' | 'control' | 'mcp' | 'dynamic'
+export type ToolCatalogSource = 'builtin' | 'control' | 'mcp' | 'dynamic' | 'plugin'
 
 /** One tool a run in this workspace could be offered, from any source. */
 export interface ToolCatalogEntry {
@@ -567,6 +571,10 @@ export interface ToolCatalogEntry {
   server?: string
   /** Dynamic and MCP entries: whether it would be offered right now. */
   enabled?: boolean
+  /** Plugin entries: the plugin id the tool belongs to. */
+  plugin?: string
+  /** Plugin entries: the plugin's display name, so the panel can say whose tool it is. */
+  pluginName?: string
   /** Dynamic tools: whether the approved bytes still match. */
   approved?: boolean
   /** Dynamic tools: approval version. */
@@ -678,6 +686,8 @@ export interface ScheduledTask {
   intervalMinutes?: number
   /** Local "HH:mm" for kind=daily. */
   timeOfDay?: string
+  /** Local "YYYY-MM-DD" first day for kind=daily; the task never fires before it. */
+  startDate?: string
   /** ISO timestamp for the next fire. */
   nextRunAt: string
   enabled: boolean
@@ -704,6 +714,8 @@ export interface ScheduledTaskInput {
   intervalMinutes?: number
   /** For kind=daily, local time as "HH:mm". */
   timeOfDay?: string
+  /** For kind=daily: local "YYYY-MM-DD" of the first day; omit to start today. */
+  startDate?: string
 }
 
 /**
@@ -761,6 +773,19 @@ export interface SessionSummary {
   pausedAt?: string
   pauseInstruction?: string
   canContinue: boolean
+  /**
+   * Status and error of the newest finished run, present only while
+   * `canContinue` is true. The recovery bar names the cause — wrong key, step
+   * budget, network drop — instead of showing one generic sentence for all.
+   */
+  lastRunStatus?: RunStatus
+  lastRunError?: string
+  /**
+   * Steps the last run had taken when it stopped. The recovery bar says where
+   * the run stopped, so resuming a long run does not require rereading the
+   * workspace to work out how far it got.
+   */
+  lastRunSteps?: number
   messageCount: number
   /**
    * Real user instructions in the session (internal continuation prompts are
@@ -1626,6 +1651,12 @@ export interface SettingsView {
    */
   allowUnattendedBuild: boolean
   /**
+   * 完全自主档：一次性放开网络、自身源码与配置、自身全部功能、资源/数据/日志读取。
+   * 只在全部自动模式且 token 上限 ≥ AUTONOMY_MIN_TOKEN_BUDGET、步数上限 ≥
+   * AUTONOMY_MIN_STEPS 时生效；隐私路径（凭据/私钥/会话库/密码库）永远拒绝。
+   */
+  fullAutonomy: boolean
+  /**
    * 自主探索学习：允许从白名单公开站点只读搜集资料、自选任务并把阶段成果记在本地账本。
    * 默认关；开启后也只允许 GET/HEAD，产物不出域。
    */
@@ -1637,6 +1668,13 @@ export interface SettingsView {
    * 学习模式的白名单只约束 learning_research，不再波及任务会话。
    */
   learningShellIsolation: boolean
+  /**
+   * 服务器模式：浏览器打开本机端口就能得到与桌面客户端一致的网页界面，
+   * 与 `pilot serve` 是同一套服务。关闭时浏览器拿到的仍是手机面板。
+   */
+  serverMode: boolean
+  /** 服务器模式的监听端口（1024–65535）。 */
+  serverPort: number
   /** 进化闭环的源码来源：内置源码（官方 git）或自定义路径。 */
   selfSourceMode: SelfSourceMode
   selfSourceGitUrl: string
@@ -1679,10 +1717,6 @@ export interface SettingsView {
   theme: ThemeMode
   /** Text size; `standard` keeps the original type scale. */
   fontSize: FontSizePreference
-  /** Text/surface contrast; `standard` keeps the palette as designed. */
-  contrast: ContrastPreference
-  /** Accent and functional color saturation; `standard` keeps the palette. */
-  saturation: SaturationPreference
   /** UI language: auto follows the OS, otherwise a pinned shipped locale. */
   locale: LocaleSetting
   /** The OS language as Electron reports it, for the "follow system" hint. */
@@ -1699,6 +1733,38 @@ export interface SettingsView {
   reviewModelId: string
   /** Independent reviewer endpoints used by the self-evolution review step. */
   judgeProviders: JudgeProvider[]
+  /** Whether the reflection feature is on. */
+  reflectEnabled: boolean
+  /** Resource used by reflection; empty follows the session model. */
+  reflectModelId: string
+  /** Which trigger(s) may start a reflection. */
+  reflectTriggers: ReflectionTriggers
+  /** Timer granularity: every N minutes, or a fixed local time each day. */
+  reflectScheduleMode: ReflectionScheduleMode
+  reflectIntervalMinutes: number
+  /** `HH:mm` in the user's local time. */
+  reflectDailyTime: string
+  /** Question topics to ask in every reflection. */
+  reflectTopics: ReflectionTopicId[]
+  /** Last successful reflection, or an empty string. */
+  reflectLastRunAt: string
+  /**
+   * 邮件通知总开关。关掉后所有事件都不发信，但邮箱连接配置保留。
+   * 与下面的 `notifyEmailEvents` 一起构成「通知配置」；SMTP 主机/端口/授权码
+   * 属于「邮箱配置」，两者分开保存。
+   */
+  notifyEmailEnabled: boolean
+  /** 打开邮件通知的事件，按 {@link NOTIFY_EVENTS} 的推荐优先级排序。 */
+  notifyEmailEvents: NotifyEventId[]
+  /** 兼容字段：等价于 `notifyEmailEvents` 里有 `reflect.report`。 */
+  reflectEmailEnabled: boolean
+  /** 收件人，同时也是 SMTP 登录名与发件人；空串表示还没配置。 */
+  reflectEmailTo: string
+  reflectSmtpHost: string
+  reflectSmtpPort: number
+  reflectSmtpSecurity: ReflectionSmtpSecurity
+  /** True when a password is stored; the value itself never leaves main. */
+  hasSmtpPassword: boolean
 }
 
 export interface SettingsUpdate {
@@ -1732,9 +1798,12 @@ export interface SettingsUpdate {
   sandboxNetwork?: boolean
   sandboxAutoAllow?: boolean
   allowUnattendedBuild?: boolean
+  fullAutonomy?: boolean
   learningMode?: boolean
   learningHosts?: string[]
   learningShellIsolation?: boolean
+  serverMode?: boolean
+  serverPort?: number
   selfSourceMode?: SelfSourceMode
   selfSourceGitUrl?: string
   selfSourceGitRef?: string
@@ -1751,12 +1820,35 @@ export interface SettingsUpdate {
   notifyDesktop?: boolean
   hooksEnabled?: boolean
   mcpEnabled?: boolean
+  reflectEnabled?: boolean
+  /** 空字符串表示跟随会话模型。 */
+  reflectModelId?: string
+  reflectTriggers?: Partial<ReflectionTriggers>
+  reflectScheduleMode?: ReflectionScheduleMode
+  reflectIntervalMinutes?: number
+  reflectDailyTime?: string
+  reflectTopics?: ReflectionTopicId[]
+  /** 邮件通知总开关。 */
+  notifyEmailEnabled?: boolean
+  /** 打开邮件通知的事件；写入后 `reflectEmailEnabled` 由它派生。 */
+  notifyEmailEvents?: NotifyEventId[]
+  /** 旧字段：只控制反思报告邮件；写入时会同步 `notifyEmailEvents` 里的 `reflect.report`。 */
+  reflectEmailEnabled?: boolean
+  /** 唯一邮箱：收件人、SMTP 登录名与发件人。 */
+  reflectEmailTo?: string
+  reflectSmtpHost?: string
+  reflectSmtpPort?: number
+  reflectSmtpSecurity?: ReflectionSmtpSecurity
+  /** @deprecated 已合并进 `reflectEmailTo`；仅用于兼容旧手机端提交。 */
+  reflectSmtpUser?: string
+  /** 新密码；空字符串保留原值，null 清除。 */
+  reflectSmtpPassword?: string | null
+  /** @deprecated 已合并进 `reflectEmailTo`；仅用于兼容旧手机端提交。 */
+  reflectEmailFrom?: string
   /** Empty string disables the cloud path and keeps LAN-only pairing. */
   relayUrl?: string
   theme?: ThemeMode
   fontSize?: FontSizePreference
-  contrast?: ContrastPreference
-  saturation?: SaturationPreference
   /** UI language preference; `auto` follows the OS. */
   locale?: LocaleSetting
   /** A new key for the session resource. Empty keeps it; null clears it. */
@@ -1781,6 +1873,11 @@ export interface BootstrapData {
   activeSession: string | null
   version: string
   platform: string
+  /**
+   * `desktop` draws its own window controls; `server` is the panel in a browser
+   * tab, which has none — see `HostKind`.
+   */
+  host: HostKind
 }
 export interface ConnectionTestResult {
   ok: boolean
@@ -1877,6 +1974,12 @@ export interface CompanionPhone {
   online: boolean
   pairedAt: string
   lastSeen: string | null
+  /** Source address of a browser session (`web-*` records); absent for a phone. */
+  address?: string
+  /** How the device got in: a scanned QR code or a browser page (`/bridge/ticket`). */
+  via?: 'qr' | 'browser'
+  /** Identity granted to a browser visitor; absent for a scanned phone. */
+  role?: 'host' | 'client'
 }
 
 export interface CompanionStatus {
@@ -1935,6 +2038,14 @@ export interface CompanionPairRequest {
   address: string | null
   /** Whether the phone reached the desktop directly or through the relay. */
   via: 'lan' | 'relay'
+  /** A scanned QR code, or a browser page asking for access without one. */
+  mode?: 'qr' | 'browser'
+  /**
+   * Only for `mode: 'browser'`: the identity the page asked for. It is a
+   * default for the approval prompt, not a permission — the person at the
+   * computer picks the final one.
+   */
+  role?: 'host' | 'client'
   requestedAt: string
   /** The request is dropped at this time unless the user answered. */
   expiresAt: string
@@ -1967,8 +2078,6 @@ export interface FilePreview {
 export interface DocumentWindowState {
   /** Painted theme; the document window applies it as-is. */
   theme: ThemeMode
-  contrast: ContrastPreference
-  saturation: SaturationPreference
   fontSize: FontSizePreference
   /** Concrete locale tag, already resolved by the main process. */
   locale: AppLocale
@@ -1990,6 +2099,12 @@ export interface ApprovalRequest {
   /** Absent when the approval timeout is disabled. */
   expiresAt?: string
 }
+
+/**
+ * 后台任务的提示来源。`notice` 事件带上它之后，邮件通知分发器可以按事件映射，
+ * 不必解析中文文案去猜这条提示是反思还是定时任务发出的。
+ */
+export type NoticeTopic = 'reflect' | 'schedule' | 'module-check' | 'supervisor' | 'quality'
 
 export type RunEvent =
   | {
@@ -2092,10 +2207,32 @@ export type RunEvent =
   /** A phone scanned the QR code; the desktop must approve or reject it. */
   | { type: 'companion.pair_request'; request: CompanionPairRequest }
   /** The pairing request was answered, timed out or withdrawn. */
-  | { type: 'companion.pair_resolved'; requestId: string; approved: boolean; reason?: string }
+  | {
+      type: 'companion.pair_resolved'
+      requestId: string
+      approved: boolean
+      reason?: string
+      /** Identity granted to a browser visitor; absent for a scanned phone. */
+      role?: 'host' | 'client'
+    }
   /** Desktop in-app update progress, mirrored to paired phones. */
   | { type: 'update.changed'; state: UpdateState }
-  | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string }
+  | {
+      type: 'notice'
+      level: 'info' | 'warn' | 'error'
+      message: string
+      /**
+       * 谁发出的提示。后台任务（反思/定时/自检/自主优化）的提示原本只能靠
+       * 文案区分，邮件通知需要结构化来源才能按事件映射，不解析字符串。
+       */
+      topic?: NoticeTopic
+      /**
+       * 这条提示对应哪类邮件通知。缺省时按 `topic + level` 推断；显式给出可以在
+       * 「完成/失败/仅提示」同属一个 topic 时区分，`null` 表示这条不触发通知
+       * （例如自检里的提案提示）。它是显式声明，不会被推断覆盖。
+       */
+      notifyEvent?: NotifyEventId | null
+    }
 
 export interface SendMessageResult {
   queued: boolean
@@ -2145,6 +2282,36 @@ export interface PluginRouteView {
   description: string
 }
 
+/** One agent tool a plugin exposes. Mirrors the manifest declaration. */
+export interface PluginToolView {
+  /** Host-visible tool name (`plugin__<id>__<name>`). */
+  name: string
+  description: string
+  risk: 'read' | 'write' | 'exec'
+  /** `POST /api/plugins/<id><route>`. */
+  route: string
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE'
+}
+
+/** One value the user fills in on the plugins page. */
+export interface PluginSettingView {
+  key: string
+  label: string
+  type: 'text' | 'password' | 'url' | 'number' | 'boolean'
+  required: boolean
+  placeholder: string
+  description: string
+  /** Current value from `grants.json`; password values come back as `''`. */
+  value: string | number | boolean | null
+}
+
+/** One way a plugin gets woken up out of process. */
+export interface PluginTriggerView {
+  event: 'run.completed' | 'session.created' | 'schedule'
+  everyMinutes: number | null
+  timeOfDay: string | null
+}
+
 /** One plugin as it exists in the workspace, valid or not. */
 export interface PluginRecordView {
   id: string
@@ -2157,6 +2324,10 @@ export interface PluginRecordView {
   permissions: string[]
   roles: { id: string; permissions: string[] }[]
   routes: PluginRouteView[]
+  /** Tools the agent can call; empty when the plugin exports none. */
+  tools: PluginToolView[]
+  settings: PluginSettingView[]
+  triggers: PluginTriggerView[]
   providesSession: boolean
   /** Explicit user approval to run this plugin (`grants.json`). */
   enabled: boolean
@@ -2179,6 +2350,31 @@ export interface PluginMarketItem {
   template: PluginTemplateId
   routeCount: number
   installed: boolean
+}
+
+/**
+ * A plugin that ships inside the app (`builtin-plugins/`). These are complete
+ * plugin directories, not scaffolds: installing one copies it into the
+ * workspace, signs it with the workspace key and trusts that key, exactly like
+ * importing a folder the user picked.
+ */
+export interface PluginBuiltinItem {
+  id: string
+  name: string
+  summary: string
+  version: number
+  permissions: string[]
+  /** Tool names the agent gains after installing. */
+  tools: string[]
+  /** Settings labels the user will fill in. */
+  settings: string[]
+  /** Triggers in structured form; the card renders them in the UI language. */
+  triggers: PluginTriggerView[]
+  installed: boolean
+  /** Absolute source directory inside the app bundle. */
+  sourceDir: string
+  /** Set when the bundled manifest is unreadable; the card then offers no install. */
+  error: string | null
 }
 
 export interface PluginTrustedKeyView {
@@ -2207,6 +2403,8 @@ export interface PluginOverview {
   /** Directories whose `plugin.json` failed validation. */
   invalid: { id: string; error: string }[]
   market: PluginMarketItem[]
+  /** Plugins that ship with the app and install with one click. */
+  builtin: PluginBuiltinItem[]
   trustedKeys: PluginTrustedKeyView[]
   policy: PluginSignaturePolicy
   templates: PluginTemplateView[]
@@ -2257,6 +2455,60 @@ export interface PluginInstallResult {
   trustedKey: PluginTrustedKeyView | null
 }
 
+/** One chat turn in the plugin assistant; system copy never leaves the main process. */
+export interface PluginDraftMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface PluginDraftInput {
+  /** What the user wants the plugin to do. */
+  prompt: string
+  /** Earlier turns, oldest first; the main process trims the tail. */
+  history?: PluginDraftMessage[]
+  /** Optional id the model may adopt. */
+  id?: string
+}
+
+/** A generated plugin that has passed manifest and entry validation but is not on disk. */
+export interface PluginDraftView {
+  id: string
+  name: string
+  /** Model's explanation, shown as the assistant turn. */
+  reply: string
+  manifestJson: string
+  entry: string
+  permissions: string[]
+  providesSession: boolean
+  routes: PluginRouteView[]
+  /** Fixes applied or clashes detected while validating. */
+  warnings: string[]
+  model: string
+  /** 1 means the first attempt validated; 2 means one repair round was needed. */
+  attempts: number
+  durationMs: number
+}
+
+export interface PluginDraftInstallInput {
+  id: string
+  manifestJson: string
+  entry: string
+  /** Approve and enable the plugin right after writing it. Defaults to true. */
+  enable?: boolean
+  /** Sign with this workspace's own key. Implied when the policy is `required`. */
+  sign?: boolean
+  readme?: string
+}
+
+export interface PluginDraftInstallResult {
+  id: string
+  dir: string
+  files: string[]
+  enabled: boolean
+  signed: boolean
+  overview: PluginOverview
+}
+
 export interface PilotBridge {
   bootstrap(): Promise<BootstrapData>
   /**
@@ -2276,19 +2528,26 @@ export interface PilotBridge {
   modelBilling(refresh?: boolean): Promise<ModelBillingReport>
   /** Provider balance for one self-evolution reviewer. */
   judgeBalance(input: JudgeBalanceInput): Promise<ModelBalanceState>
+  /** 反思：手动跑一次，返回新报告；失败抛出可读错误。 */
+  reflectNow(): Promise<ReflectionReport>
+  /** 反思报告列表，新的在前。 */
+  reflectionReports(): Promise<ReflectionReport[]>
+  clearReflectionReports(): Promise<void>
+  /** 标记一条反思结论的处理状态（open / done / dismissed），返回更新后的报告。 */
+  setReflectionFindingStatus(
+    reportId: string,
+    findingId: string,
+    status: string,
+  ): Promise<ReflectionReport | null>
+  /** 用已保存的 SMTP 配置发一封测试邮件。 */
+  testReflectionMail(to: string): Promise<{ ok: boolean; error?: string }>
   setTheme(theme: ThemeMode): Promise<void>
 
   /**
    * Paint a candidate appearance in the window chrome while Settings previews
    * it; `null` restores the saved values. Nothing is persisted.
    */
-  previewTheme(
-    input: {
-      theme: ThemeMode
-      contrast: ContrastPreference
-      saturation: SaturationPreference
-    } | null,
-  ): Promise<void>
+  previewTheme(input: { theme: ThemeMode } | null): Promise<void>
 
   /** Store one problem report, feature request or suggestion. */
   submitFeedback(input: FeedbackDraft): Promise<FeedbackRecord>
@@ -2302,7 +2561,11 @@ export interface PilotBridge {
   setCompanionRelay(url: string): Promise<CompanionStatus>
   createCompanionPairing(): Promise<CompanionPairing>
   /** Answer a pending phone request; false when it already timed out. */
-  companionPairDecision(requestId: string, approved: boolean): Promise<boolean>
+  companionPairDecision(
+    requestId: string,
+    approved: boolean,
+    role?: 'host' | 'client',
+  ): Promise<boolean>
   revokeCompanion(phoneId: string): Promise<CompanionStatus>
   companionLocalUrl(): Promise<string>
   companionAppQr(): Promise<{ url: string; qrDataUrl: string }>
@@ -2380,6 +2643,16 @@ export interface PilotBridge {
     selfModify: boolean
     proposalId: string
   }>
+  /**
+   * 自主优化闭环：当前设置、最近一轮与历史轮数。
+   *
+   * 只读采样与出清单永远不产生费用、不碰文件；只有显式打开 `enabled` + `apply`
+   * 且预算与冷却都允许时，一轮才会创建一个普通会话。
+   */
+  supervisorState(): Promise<SupervisorState>
+  /** 立即跑一轮（手动触发），返回本轮报告。 */
+  supervisorRun(): Promise<SupervisorRound>
+  supervisorSettings(input: Partial<SupervisorSettings>): Promise<SupervisorState>
   deleteSession(sessionId: string): Promise<void>
   updateSession(
     sessionId: string,
@@ -2586,8 +2859,23 @@ export interface PilotBridge {
     create(input: PluginCreateInput): Promise<PluginCreateResult>
     install(workspace: string, input: PluginInstallInput): Promise<PluginInstallResult>
     installMarket(workspace: string, id: string): Promise<PluginInstallResult>
+    /** Install a plugin that ships with the app (`builtin-plugins/<id>`). */
+    installBuiltin(workspace: string, id: string): Promise<PluginInstallResult>
+    /** Ask the configured model for a plugin draft; nothing is written. */
+    draft(workspace: string, input: PluginDraftInput): Promise<PluginDraftView>
+    /** Re-validate a draft and write it into `<workspace>/.pilot/plugins/<id>`. */
+    draftInstall(
+      workspace: string,
+      input: PluginDraftInstallInput,
+    ): Promise<PluginDraftInstallResult>
     remove(workspace: string, id: string): Promise<PluginOverview>
     setEnabled(workspace: string, id: string, enabled: boolean): Promise<PluginOverview>
+    /** Save the values of the manifest's `settings` entries. */
+    setConfig(
+      workspace: string,
+      id: string,
+      config: Record<string, unknown>,
+    ): Promise<PluginOverview>
     sign(workspace: string, id: string): Promise<PluginSignatureView>
     trust(workspace: string, publicKey: string, label?: string): Promise<PluginOverview>
     untrust(workspace: string, keyId: string): Promise<PluginOverview>

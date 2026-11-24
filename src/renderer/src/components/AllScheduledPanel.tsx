@@ -243,7 +243,7 @@ export function AllScheduledPanel({
           <div className="all-todos-empty">
             <ClockIcon width={26} height={26} />
             <strong>{t('没有定时任务')}</strong>
-            <span>{t('在会话输入框上方的「定时任务」面板新建一条，就能给这个会话挂上。')}</span>
+            <span>{t('在会话输入框上方的「定时任务」面板新建一条，或直接在对话里说「每天 9 点…」，就能给这个会话挂上。')}</span>
           </div>
         ) : visibleGroups.length === 0 ? (
           <div className="all-todos-empty">

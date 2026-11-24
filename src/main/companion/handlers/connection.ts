@@ -6,6 +6,11 @@ import { join, normalize } from 'node:path'
 import { WebSocket } from 'ws'
 import { handlePluginHttp as runHandlePluginHttp } from '../../plugins/bridge'
 import { PLUGIN_HTTP_PREFIX } from '../../plugins/manifest'
+import { handleAccessHttp } from './access'
+import { handlePageTicketHttp } from './page-ticket'
+import { handleDesktopHttp } from './desktop'
+import { handleBridgeFrame } from './bridge'
+import type { AccessLevel } from '../access-level'
 import { HEARTBEAT_MISS_LIMIT, SILENCE_MS } from '../constants'
 import {
   CONTENT_TYPES,
@@ -31,6 +36,10 @@ export async function handleHttp(
       await server.handlePluginHttp(request, response)
       return
     }
+    // 浏览器直连凭据与它的批准回路；这些路由自己处理方法和来源校验。
+    if (await handleAccessHttp(server, request, response, url)) return
+    // 网页服务的访问凭据：POST 申请、GET 轮询；同样自己校验来源。
+    if (await handlePageTicketHttp(server, request, response, url)) return
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       response.writeHead(405, { Allow: 'GET, HEAD' })
       response.end()
@@ -44,6 +53,8 @@ export async function handleHttp(
       response.end(JSON.stringify({ ok: true, app: 'pilot-link' }))
       return
     }
+    // 桌面界面（服务器模式）、`/pwa/` 与 `/media/`：命中即返回，否则往下走手机面板。
+    if (await handleDesktopHttp(server, request, response, url)) return
     let relative = STATIC_ROUTES[url.pathname]
     if (!relative && url.pathname.startsWith('/vendor/')) {
       relative = url.pathname.slice(1)
@@ -126,17 +137,26 @@ export async function handlePluginHttp(
 export function handleConnection(
   server: CompanionServer,
   socket: ConnectionSocket,
-  origin: { via: 'lan' | 'relay'; address?: string | undefined },
+  origin: {
+    via: 'lan' | 'relay'
+    address?: string | undefined
+    /** `/bridge` 连接的身份；给了就说明这是浏览器里的桌面界面，不需要配对握手。 */
+    bridgeLevel?: AccessLevel | undefined
+    /** `/bridge` 命中凭据的那条记录 id；关连接时用它补「最后活动」。 */
+    bridgePhoneId?: string | undefined
+  },
 ): void {
+  const bridgeLevel = origin.bridgeLevel
   const connection: ClientConnection = {
     socket,
-    authed: false,
-    phoneId: null,
+    authed: Boolean(bridgeLevel),
+    phoneId: origin.bridgePhoneId ?? null,
     alive: true,
     pairAttempts: 0,
     openedAt: Date.now(),
     via: origin.via,
     address: origin.address?.replace(/^::ffff:/, '') ?? null,
+    ...(bridgeLevel ? { surface: 'bridge' as const, bridgeLevel } : {}),
   }
   server.connections.add(connection)
   socket.on('pong', () => {
@@ -160,6 +180,15 @@ export function handleConnection(
     if (connection.phoneId && server.byPhone.get(connection.phoneId) === connection) {
       server.byPhone.delete(connection.phoneId)
       server.phoneSockets.delete(connection.phoneId)
+      const phone = server.state.phones[connection.phoneId]
+      if (phone) {
+        phone.lastSeen = nowIso()
+        server.blankSave()
+      }
+      server.emitStatus()
+    } else if (connection.surface === 'bridge' && connection.phoneId) {
+      // 浏览器桌面界面不进 byPhone 表，所以走不到上面那条。关掉标签页时
+      // 补一条最后活动：设置页的「已授权的网页」靠它区分活着和早先开过。
       const phone = server.state.phones[connection.phoneId]
       if (phone) {
         phone.lastSeen = nowIso()
@@ -251,6 +280,16 @@ export async function handleFrame(
     return
   }
   const type = typeof frame['type'] === 'string' ? frame['type'] : ''
+  if (type === 'ipc') {
+    // `/bridge` 连接：浏览器里的桌面界面直接调用主进程的 IPC 表。
+    if (connection.surface !== 'bridge') {
+      server.sendError(connection, 'bad_frame', '这条连接不支持 IPC 通道')
+      return
+    }
+    connection.bridgeInflight ??= { count: 0 }
+    await handleBridgeFrame(server, connection, frame, connection.bridgeInflight)
+    return
+  }
   if (type === 'pair.join') {
     await server.handlePairJoin(connection, frame)
     return
@@ -264,6 +303,12 @@ export async function handleFrame(
     return
   }
   if (type === 'message') {
+    // 浏览器桌面界面只走 `ipc` 帧；加密消息是手机/PWA 的协议，而且 bridge 连接
+    // 现在也带 phoneId，不拦的话它会跑去解密记录里那两个占位密钥。
+    if (connection.surface === 'bridge') {
+      server.sendError(connection, 'bad_frame', '这条连接不支持加密消息')
+      return
+    }
     if (!connection.authed || !connection.phoneId) {
       server.sendError(connection, 'auth_required', '请先完成配对')
       return

@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   PluginCreateResult,
+  PluginDraftMessage,
+  PluginDraftView,
   PluginOverview,
   PluginRecordView,
+  PluginSignaturePolicy,
   PluginSignatureState,
   PluginTemplateId,
   WorkspaceSummary,
@@ -20,6 +23,8 @@ import {
 } from '../icons'
 import { t } from '../i18n'
 import { SelectMenu } from './SelectMenu'
+import { PluginConfigForm } from './PluginConfigForm'
+import { PluginFacts, triggerLabel } from './PluginFacts'
 
 /**
  * Plugin market and plugin assistant.
@@ -30,6 +35,16 @@ import { SelectMenu } from './SelectMenu'
  */
 
 type Tab = 'market' | 'installed' | 'assistant'
+
+/** One line of the authoring conversation; drafts ride on the assistant turn. */
+interface AssistantTurn {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  /** The request this answer replied to, kept so it can be edited and resend. */
+  prompt?: string
+  draft?: PluginDraftView
+}
 
 /**
  * The four states are translated through literal `t()` calls so the English
@@ -58,6 +73,13 @@ const CATEGORY_LABEL: Record<string, string> = {
   ops: '运营',
 }
 
+/**
+ * Triggers are rendered as plain sentences rather than codes: the panel is
+ * where a user decides whether a plugin may run on its own, so the text has to
+ * say "when" and "how often" without a legend. The renderer lives in
+ * `PluginFacts` next to the rest of the card body so a test can cover it.
+ */
+
 function emptyOverview(workspace: string): PluginOverview {
   return {
     workspace,
@@ -65,6 +87,7 @@ function emptyOverview(workspace: string): PluginOverview {
     plugins: [],
     invalid: [],
     market: [],
+    builtin: [],
     trustedKeys: [],
     policy: 'warn',
     templates: [],
@@ -72,10 +95,25 @@ function emptyOverview(workspace: string): PluginOverview {
   }
 }
 
+/**
+ * Identity of the saved settings as rendered by the form.
+ *
+ * `PluginConfigForm` seeds its inputs from `settings[].value` once, on mount, so
+ * a value changed elsewhere (the phone's companion view, another window, a
+ * refreshed overview) would leave stale text in the fields. Keying the form by
+ * the values themselves remounts it exactly when the stored value differs —
+ * typing does not change this key, so an in-progress edit is never interrupted.
+ * Passwords only expose whether one is stored, so nothing secret reaches the key.
+ */
+function configSnapshot(plugin: PluginRecordView): string {
+  return `${plugin.id}:${plugin.settings
+    .map((setting) => `${setting.key}=${String(setting.value)}`)
+    .join(',')}`
+}
+
 function shortKey(keyId: string | null): string {
   if (!keyId) return '—'
-  return keyId.replace(/^ed25519-/, '').slice(0, 8)
-}
+  return keyId.replace(/^ed25519-/, '').slice(0, 8)}
 
 export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null }) {
   const [tab, setTab] = useState<Tab>('market')
@@ -92,6 +130,13 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
   const [pluginName, setPluginName] = useState('')
   const [pluginDescription, setPluginDescription] = useState('')
   const [signOnCreate, setSignOnCreate] = useState(true)
+
+  // Conversational authoring: turns, composer, and the two install switches.
+  const [turns, setTurns] = useState<AssistantTurn[]>([])
+  const [promptDraft, setPromptDraft] = useState('')
+  const [installEnable, setInstallEnable] = useState(true)
+  const [installSign, setInstallSign] = useState(true)
+  const chatEndRef = useRef<HTMLDivElement | null>(null)
   const [created, setCreated] = useState<PluginCreateResult | null>(null)
 
   // Trust store input.
@@ -124,6 +169,11 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
     })
     return off
   }, [refresh])
+
+  // Keep the newest turn in view while a draft is being generated.
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [turns.length, busy])
 
   const act = async (key: string, action: () => Promise<void>): Promise<void> => {
     if (busy) return
@@ -215,6 +265,18 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
     })
   }
 
+  // Bundled plugins ship as complete directories: install copies, signs and
+  // trusts in one step, so there is nothing to fill in before it runs.
+  const installBuiltin = async (id: string): Promise<void> => {
+    if (!workspace) return
+    await act(`builtin:${id}`, async () => {
+      await window.pilot.plugins.installBuiltin(workspace.path, id)
+      setNotice(t("已安装内置插件 {v1}，到「已安装」里勾选启用就能用。", { v1: id }))
+      setTab('installed')
+      await refresh()
+    })
+  }
+
   const toggle = async (plugin: PluginRecordView): Promise<void> => {
     if (!workspace) return
     await act(`toggle:${plugin.id}`, async () => {
@@ -270,6 +332,74 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
         ),
       )
     })
+  }
+
+  // ── Conversational authoring ─────────────────────────────────────────────
+  const sendDraft = async (text: string): Promise<void> => {
+    if (!workspace) return
+    const prompt = text.trim()
+    if (!prompt) return
+    const history: PluginDraftMessage[] = turns
+      .filter((turn) => turn.content.trim().length > 0)
+      .map((turn) => ({ role: turn.role, content: turn.content }))
+    const previous = [...turns].reverse().find((turn) => turn.draft)?.draft ?? null
+    // Referencing the previous manifest is what makes “add another route” work;
+    // skip it when the two would blow past the prompt budget.
+    const withContext =
+      previous && prompt.length + previous.manifestJson.length < 3_500
+        ? `${prompt}\n\n上一版清单（请在它基础上修改，仍输出完整 JSON）：\n${previous.manifestJson}`
+        : prompt
+    const stamp = Date.now()
+    setTurns((prev) => [...prev, { id: `u${stamp}`, role: 'user', content: prompt }])
+    setPromptDraft('')
+    await act('draft', async () => {
+      const view = await window.pilot.plugins.draft(workspace.path, {
+        prompt: withContext,
+        history,
+      })
+      setTurns((prev) => [
+        ...prev,
+        {
+          id: `a${stamp}`,
+          role: 'assistant',
+          content: view.reply || t("插件草稿已生成，见下面的卡片。"),
+          prompt,
+          draft: view,
+        },
+      ])
+    })
+  }
+
+  const installDraft = async (draft: PluginDraftView): Promise<void> => {
+    if (!workspace) return
+    await act(`draft:${draft.id}`, async () => {
+      const result = await window.pilot.plugins.draftInstall(workspace.path, {
+        id: draft.id,
+        manifestJson: draft.manifestJson,
+        entry: draft.entry,
+        enable: installEnable,
+        // required 策略下不签名等于写了也启不来，直接强制签。
+        sign: installSign || data.policy === 'required',
+      })
+      setNotice(
+        t("已写入插件「{v1}」，共 {v2} 个文件；{v3}", {
+          v1: result.id,
+          v2: String(result.files.length),
+          v3: result.enabled
+            ? t("已启用，可以直接调用它声明的路由。")
+            : t("尚未启用，到「已安装」标签勾选启用。"),
+        }),
+      )
+      setTab('installed')
+      await refresh()
+    })
+  }
+
+  const resetThread = (): void => {
+    setTurns([])
+    setPromptDraft('')
+    setError('')
+    setNotice('')
   }
 
   if (!workspace) {
@@ -378,6 +508,92 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
 
       {tab === 'market' ? (
         <section className="plugins-section">
+          {data.builtin.length ? (
+            <>
+              <div className="plugins-section-head">
+                <h3>{t("可直接使用的内置插件")}</h3>
+                <span className="plugins-meta">
+                  <span className="tools-chip ok">{data.builtin.length}</span>
+                </span>
+              </div>
+              <div className="plugins-grid">
+                {data.builtin.map((item) => {
+                  const working = busy === `builtin:${item.id}`
+                  return (
+                    <article className="plugins-card" key={item.id}>
+                      <div className="plugins-card-head">
+                        <div>
+                          <h3>{item.name}</h3>
+                          <div className="plugins-meta">
+                            <span className="tools-chip">v{item.version}</span>
+                            {item.tools.length ? (
+                              <span className="tools-chip">
+                                {t("{v1} 个工具", { v1: item.tools.length })}
+                              </span>
+                            ) : null}
+                            {item.settings.length ? (
+                              <span className="tools-chip">
+                                {t("{v1} 项设置", { v1: item.settings.length })}
+                              </span>
+                            ) : null}
+                            {item.triggers.map((trigger) => (
+                              <span className="tools-chip" key={triggerLabel(trigger)}>
+                                {triggerLabel(trigger)}
+                              </span>
+                            ))}
+                            {item.installed ? (
+                              <span className="tools-chip ok">{t("已安装")}</span>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                      <p className="plugins-summary">{item.summary}</p>
+                      {item.error ? (
+                        <div className="tools-error plugins-alert">{item.error}</div>
+                      ) : null}
+                      <div className="plugins-facts">
+                        {item.tools.length ? (
+                          <div>
+                            <span>{t("智能体可调用")}</span>
+                            <code>{item.tools.join(', ')}</code>
+                          </div>
+                        ) : null}
+                        {item.settings.length ? (
+                          <div>
+                            <span>{t("可在插件页配置")}</span>
+                            <code>{item.settings.join('、')}</code>
+                          </div>
+                        ) : null}
+                        <div>
+                          <span>{t("权限")}</span>
+                          <code>
+                            {item.permissions.length ? item.permissions.join(', ') : t("无")}
+                          </code>
+                        </div>
+                      </div>
+                      <div className="plugins-actions">
+                        <button
+                          type="button"
+                          className="button primary"
+                          disabled={item.installed || working || Boolean(item.error)}
+                          onClick={() => void installBuiltin(item.id)}
+                        >
+                          {item.installed
+                            ? t("已安装")
+                            : working
+                              ? t("安装中…")
+                              : t("一键安装")}
+                        </button>
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+              <div className="tools-note">
+                {t("内置插件随应用发布，装了就能用：安装后可用本机密钥签名、加入信任库，不需要联网也不需要自己写代码。")}
+              </div>
+            </>
+          ) : null}
           <div className="plugins-grid">
             {data.market.map((item) => {
               const working = busy === `market:${item.id}`
@@ -433,6 +649,9 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
                 </article>
               )
             })}
+          </div>
+          <div className="tools-note">
+            {t("下面的市场模板是脚手架：装的是一个能跑的空壳，适合改成自己的业务插件。")}
           </div>
           <div className="tools-note">
             {t("市场列表内置在应用里，不需要联网；安装时用本工作区的密钥签名并加入信任库，所以你随时能核对文件有没有被改。")}
@@ -549,26 +768,24 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
                     {plugin.description ? (
                       <p className="tools-description">{plugin.description}</p>
                     ) : null}
-                    <div className="plugins-facts">
-                      <div>
-                        <span>{t("入口")}</span>
-                        <code>{plugin.entry}</code>
-                      </div>
-                      <div>
-                        <span>{t("权限")}</span>
-                        <code>{plugin.permissions.length ? plugin.permissions.join(', ') : t("无")}</code>
-                      </div>
-                      <div>
-                        <span>{t("路由")}</span>
-                        <code>
-                          {plugin.routes.length
-                            ? plugin.routes
-                                .map((route) => `${route.method} ${route.path}`)
-                                .join(' · ')
-                            : t("无")}
-                        </code>
-                      </div>
-                    </div>
+                    <PluginFacts plugin={plugin} />
+                    <PluginConfigForm
+                      key={configSnapshot(plugin)}
+                      plugin={plugin}
+                      busy={busy === `config:${plugin.id}`}
+                      onSave={(config) =>
+                        void act(`config:${plugin.id}`, async () => {
+                          setOverview(
+                            await window.pilot.plugins.setConfig(
+                              workspace?.path ?? '',
+                              plugin.id,
+                              config,
+                            ),
+                          )
+                          setNotice(t("已保存 {v1} 的设置", { v1: plugin.name }))
+                        })
+                      }
+                    />
                     {plugin.signature ? (
                       <div className="plugins-signature">{plugin.signature.detail}</div>
                     ) : null}
@@ -646,6 +863,121 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
 
       {tab === 'assistant' ? (
         <section className="plugins-section plugins-assistant">
+          <div className="plugins-chat-intro">
+            <strong>{t("和 Pilot 对话做插件")}</strong>
+            <p>
+              {t("说清插件处理哪些路由、需要什么权限、数据存在哪里；Pilot 给出清单和入口代码，校验通过后你点确认才会写入工作区。")}
+            </p>
+          </div>
+
+          <div className="plugins-chat">
+            {turns.length === 0 ? (
+              <div className="plugins-chat-empty">
+                <p>{t("试试这样说：")}</p>
+                <div className="plugins-chat-samples">
+                  <button
+                    type="button"
+                    className="button ghost"
+                    onClick={() => setPromptDraft(t("给我一个按条码查商品档案的插件，只读，权限 products:read。"))}
+                  >
+                    {t("给我一个按条码查商品档案的插件，只读，权限 products:read。")}
+                  </button>
+                  <button
+                    type="button"
+                    className="button ghost"
+                    onClick={() => setPromptDraft(t("做一个把订单同步到外部系统的插件，需要 orders:write 权限，带一个 /sync 路由。"))}
+                  >
+                    {t("做一个把订单同步到外部系统的插件，需要 orders:write 权限，带一个 /sync 路由。")}
+                  </button>
+                  <button
+                    type="button"
+                    className="button ghost"
+                    onClick={() => setPromptDraft(t("写一个内部公告插件，提供 /list 路由，未登录也能读。"))}
+                  >
+                    {t("写一个内部公告插件，提供 /list 路由，未登录也能读。")}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {turns.map((turn) => (
+              <div key={turn.id} className={`plugins-turn plugins-turn-${turn.role}`}>
+                <span className="plugins-turn-role">
+                  {turn.role === 'user' ? t("你") : t("Pilot")}
+                </span>
+                <div className="plugins-turn-body">
+                  <p>{turn.content}</p>
+                  {turn.draft ? (
+                    <DraftCard
+                      draft={turn.draft}
+                      busy={busy !== ''}
+                      policy={data.policy}
+                      enable={installEnable}
+                      sign={installSign}
+                      onEnable={setInstallEnable}
+                      onSign={setInstallSign}
+                      onInstall={() => void installDraft(turn.draft as PluginDraftView)}
+                      onReuse={() => setPromptDraft(turn.prompt ?? '')}
+                    />
+                  ) : null}
+                </div>
+              </div>
+            ))}
+            {busy === 'draft' ? (
+              <div className="plugins-turn plugins-turn-assistant">
+                <span className="plugins-turn-role">{t("Pilot")}</span>
+                <div className="plugins-turn-body">
+                  <p className="plugins-typing">{t("正在写清单和入口代码…")}</p>
+                </div>
+              </div>
+            ) : null}
+            <div ref={chatEndRef} />
+          </div>
+
+          <div className="plugins-composer">
+            <textarea
+              className="text-input"
+              rows={3}
+              value={promptDraft}
+              disabled={busy === 'draft'}
+              placeholder={t("描述你想要的插件，例如：按条码查商品档案，只读，带一个查询路由。")}
+              onChange={(event) => setPromptDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
+                event.preventDefault()
+                void sendDraft(promptDraft)
+              }}
+            />
+            <div className="plugins-composer-actions">
+              <button
+                type="button"
+                className="button primary"
+                disabled={!promptDraft.trim() || busy === 'draft'}
+                onClick={() => void sendDraft(promptDraft)}
+              >
+                <SparkIcon width={14} height={14} />
+                {busy === 'draft' ? t("生成中…") : t("发送")}
+              </button>
+              {turns.length > 0 ? (
+                <button
+                  type="button"
+                  className="button ghost"
+                  disabled={busy === 'draft'}
+                  onClick={resetThread}
+                >
+                  {t("清空对话")}
+                </button>
+              ) : null}
+              <span className="plugins-form-hint">{t("Enter 发送，Shift + Enter 换行")}</span>
+            </div>
+          </div>
+
+          <details className="plugins-fold">
+            <summary>{t("或者从模板手工搭一个")}</summary>
+            <p className="plugins-fold-note">
+              {t("模板脚手架：先选目录、再选模板命名，适合想自己完全掌控代码的场景。")}
+            </p>
+
           <div className="plugins-steps">
             <div className="plugins-step">
               <span>1</span>
@@ -834,10 +1166,139 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
             </div>
           ) : null}
 
+          </details>
+
           <div className="tools-note">
             {t("插件在独立子进程里运行，只通过逐行 JSON-RPC 与宿主通信；启用时你会看到它声明的全部权限。签名只能证明文件没被改过，不是沙箱。")}
           </div>
         </section>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * One generated plugin, rendered inline in the conversation.
+ *
+ * The card is the only place a draft can turn into files, so it repeats what
+ * will be granted (routes, permissions, signature state) instead of hiding it
+ * behind the manifest.
+ */
+function DraftCard({
+  draft,
+  busy,
+  policy,
+  enable,
+  sign,
+  onEnable,
+  onSign,
+  onInstall,
+  onReuse,
+}: {
+  draft: PluginDraftView
+  busy: boolean
+  policy: PluginSignaturePolicy
+  enable: boolean
+  sign: boolean
+  onEnable: (value: boolean) => void
+  onSign: (value: boolean) => void
+  onInstall: () => void
+  onReuse: () => void
+}) {
+  const [showCode, setShowCode] = useState(false)
+  const seconds = Math.max(1, Math.round(draft.durationMs / 1000))
+  const forcedSign = policy === 'required'
+  return (
+    <div className="plugins-draft">
+      <div className="plugins-draft-head">
+        <div>
+          <strong>{draft.name}</strong>
+          <code>{draft.id}</code>
+        </div>
+        <span className="plugins-draft-meta">
+          {draft.model ? `${draft.model} · ` : ''}
+          {draft.attempts > 1
+            ? t("第 {v1} 轮修正后通过校验", { v1: String(draft.attempts) })
+            : t("一次通过校验")}
+          {` · ${seconds}s`}
+        </span>
+      </div>
+
+      <div className="plugins-facts">
+        <div>
+          <span>{t("权限")}</span>
+          <code>{draft.permissions.length ? draft.permissions.join(', ') : t("无")}</code>
+        </div>
+        <div>
+          <span>{t("身份提供者")}</span>
+          <code>{draft.providesSession ? t("是") : t("否")}</code>
+        </div>
+      </div>
+
+      <div className="plugins-draft-routes">
+        {draft.routes.map((route) => (
+          <div className="plugins-draft-route" key={`${route.method}-${route.path}`}>
+            <code>
+              {route.method} /{route.path}
+            </code>
+            <span>{route.auth === 'public' ? t("公开") : t("需要登录")}</span>
+            {route.permission ? <span className="plugins-chip">{route.permission}</span> : null}
+            <em>{route.description}</em>
+          </div>
+        ))}
+      </div>
+
+      {draft.warnings.length > 0 ? (
+        <ul className="plugins-warn-list">
+          {draft.warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="plugins-draft-options">
+        <label className="plugins-checkbox">
+          <input
+            type="checkbox"
+            checked={enable}
+            disabled={busy}
+            onChange={(event) => onEnable(event.target.checked)}
+          />
+          {t("写入后立即启用")}
+        </label>
+        <label className="plugins-checkbox">
+          <input
+            type="checkbox"
+            checked={sign || forcedSign}
+            disabled={busy || forcedSign}
+            onChange={(event) => onSign(event.target.checked)}
+          />
+          {t("用工作区密钥签名")}
+        </label>
+        {forcedSign ? (
+          <span className="plugins-form-hint">{t("签名策略是 required，写入时必须签名。")}</span>
+        ) : null}
+      </div>
+
+      <div className="plugins-actions">
+        <button type="button" className="button primary" disabled={busy} onClick={onInstall}>
+          {t("写入工作区")}
+        </button>
+        <button type="button" className="button ghost" disabled={busy} onClick={onReuse}>
+          {t("把需求填回输入框")}
+        </button>
+        <button type="button" className="button ghost" onClick={() => setShowCode((value) => !value)}>
+          {showCode ? t("收起代码") : t("查看清单与代码")}
+        </button>
+      </div>
+
+      {showCode ? (
+        <div className="plugins-draft-code">
+          <span className="field-label">plugin.json</span>
+          <pre>{draft.manifestJson}</pre>
+          <span className="field-label">index.mjs</span>
+          <pre>{draft.entry}</pre>
+        </div>
       ) : null}
     </div>
   )

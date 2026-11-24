@@ -4,8 +4,12 @@ import {
   describeLink,
   excerpt,
   queryPairs,
+  readResourcesExpanded,
   RESOURCE_TABS,
+  RESOURCES_EXPANDED_KEY,
   sessionMemories,
+  writeResourcesExpanded,
+  type ResourcePrefsStorage,
 } from '../src/renderer/src/session-resources'
 
 // 会话资源抽屉里六类资源共用同一套列表/预览结构，这里钉住的是纯函数的边界：
@@ -50,6 +54,52 @@ describe('describeLink', () => {
 
   it('drops the www. prefix so the host column stays short', () => {
     expect(describeLink('https://www.example.com/a').host).toBe('example.com')
+  })
+})
+
+describe('expanded preference', () => {
+  function fakeStore(seed: Record<string, string> = {}): ResourcePrefsStorage & {
+    rows: Record<string, string>
+  } {
+    const rows = { ...seed }
+    return {
+      rows,
+      getItem: (key) => rows[key] ?? null,
+      setItem: (key, value) => {
+        rows[key] = value
+      },
+    }
+  }
+
+  it('defaults to the 920px drawer when nothing was stored', () => {
+    expect(readResourcesExpanded(fakeStore())).toBe(false)
+  })
+
+  it('round-trips a choice through the same key the panel writes', () => {
+    const store = fakeStore()
+    writeResourcesExpanded(true, store)
+    expect(store.rows[RESOURCES_EXPANDED_KEY]).toBe('1')
+    expect(readResourcesExpanded(store)).toBe(true)
+    writeResourcesExpanded(false, store)
+    expect(readResourcesExpanded(store)).toBe(false)
+  })
+
+  it('treats a sandbox without local storage as「没记住」instead of throwing', () => {
+    expect(readResourcesExpanded(null)).toBe(false)
+    expect(() => writeResourcesExpanded(true, null)).not.toThrow()
+  })
+
+  it('survives a store that refuses to read or write', () => {
+    const hostile = {
+      getItem: () => {
+        throw new Error('SecurityError')
+      },
+      setItem: () => {
+        throw new Error('QuotaExceededError')
+      },
+    }
+    expect(readResourcesExpanded(hostile)).toBe(false)
+    expect(() => writeResourcesExpanded(true, hostile)).not.toThrow()
   })
 })
 

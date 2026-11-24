@@ -11,9 +11,13 @@
  */
 
 import { isAbsolute } from 'node:path'
+import { MAX_IMAGE_DATA_URL_CHARS } from '../../shared/uploads'
+
+// 单张图上限放在 shared：浏览器版（`pilot serve`）没有 nativeImage，但压缩目标
+// 必须和主进程同一个数，否则同一条消息在网页端能发、桌面端不能发。
+export { MAX_IMAGE_DATA_URL_CHARS }
 
 export const MAX_IMAGES = 3
-export const MAX_IMAGE_DATA_URL_CHARS = 120_000
 export const MAX_TOTAL_IMAGE_CHARS = 360_000
 export const MAX_REFERENCES = 8
 export const MAX_REFERENCE_CHARS = 1_000

@@ -174,28 +174,6 @@ describe('stylesheet tokens', () => {
     expect(offenders, `背景不能用透明 token：${offenders.join(' ')}`).toEqual([])
   })
 
-  it('scales separator strength with the contrast setting', () => {
-    // 行线是半透明色，不走对比度色阶。高对比档里文字与卡片都拉开了、行线
-    // 却原地不动，表格与分组框反而显得比低对比档还糊。三档必须递增。
-    const alpha = (value: string): number => {
-      const match = /rgba\([^)]*?([\d.]+)\s*\)$/.exec(value.trim())
-      if (!match) throw new Error(`不是 rgba()：${value}`)
-      return Number(match[1])
-    }
-    for (const prefix of [':root', ":root[data-theme='light']"] as const) {
-      const strengths = ['low', 'standard', 'high'].map((level) =>
-        alpha(block(`${prefix}[data-contrast='${level}']`)['--line'] as string),
-      )
-      expect(strengths[0], `低档不该比标准档更重：${strengths}`).toBeLessThan(strengths[1] as number)
-      expect(strengths[1], `标准档不该比高档更重：${strengths}`).toBeLessThan(
-        strengths[2] as number,
-      )
-      // 标准档等于手写调色板的值，否则默认观感会跟着变。
-      const handwritten = block(prefix)['--line'] as string
-      expect(strengths[1], `标准档与手写 ${prefix} 不一致`).toBe(alpha(handwritten))
-    }
-  })
-
   it('leaves no hardcoded fallback behind for the old status names', () => {
     const offenders = [
       ...CSS.matchAll(/var\(\s*--(?:success|warning|danger|yellow|orange|ok|warn|bad)\s*,/g),
@@ -233,9 +211,8 @@ describe('status colours on their own cards', () => {
 })
 
 /**
- * 真正生效的是文末的生成层：`:root[data-contrast='x']` / `[data-saturation='y']`
- * 特异性更高、位置更靠后，会盖掉手写块。所以语法高亮的对比度必须拿生成层
- * 的实际值来算，只看手写块会高估。暗、浅两套主题各算一遍，不再有 accent 维度。
+ * 桌面端己移除对比度/饱和度设置，代码块语法色只剩手写调色板这一层，
+ * 暗、浅两套主题各算一遍。
  */
 function resolved(selectors: string[]): Variables {
   return Object.assign({}, ...selectors.map((selector) => block(selector)))
@@ -285,27 +262,16 @@ describe('syntax colours inside code blocks', () => {
   const SYN = ['--syn-comment', '--syn-string', '--syn-number', '--syn-keyword', '--syn-function']
 
   for (const mode of ['dark', 'light'] as const) {
-    it(`${mode}: syntax colours stay readable in every contrast/saturation step`, () => {
-      const prefix = mode === 'light' ? ":root[data-theme='light']" : ':root'
+    it(`${mode}: syntax colours stay readable on the code block`, () => {
       const base = mode === 'light' ? [':root', ":root[data-theme='light']"] : [':root']
       const failures: string[] = []
-      for (const contrast of ['low', 'standard', 'high']) {
-        for (const saturation of ['low', 'standard', 'high']) {
-          const vars = resolved([
-            ...base,
-            `${prefix}[data-contrast='${contrast}']`,
-            `${prefix}[data-saturation='${saturation}']`,
-          ])
-          const background = resolveValue(vars, '--code-bg')
-          for (const token of SYN) {
-            const foreground = resolveValue(vars, token)
-            const value = ratio(foreground, background)
-            if (value < 4.5) {
-              failures.push(
-                `${contrast}/${saturation} ${token} ${foreground} on ${background} = ${value.toFixed(2)}:1`,
-              )
-            }
-          }
+      const vars = resolved(base)
+      const background = resolveValue(vars, '--code-bg')
+      for (const token of SYN) {
+        const foreground = resolveValue(vars, token)
+        const value = ratio(foreground, background)
+        if (value < 4.5) {
+          failures.push(`${token} ${foreground} on ${background} = ${value.toFixed(2)}:1`)
         }
       }
       expect(failures, `\n${failures.slice(0, 12).join('\n')}\n`).toEqual([])

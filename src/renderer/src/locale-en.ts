@@ -7,9 +7,7 @@
 export const en: Record<string, string> = {
   " · 含思考": " · includes thinking",
   " · 已截断": " · truncated",
-  " · 已连接": " · connected",
   " · 有项目记忆": " · has project memory",
-  " · 未配置 API Key": " · API key not set",
   " 先在设置中配置 API Key。": " Set an API key in Settings first.",
   " 继续完成几个任务即可。": " Complete a few more tasks to continue.",
   "0 = 稳定，2 = 发散": "0 = stable, 2 = creative",
@@ -20,11 +18,8 @@ export const en: Record<string, string> = {
   "5 分钟": "5 minutes",
   "Ctrl+Enter 保存 · 敏感信息（Key、Token）不会被保存":
     "Ctrl+Enter to save · secrets (keys, tokens) are not saved",
-  "模型服务已连接，点击查看设置": "Model service connected · click to open settings",
   "Enter 发送 · Shift+Enter 换行 · 可附图/参照":
     "Enter to send · Shift+Enter for a new line · attach images/references",
-  "Key 由 Electron safeStorage 加密后保存在 userData。":
-    "The key is encrypted with Electron safeStorage and stored in userData.",
   "Linux 版": "Linux",
   "MCP 服务器": "MCP servers",
   "OS 沙箱": "OS sandbox",
@@ -76,6 +71,16 @@ export const en: Record<string, string> = {
     "Later tool calls in this session will not ask again; the workspace path jail, protected paths and deny rules still apply.",
   "改为全部自动并允许": "Switch to Full auto and allow",
   "允许无人值守的个人构建": "Allow unattended personal builds",
+  "完全自主（放开全部限制）": "Full autonomy (lift all limits)",
+  "开启后不再逐次询问：可访问任意网络，可在工作区外读取任意资源、数据与日志，并可在工作区外的目录执行命令与长驻进程，可修改 Pilot 自身源码与 .pilot 配置（写入仍限于工作区和自身源码目录），可在无人值守时构建，并自动获得内视与自检权限。只在本会话为「全部自动」且 token 与步数上限都达标时生效；凭据、密钥、浏览器会话等隐私路径仍永远拒绝，每次越界都会写审计日志。":
+    "No more per-call prompts: any network host, reading any resource, data or log outside the workspace, running commands and long-lived processes in directories outside the workspace, editing Pilot's own source and .pilot config (writes stay inside the workspace and Pilot's own source directory), unattended builds, plus automatic introspection and self-check access. It only takes effect when the session is in Fully automatic mode and both the token and step budgets are set high enough; credential, key and browser-session paths are still always refused, and every boundary crossing is written to the audit log.",
+  "完全自主暂未生效：{v1}。补齐后自动生效，无需重新开启。":
+    "Full autonomy is not active yet: {v1}. It turns on by itself once that is fixed; no need to toggle it again.",
+  "默认审批模式不是「全部自动」":
+    "the default approval mode is not Fully automatic (a session can still switch to it)",
+  "token 总量上限低于 100000": "the token cap is below 100000",
+  "步数上限低于 20": "the step cap is below 20",
+  "；": "; ",
   "自主探索学习": "Autonomous learning",
   "允许智能体从白名单公开站点只读搜集资料、自己决定做什么任务，并把来源、任务与阶段成果记在工作区的 .pilot/learning 账本里。开启后请求仍只允许 GET/HEAD：抓到的内容只落在工作区，任何上传、提交、发布、推送类命令都会被拒绝；每个阶段成果都要你点头才算完成。":
     "Let the agent read allowlisted public sites (GET/HEAD only), pick its own tasks, and record sources, tasks and stage results in the .pilot/learning ledger inside the workspace. Fetched content stays in the workspace, and any upload, submit, publish or push command is refused; every stage result still needs your approval.",
@@ -109,6 +114,23 @@ export const en: Record<string, string> = {
   "200 万": "2M",
   "token 总量上限需要是 0 或正整数（0 = 不限制）。": "The token budget must be 0 or a positive whole number (0 = no limit).",
   "上次任务没有正常结束": "The previous task did not finish cleanly",
+  "上次运行停在：第 {v1} 步": "The last run stopped at step {v1}",
+  "计划已完成 {v1}/{v2} 项": "{v1}/{v2} plan items done",
+  "在设置里换一个有效的 API Key，然后继续。":
+    "Replace the API key in Settings, then continue.",
+  "账户余额不足，充值后再继续；重试不会改变结果。":
+    "The account is out of balance. Top it up before continuing; retrying cannot fix it.",
+  "账号无权使用这个模型，在设置里换模型或申请权限后再继续。":
+    "This account may not use that model. Pick another model or request access, then continue.",
+  "检查模型名称、API Key 与账户余额，改好后再继续。":
+    "Check the model name, API key and account balance, then continue.",
+  "已完成的部分已保留在工作区，继续会接着计划往下走。":
+    "Finished work is kept in the workspace; continuing picks up the remaining plan.",
+  "已修复，继续": "Fixed, continue",
+  "模型或账号配置需要处理": "The model or account settings need attention",
+  "网络或服务端中断": "Network or server interruption",
+  "重试通常即可恢复；继续前 Pilot 会先检查工作区现状。":
+    "A retry usually recovers; Pilot checks the workspace first to avoid repeating finished steps.",
   "下载中": "Downloading",
   "下载中…": "Downloading…",
   "下载更新": "Download update",
@@ -293,6 +315,8 @@ export const en: Record<string, string> = {
   "只看执行中的会话": "Only running sessions",
   "只读": "Read-only",
   "只读复盘 ·": "Read-only review ·",
+  "只读审查会话与代码，产出带分值的报告":
+    "Read-only examination of sessions and code that ends in a scored report",
   "只读复盘 · 不写入、不执行命令": "Read-only review · no writes, no commands",
   "只读复盘评估": "Read-only review",
   "只读当前项目下的会话，范围最窄。":
@@ -399,6 +423,9 @@ export const en: Record<string, string> = {
   "复盘中": "Reviewing",
   "复盘会话不注册写入、命令、MCP 或记忆工具。结论只保存为记忆参考和未激活的进化草稿； 需要修改代码时，再用“交接修复”新建普通编码会话，按常规审批执行。":
     "Review sessions get no write, command, MCP or memory tools. Findings are stored only as memory reference and inactive evolution drafts; to change code, use “Hand off fix” to start a normal coding session under the usual approvals.",
+  "复盘会话只注册读取工具：它读你选定范围内的会话记录、运行记录和代码，给出一份带分值的报告。结论只保存为记忆参考和未激活的进化草稿，不会自行改动行为；需要改代码时，再用“交接修复”新建普通会话。":
+    "A review session gets read tools only: it reads sessions, run records and code within the scope you picked, then writes a scored report. Findings are kept as memory reference and an inactive evolution draft and never change behaviour on their own; to change code, use “Hand off fix” to start a normal session.",
+  "复盘评估": "Review",
   "复盘会话已创建：只读读取源码和会话，不写入、不执行命令。":
     "Review session created: reads source and sessions only, no writes or commands.",
   "复盘只能读取这里选择范围内的会话记录和运行记录。":
@@ -438,7 +465,6 @@ export const en: Record<string, string> = {
   "尚未启用全局画像": "No global profile enabled yet",
   "尚未确认": "Not confirmed",
   "尚未连接": "Not connected",
-  "尚未配置 API Key": "API key not set",
   "尚未配置 API Key，点击设置后即可开始。":
     "No API key yet; open Settings to get started.",
   "局域网直连": "Direct LAN",
@@ -562,6 +588,20 @@ export const en: Record<string, string> = {
   "执行时间 {v1}": "Ran at {v1}",
   "扫描二维码配对": "Scan a QR code to pair",
   "手机请求连接这台电脑": "A phone wants to connect to this computer",
+  "浏览器请求访问这台电脑": "A browser wants to access this computer",
+  "确认之后这台浏览器才能打开工作台。":
+    "This browser gets the workbench only after you confirm.",
+  "浏览器": "Browser",
+  "主机": "Host",
+  "客户机": "Client",
+  "身份": "Identity",
+  "主机用户": "Host user",
+  "浏览器页面必须与本机共用同一份会话、工作区与设置，因此浏览器访问固定为主机用户。":
+    "A browser page has to share this computer's sessions, workspaces and settings, so browser access is always a host user.",
+  "只给本人使用的浏览器放行。若你没有在别的设备上打开过这个地址，请选拒绝。":
+    "Allow only a browser you opened yourself. If you did not open this address on another device, deny it.",
+  "你可以随时在电脑上解除这次授权。":
+    "You can revoke this access from the computer at any time.",
   "扫码不会自动配对：确认之后，这台手机才能读取会话、查看文件并驱动 Agent。":
     "Scanning does not pair on its own. Only after you confirm can this phone read sessions, view files and drive the agent.",
   "只在你本人刚刚扫描了电脑上的二维码时允许。若你没有拿出手机扫码，请选拒绝；拒绝后手机需要重新扫码。":
@@ -571,12 +611,16 @@ export const en: Record<string, string> = {
   "这个配对请求已失效，请让手机重新扫码。":
     "That pairing request is no longer valid; scan the QR code again on the phone.",
   "允许连接": "Allow connection",
-  "连接方式": "Connection",
-  "等待时间": "Waiting",
+  "允许访问": "Allow access",
   "云端中继": "Cloud relay",
-  "局域网 · {v1}": "Local network · {v1}",
+  "局域网": "Local network",
   "未知地址": "Unknown address",
+  "未命名复盘": "Untitled review",
+  "还没有复盘会话。新建一次后会出现在这里。":
+    "No review sessions yet; start one and it shows up here.",
   "{v1} 秒后自动拒绝": "Auto-deny in {v1}s",
+  "{v1} 秒": "{v1}s",
+  "已超时": "Timed out",
   "已超时，将自动拒绝": "Timed out; the request will be denied",
   "扫码下载安卓 App。安装后打开 App，用里面的「扫一扫」扫描下方配对二维码；也可以直接用浏览器打开网页版。":
     "Scan to download the Android app. After installing, use its scanner on the pairing QR code below, or open the web version in a browser.",
@@ -627,7 +671,6 @@ export const en: Record<string, string> = {
   "新建任务并完成对话后，消息会自动进入知识库。":
     "Start a task and finish one exchange; messages enter the knowledge base automatically.",
   "新建复盘评估": "New review",
-  "新建复盘评估（只读）": "New review (read-only)",
   "新建普通编码会话处理报告中的问题":
     "Start a normal coding session to fix the reported issues",
   "无法读取更新状态，请稍后重试。": "Could not read the update state; try again later.",
@@ -680,7 +723,6 @@ export const en: Record<string, string> = {
   "本地加密保存，不注册、不登录，配置后即可开始。":
     "Stored locally and encrypted. No sign-up or login; configure and start.",
   "本地文件": "Local files",
-  "本地运行 · 无云同步": "Local only · no cloud sync",
   "本工作区的新运行会使用这个版本的提示词与策略。":
     "New runs in this workspace use this version's prompt and strategy.",
   "本机预览": "Local preview",
@@ -707,6 +749,23 @@ export const en: Record<string, string> = {
   "检查更新": "Check for updates",
   "检索所有工作区里的历史会话，找到结论、决策和原始消息并直接跳回。":
     "Search history across all workspaces; find conclusions, decisions and original messages, and jump straight back.",
+  "网页服务": "Web service",
+  "打开后，浏览器访问下面这个端口看到的就是当前窗口这套界面（会话、知识库、设置都一样），操作与 `pilot serve` 启动的网页服务完全相同。服务只在本机与局域网内监听；关掉开关即停止。":
+    "Once enabled, opening the port below in a browser shows exactly this window's interface (sessions, knowledge and settings included) and behaves like the web service `pilot serve` starts. It listens on this machine and the LAN only; switching it off stops it.",
+  "开启网页服务": "Enable web service",
+  "任一应用内的电脑都能用浏览器打开。若不打开这个开关，浏览器访问只能看到手机配对面板。":
+    "Any computer on the same network can open it in a browser. With the switch off, a browser only finds the phone pairing panel.",
+  "{v1} – {v2}，默认 {v3}": "{v1} – {v2}, default {v3}",
+  "端口需要是 {v1} 到 {v2} 之间的整数。": "The port must be a whole number between {v1} and {v2}.",
+  "访问地址": "Address",
+  "保存后如果端口变了，旧地址会失效。": "If the port changes after saving, the old address stops working.",
+  "保存设置后开始监听。": "Listening starts once you save the settings.",
+  "已授权的网页": "Authorized pages",
+  "浏览器每次申请并被允许访问都会留一条记录；关掉上面的开关会全部撤销，刷新页面需要重新申请。":
+    "Every browser you approve leaves one record here. Switching the service off revokes all of them, so a refresh has to ask again.",
+  "授权时间 {v1}": "Granted {v1}",
+  "还没有网页授权记录。": "No authorized page yet.",
+  "撤销": "Revoke",
   "模型": "Model",
   "标签": "Tag",
   "最多四个字，如“个人”“公司A”": "Up to four characters, e.g. “Personal” or “Acme”.",
@@ -752,7 +811,6 @@ export const en: Record<string, string> = {
   "第五评估": "Fifth evaluator",
   "第六评估": "Sixth evaluator",
   "未命名模型": "Unnamed model",
-  "未选择模型": "No model selected",
   "至少保留一个模型资源。": "Keep at least one model resource.",
   "至少启用一个模型资源。": "Keep at least one model resource enabled.",
   "会话模型不能使用已停用的模型资源。":
@@ -860,20 +918,16 @@ export const en: Record<string, string> = {
   "主题模式": "Theme mode",
   "深色": "Dark",
   "浅色": "Light",
-  "对比度": "Contrast",
-  "饱和度": "Saturation",
-  "调整文字与页面底色的分离程度；低档更柔和，高档更鲜明，主题色保持不变。":
-    "Adjusts how strongly text separates from the page; low is softer, high is crisper, accent colors stay the same.",
-  "调整主题色与功能色的鲜艳程度；两套主题都按灰阶推算，高档更鲜明。":
-    "Adjusts how vivid accent and functional colors are; both themes stay on the grey ladder, and high is the most vivid.",
   "字号": "Text size",
   "标准": "Standard",
   "大": "Large",
   "特大": "Extra large",
   "只放大文字，按钮和间距保持不变；标准就是原来的字号。":
     "Text only; buttons and spacing stay the same. Standard is the original size.",
-  "任务完成、运行失败或等待审批时提醒你；版本与更新入口在左下角。":
-    "Get a reminder when a run finishes, fails or waits for approval. Version and updates live at the bottom left.",
+  "任务完成、运行失败或等待审批时提醒你；桌面通知与邮件通知都在这里。":
+    "Get a reminder when a run finishes, fails or waits for approval; desktop and email notifications both live here.",
+  "Pilot 在前台时也会显示；点击通知可回到对应会话。":
+    "Shown even while Pilot is in the foreground; click a notification to jump back to its session.",
   "界面语言": "Interface language",
   "界面语言。默认跟随系统；智能体始终使用你提问的语言回复。":
     "Interface language. Follows the system by default; the agent always replies in the language you write in.",
@@ -896,6 +950,7 @@ export const en: Record<string, string> = {
   "等大型目录，也不追踪工作区外的副作用。":
     " and other large directories, and does not track side effects outside the workspace.",
   "等待批准": "Waiting for approval",
+  "最近的复盘会话": "Recent review sessions",
   "系统语言：{locale}": "System language: {locale}",
   "继续": "Continue",
   "继续补充任务；可排队，或插入当前任务在下一步生效…":
@@ -905,7 +960,10 @@ export const en: Record<string, string> = {
   "编辑并重新生成": "Edit and regenerate",
   "编辑这条消息": "Edit this message",
   "置信度": "Confidence",
+  "自动与学习": "Automation and learning",
   "自动复盘": "Auto review",
+  "自动复盘、自动进化、探索学习与质量闸门":
+    "Auto review, auto evolution, autonomous learning and the quality gate",
   "自动快照在每次发送任务前创建；开启后也会在":
     "Checkpoints are created before each task; when enabled, also before",
   "自动继续次数上限": "Auto-continue limit",
@@ -918,7 +976,6 @@ export const en: Record<string, string> = {
   "自建中继器": "Self-hosted relay",
   "自建中继器已连接": "Self-hosted relay connected",
   "自建中继器待命": "Self-hosted relay ready",
-  "自我学习": "Self-learning",
   "自我进化": "Evolution",
   "自我进化版本已更新。": "Evolution version updated.",
   "至少保留一个可读取的目录。": "Keep at least one readable directory.",
@@ -928,8 +985,6 @@ export const en: Record<string, string> = {
   "角色": "Role",
   "解除配对": "Unpair",
   "计划": "Plan",
-  "让 Pilot 从真实运行中提炼经验，并在通过独立评审后更新运行画像。":
-    "Let Pilot learn from real runs and update its profile after an independent review.",
   "让 Pilot 基于近期运行提出改进": "Ask Pilot to propose improvements from recent runs",
   "让 Pilot 复盘这次运行，提炼可复用的经验":
     "Ask Pilot to review this run and extract reusable lessons",
@@ -971,6 +1026,8 @@ export const en: Record<string, string> = {
   "废弃方案": "Abandoned",
   "记忆如何工作": "How memory works",
   "设置": "Settings",
+  "打开设置": "Open settings",
+  "双击顶栏切换全屏": "Double-click the title bar to toggle full screen",
   "设置已保存。": "Settings saved.",
   "证据": "Evidence",
   "证据受阻": "Evidence blocked",
@@ -1117,7 +1174,6 @@ export const en: Record<string, string> = {
   "委派 {v1} 次 / {v2} 步": "delegated {v1}× / {v2} steps",
   "模型 {v1}s / 工具 {v2}s / 快照 {v3}s": "model {v1}s / tools {v2}s / checkpoints {v3}s",
   "{v1} 个会话": "{v1} sessions",
-  "{v1} 个任务执行中": "{v1} tasks running",
   "{v1} 个指定会话": "{v1} selected sessions",
   "{v1} 没有可撤销的内容。": "{v1} has nothing to undo.",
   "{v1} 天前": "{v1} days ago",
@@ -1241,6 +1297,9 @@ export const en: Record<string, string> = {
     "Chinese version v{v1} generated (draft). It will not auto-enable.",
   "已选择 {v1} 个项目": "{v1} projects selected",
   "已运行 {v1}": "Running for {v1}",
+  "已运行 {v1} · 仍在执行": "Running for {v1} · still working",
+  "任务执行中，仍在工作": "Task running, still working",
+  "第 {v1} 步": "Step {v1}",
   "已验证交付": "Verified",
   "以风险自担方式启用 v{v1}？\n\n独立评审未通过或尚未通过时，强制启用可能让后续运行退化。你随时可以回滚。":
     "Enable v{v1} at your own risk?\n\nWith a failed or missing independent review, forcing it on may degrade later runs. You can roll back anytime.",
@@ -1821,6 +1880,14 @@ export const en: Record<string, string> = {
   "信任的签名密钥": "Trusted signing keys",
   "签名了 {v1}": "Signs {v1}",
   "当前没有插件使用它": "No plugin uses it yet",
+  "智能体工具": "Agent tools",
+  "触发器": "Triggers",
+  "每轮结束后": "After every run",
+  "新建会话时": "When a session is created",
+  "还有 {v1} 个必填项没填": "{v1} required fields are still empty",
+  "填写后对下一次调用生效": "Takes effect on the next call",
+  "已保存，留空则不改": "Saved · leave empty to keep it",
+  "已保存 {v1} 的设置": "Saved settings for {v1}",
   "移出信任": "Revoke trust",
   "公钥（PEM）": "Public key (PEM)",
   "备注名": "Label",
@@ -1885,6 +1952,44 @@ export const en: Record<string, string> = {
   "已把该公钥加入信任库。": "Public key added to the trust store.",
   "已移出信任库；用它签名的插件会回到「来源未知」。":
     "Removed from the trust store; plugins it signed are unknown signers again.",
+  "和 Pilot 对话做插件": "Build a plugin by talking to Pilot",
+  "说清插件处理哪些路由、需要什么权限、数据存在哪里；Pilot 给出清单和入口代码，校验通过后你点确认才会写入工作区。":
+    "Describe which routes it serves, what permissions it needs and where the data lives. Pilot drafts the manifest and entry code; nothing is written until you confirm.",
+  "试试这样说：": "Try one of these:",
+  "给我一个按条码查商品档案的插件，只读，权限 products:read。":
+    "Give me a read-only plugin that looks up a product by barcode, with products:read.",
+  "做一个把订单同步到外部系统的插件，需要 orders:write 权限，带一个 /sync 路由。":
+    "Build a plugin that syncs orders to an external system; it needs orders:write and a /sync route.",
+  "写一个内部公告插件，提供 /list 路由，未登录也能读。":
+    "Write an internal notice plugin with a /list route that anyone can read.",
+  "你": "You",
+  "Pilot": "Pilot",
+  "正在写清单和入口代码…": "Writing the manifest and entry code…",
+  "描述你想要的插件，例如：按条码查商品档案，只读，带一个查询路由。":
+    "Describe the plugin you want, e.g. look up products by barcode, read-only, one query route.",
+  "清空对话": "Clear conversation",
+  "Enter 发送，Shift + Enter 换行": "Enter sends, Shift + Enter adds a line",
+  "或者从模板手工搭一个": "Or scaffold one by hand from a template",
+  "模板脚手架：先选目录、再选模板命名，适合想自己完全掌控代码的场景。":
+    "Template scaffold: pick a folder, pick a template and name it. Use it when you want to write every line yourself.",
+  "第 {v1} 轮修正后通过校验": "Passed validation after {v1} rounds",
+  "一次通过校验": "Passed validation first try",
+  "公开": "Public",
+  "需要登录": "Sign-in required",
+  "写入后立即启用": "Enable right after writing",
+  "用工作区密钥签名": "Sign with the workspace key",
+  "签名策略是 required，写入时必须签名。":
+    "The signature policy is required, so writing always signs.",
+  "写入工作区": "Write to workspace",
+  "把需求填回输入框": "Put the request back in the box",
+  "收起代码": "Hide code",
+  "查看清单与代码": "Show manifest and code",
+  "插件草稿已生成，见下面的卡片。": "Draft ready — see the card below.",
+  "已写入插件「{v1}」，共 {v2} 个文件；{v3}":
+    "Wrote plugin “{v1}” ({v2} files); {v3}",
+  "已启用，可以直接调用它声明的路由。": "it is enabled and its routes are callable.",
+  "尚未启用，到「已安装」标签勾选启用。":
+    "it is not enabled yet — enable it on the Installed tab.",
   "插件安装在工作区里，因此需要一个工作区才能浏览、安装和创建。":
     "Plugins live inside a workspace, so pick one before browsing, installing or creating.",
   "选择一个工作区后，这里会显示可安装的插件市场、已安装插件和插件助手。":
@@ -1897,6 +2002,18 @@ export const en: Record<string, string> = {
     "Install one from the Market tab, or generate your own into a folder with the Assistant and import it.",
   "还没有信任任何密钥。未签名的插件在本机可以运行，但状态会显示为「未签名」。":
     "No keys trusted yet. Unsigned plugins still run locally, but their badge reads “Unsigned”.",
+  "可直接使用的内置插件": "Ready-to-use bundled plugins",
+  "一键安装": "Install",
+  "已安装内置插件 {v1}，到「已安装」里勾选启用就能用。":
+    "Installed bundled plugin “{v1}” — enable it on the Installed tab to start using it.",
+  "内置插件随应用发布，装了就能用：安装后可用本机密钥签名、加入信任库，不需要联网也不需要自己写代码。":
+    "Bundled plugins ship with the app and work out of the box: installing signs them with this workspace's key and trusts it — no network, no code to write.",
+  "下面的市场模板是脚手架：装的是一个能跑的空壳，适合改成自己的业务插件。":
+    "The market templates below are scaffolds: you get a runnable empty shell to turn into your own business plugin.",
+  "智能体可调用": "Agent-callable",
+  "可在插件页配置": "Configurable here",
+  "{v1} 个工具": "{v1} tools",
+  "{v1} 项设置": "{v1} settings",
   "插件在独立子进程里运行，只通过逐行 JSON-RPC 与宿主通信；启用时你会看到它声明的全部权限。签名只能证明文件没被改过，不是沙箱。":
     "Plugins run in a separate child process and talk to the host over line-delimited JSON-RPC; enabling one shows every permission it declares. A signature proves the files were not changed, it is not a sandbox.",
   "工程健康": "Engineering health",
@@ -1919,7 +2036,6 @@ export const en: Record<string, string> = {
   "用时 {v1} ms": "{v1} ms",
   "复制失败，请手动选择文本": "Copy failed — select the text manually",
   "还没有内视结果": "No introspection result yet",
-  "自检": "Self-check",
   "自检只读扫描 Pilot 内置源码里你勾选的模块，用固定规则列出风险点和优化建议。勾选后默认只生成改造提案，不改任何文件；只有勾选「自改」才会开启一个普通会话去改，写入仍受沙箱与审批约束。":
     "The check only reads Pilot's own built-in source and lists risks and suggestions for the modules you pick with fixed rules. A selection produces a change proposal only; no file is touched. A session that edits the source starts only when you tick “self-modify”, and its writes stay under the sandbox and approval policy.",
   "重新读取内置源码目录": "Reread the built-in source folder",
@@ -1975,6 +2091,22 @@ export const en: Record<string, string> = {
     "Fix session created; the list is waiting in the session queue — send it once a model is configured.",
   "没有发现风险点。": "No risks found.",
   "建议": "Suggestion",
+  "依据": "Basis",
+  "大文件待量化": "Large file pending measurement",
+  "代码结构与拆分决策": "Code structure and split decisions",
+  "行数只说明“值得量化一次”，不是拆分建议。已记录决策的文件不会再被提。":
+    "A line count only means “measure this once”; it is not a split suggestion. Files with a recorded decision are never raised again.",
+  "已有判据、只差决策：{v1} 个文件。":
+    "Verdict measured, decision still missing: {v1} file(s).",
+  "判据 {v1}": "verdict {v1}",
+  "还没量过：{v1} 个文件。先在 pilot/pilot 里跑 split-candidates.mjs 再决定。":
+    "Never measured: {v1} file(s). Run split-candidates.mjs in pilot/pilot before deciding.",
+  "未量化": "not measured",
+  "已记录拆分决策：{v1} 条": "Recorded split decisions: {v1}",
+  "{v1} 行": "{v1} lines",
+  "已拆分": "Split",
+  "决定不拆": "Kept as is",
+  "暂缓": "Deferred",
   "该项已标记为人工处理，自检不会自动修改。":
     "Marked for manual handling; the check will not modify it.",
   "{v1} 项需要人工处理（例如疑似凭据），自检不会把它们交给会话自动修改。":
@@ -1984,7 +2116,6 @@ export const en: Record<string, string> = {
   "每 {v1} 小时": "Every {v1} hours",
   "自检生成的会话已不存在，请重新自检。":
     "The session created by the check no longer exists; run the check again.",
-  "超大文件": "Oversized file",
   "待办积压": "TODO backlog",
   "调试输出": "Debug logging",
   "缺少测试": "Missing tests",
@@ -2098,8 +2229,8 @@ export const en: Record<string, string> = {
   "在内置浏览器打开": "Open in the built-in browser",
   "交给系统默认浏览器": "Open in the system browser",
   "系统浏览器": "System browser",
-  "还原窗口": "Restore window",
   "展开到整个界面": "Expand to the whole window",
+  "收拢到侧边": "Collapse back to the side",
   "设置分组": "Settings sections",
   "测试与工具": "Testing and tools",
   "全部定时任务": "All scheduled tasks",
@@ -2139,8 +2270,8 @@ export const en: Record<string, string> = {
   "系统工具：这个工作区能用的全部工具": "System tools: every tool available in this workspace",
   "工具按工作区装载，因此先选一个工作区才能看到这套工具。":
     "Tools load per workspace, so pick one before the set appears here.",
-  "选择一个工作区后，这里会列出内置、控制、MCP 与自写工具。":
-    "Once a workspace is selected, built-in, control, MCP and self-written tools are listed here.",
+  "选择一个工作区后，这里会列出内置、控制、MCP、插件与自写工具。":
+    "Once a workspace is selected, built-in, control, MCP, plugin and self-written tools are listed here.",
   "这里是 {v1} 里一次运行可能拿到的全部工具，调用次数是这个工作区所有会话的累计。":
     "Every tool a run in {v1} can reach. Call counts are cumulative across this workspace's sessions.",
   "个可用": "enabled",
@@ -2177,14 +2308,18 @@ export const en: Record<string, string> = {
   "延迟至少 1 分钟": "Delay must be at least 1 minute",
   "间隔至少 5 分钟": "Interval must be at least 5 minutes",
   "时间格式要像 09:30": "Time must look like 09:30",
+  "起始日期格式要像 2026-11-25": "The start date must look like 2026-11-25",
+  "从哪天起": "From",
+  "留空表示从今天开始每天执行": "Leave empty to start today",
+  "{v1}（从 {v2} 起）": "{v1} (from {v2})",
   "已加入定时任务。": "Added to scheduled tasks.",
   "{v1} 项 · {v2} 项在等": "{v1} tasks · {v2} waiting",
   "到点自动加入队列，电脑端执行": "Queued automatically at the set time, run by the desktop app",
   "到点要让 Pilot 做什么": "What should Pilot do when it fires",
   "分钟后": "minutes from now",
   "分钟一次": "minutes",
-  "还没有定时任务：点「新建」或待办上的时钟按钮。":
-    "No scheduled tasks yet: hit “New”, or the clock button on a todo.",
+  "还没有定时任务：点「新建」、待办上的时钟按钮，或直接在对话里说「20 分钟后…」。":
+    "No scheduled tasks yet: hit “New”, the clock button on a todo, or just tell me in chat (for example “in 20 minutes …”).",
   "定时任务筛选": "Filter scheduled tasks",
   "启用中": "Active",
   "项启用中": "active",
@@ -2192,11 +2327,211 @@ export const en: Record<string, string> = {
   "没有启用中的定时任务": "No active scheduled tasks",
   "切到「全部」可以看到已暂停的任务，再点「启用」恢复它。":
     "Switch to “All” to see paused tasks, then hit “Enable” to resume one.",
-  "在会话输入框上方的「定时任务」面板新建一条，就能给这个会话挂上。":
-    "Create one in the “Scheduled tasks” panel above the composer to attach it to this session.",
+  "在会话输入框上方的「定时任务」面板新建一条，或直接在对话里说「每天 9 点…」，就能给这个会话挂上。":
+    "Create one in the “Scheduled tasks” panel above the composer, or just tell me in chat (for example “every day at 9:00 …”), to attach it to this session.",
   // 全部待办
   "待办筛选": "Filter todos",
   "项待发送": "pending",
   "项已发送": "sent",
   "含已发送": "With sent",
+  // 反思
+  "反思": "Reflection",
+  "反思发现": "Reflection findings",
+  "启用反思": "Enable reflection",
+  "关闭后不再自动反思；仍可在这里点「立即反思」。":
+    "Turns off automatic reflection; “Reflect now” still works here.",
+  "触发与问题域": "Triggers and topics",
+  "报错触发": "On error",
+  "一次运行失败后自动反思；10 分钟内的连续失败只跑一次，避免烧额度。":
+    "Reflect after a failed run; repeated failures within 10 minutes run once to save quota.",
+  "固定时间触发": "On schedule",
+  "按间隔或每天固定时刻自动反思；到点后一分钟内开始。":
+    "Reflect every N minutes or at a fixed time each day; it starts within a minute of the slot.",
+  "反思模型": "Reflection model",
+  "默认跟随会话模型；换成独立模型可以让反思不受当前任务上下文影响。":
+    "Defaults to the session model; an independent model keeps reflection clear of the current task context.",
+  "定时方式": "Schedule",
+  "按间隔": "Every N minutes",
+  "每天固定时刻": "Fixed time each day",
+  "间隔分钟": "Interval (minutes)",
+  "30 到 10,080 分钟": "30 to 10,080 minutes",
+  "每天时刻": "Daily time",
+  "24 小时制，例如 09:00": "24-hour clock, e.g. 09:00",
+  "问题域": "Topics",
+  "两种触发方式可以同时开启；每次反思按选中的问题逐个自问。":
+    "Both triggers can be on at once; each reflection asks every selected question in turn.",
+  "邮箱配置": "Mailbox settings",
+  "收件人、SMTP 登录名和发件人都是这一个地址，也就是自己发给自己；发信失败只记在日志里。":
+    "Recipient, SMTP user name and sender are all this one address — Pilot mails you. A delivery failure is only logged.",
+  "邮箱地址": "Email address",
+  "邮箱服务商": "Mail provider",
+  "选常用邮箱会自动填好服务器、端口和加密方式，地址仍然自己填写；用自己的服务器就选「自定义」。":
+    "Pick a common provider to fill in the server, port and encryption; the address is still yours to type. Choose Custom for your own server.",
+  "自定义": "Custom",
+  "邮件发到这个地址，也用它登录 SMTP 和充当发件人；多个地址用逗号分隔时只有第一个参与发信":
+    "Mail goes to this address, and it is also the SMTP user name and sender; with several comma-separated addresses only the first is used to sign in and send.",
+  "SMTP 服务器": "SMTP server",
+  "例如 smtp.qq.com": "e.g. smtp.qq.com",
+  "端口": "Port",
+  "加密方式": "Encryption",
+  "隐式 TLS": "Implicit TLS",
+  "不加密": "No encryption",
+  "授权码": "App password",
+  "已保存授权码，留空则保持不变。":
+    "An app password is saved; leave empty to keep it.",
+  "在邮箱设置里开启 SMTP 服务后生成的授权码，不是登录密码。":
+    "The app password generated after enabling SMTP in your mailbox settings — not your login password.",
+  "已发送，请查收。打开邮件通知后才会自动发信。":
+    "Sent — check your inbox. Mail is sent automatically only once notifications are on.",
+  "清除已保存的授权码": "Clear the saved app password",
+  "发送测试邮件": "Send test mail",
+  "立即反思": "Reflect now",
+  "测试邮件使用已保存的设置，改动后请先点「保存设置」。":
+    "Test mail uses saved settings — click Save settings after editing.",
+  "只保存反思自己的字段。": "Saves only the reflection fields.",
+  "邮件通知": "Email notifications",
+  "邮箱地址、SMTP 授权码以及哪些事件发信，都已经移到「设置 → 通知」。":
+    "The email address, SMTP app password and the events that send mail now live in Settings → Notifications.",
+  "打开通知设置": "Open notification settings",
+  "最近反思": "Recent reflections",
+  "最多保留 30 条；自主优化会读取这些结论作为信号。":
+    "Up to 30 kept; self-optimization reads them as signals.",
+  "还没有反思记录。": "No reflections yet.",
+  "（没有摘要）": "(no summary)",
+  "{v1} 条发现": "{v1} findings",
+  "邮件已发送到 {v1}": "Mail sent to {v1}",
+  "邮件未发送：{v1}": "Mail not sent: {v1}",
+  "报告已记录，但邮件未发送：{v1}": "Report saved, but no mail was sent: {v1}",
+  "未知原因": "unknown reason",
+  "清空记录": "Clear records",
+  "反思完成：{v1} 条发现。": "Reflection finished: {v1} findings.",
+  "已发送，请查收。": "Sent — check your inbox.",
+  "还没填写邮箱地址，通知邮件发不出去。":
+    "No email address yet, so notification mail cannot be sent.",
+  "还没填写 SMTP 服务器，通知邮件发不出去。":
+    "No SMTP server yet, so notification mail cannot be sent.",
+  "还没有保存 SMTP 授权码，发信会被服务器拒绝。":
+    "No SMTP app password is saved yet; the server will reject the mail.",
+  "已开启邮件通知，需要先填写邮箱地址。":
+    "Email notifications are on, so set an email address first.",
+  "邮件通知未启用：{v1}":
+    "Email notifications stay off for now: {v1}",
+  "授权码改动还没保存：请先点「保存设置」，再点这里。":
+    "The app password change is not saved yet — click Save settings first, then retry.",
+  "测试邮件发送失败。": "Test mail failed to send.",
+  "记录已清空。": "Records cleared.",
+  "反思间隔需要在 {v1} 到 {v2} 分钟之间。":
+    "The reflection interval must be between {v1} and {v2} minutes.",
+  "每天触发时刻需要是 24 小时制的 HH:mm。":
+    "The daily time must be HH:mm on a 24-hour clock.",
+  "SMTP 端口需要在 1 到 65535 之间。": "The SMTP port must be between 1 and 65535.",
+  "通知配置": "Notification settings",
+  "所有邮件通知集中在这里：开启就发，关闭就不发；列表按推荐优先级排序。":
+    "Every email notification lives here: on means it is sent, off means it is not. The list is ordered by recommended priority.",
+  "邮件通知总开关": "Email notifications",
+  "关闭后下面勾选的任何事件都不会发信，已有的通知也不会补发。":
+    "When off, none of the events below are mailed and nothing is backfilled.",
+  "共 {v1} 类通知，已选 {v2} 类。未勾选的事件不会发信。":
+    "{v1} notification types, {v2} selected. Unchecked events are never mailed.",
+  "至少选择一个反思问题域。": "Pick at least one reflection topic.",
+  "Pilot 按报错或固定时间对自己提问：会话压缩、存储、页面设计、项目结构、代码、执行效率、输出质量和交互体验哪里还能更好。":
+    "Pilot asks itself on error or on a schedule: where can session compaction, storage, page design, project structure, code, execution efficiency, output quality and interaction still improve.",
+  "自主优化": "Self-optimization",
+  "按信号在护栏内自己开一轮修复会话":
+    "Driven by signals, open one repair session inside the guardrails",
+  "按模块扫描，找出问题模块并修复": "Scan module by module, find the problem module and fix it",
+  "按问题域对自己提问，结论进入自主优化信号":
+    "Ask itself per topic; the findings feed the self-optimization signals",
+  "自学习循环：运行统计、画像提案与评审、回滚":
+    "Learning loop: run statistics, profile proposals and review, rollback",
+  "进化功能": "Evolution features",
+  "反思设置已保存。": "Reflection settings saved.",
+  "运行记录": "Run records",
+  "源码自检": "Source self-check",
+  "已开会话": "Session opened",
+  "已跳过": "Skipped",
+  "自主优化闭环": "Self-optimization loop",
+  "Pilot 定时把运行记录、内视结果、源码自检与反思结论汇总成一份信号清单，在护栏内只挑一件事，用普通会话去修。取舍类问题（页面设计、项目结构、交互体验、输出质量）只列不自动动手；开出来的会话照常走沙箱与审批，不打开「允许自动动手」时什么都不会改。":
+    "On a schedule Pilot folds run records, self-check results, source risks and reflection findings into one signal list, then picks exactly one item and fixes it in a normal session. Trade-off topics (page design, project structure, interaction experience, output quality) are listed but never fixed automatically; every session still goes through the sandbox and approvals, and with 'allow automatic fixes' off nothing is changed.",
+  "待处理": "Open",
+  "已处理": "Done",
+  "不打算做": "Won't do",
+  "处理状态": "Status",
+  "本轮未提问：{v1}": "Not asked this round: {v1}",
+  "这条结论没有指出代码位置，只能当作观察看。":
+    "This finding points at no code location, so treat it as an observation only.",
+  "本轮证据（摘要 {v1} / 全文 {v2} 字符）":
+    "Evidence this round (preview {v1} / full {v2} chars)",
+  "本轮证据（{v1} 字符）": "Evidence this round ({v1} chars)",
+  "今日已用": "Used today",
+  "运行状态": "Run state",
+  "已关闭 · 关闭时只能手动跑一轮，且不会自动动手。":
+    "Off · you can still run one round by hand, but it will never act on its own.",
+  "优化间隔": "Optimization interval",
+  "关闭定时优化": "Turn off scheduled optimization",
+  "开启定时优化": "Turn on scheduled optimization",
+  "重新读取状态": "Reload state",
+  "立即分析一轮": "Analyze now",
+  "上次分析：{v1}": "Last analysis: {v1}",
+  "今日指令已用 {v1}/{v2} 字符": "{v1}/{v2} prompt characters used today",
+  "护栏": "Guardrails",
+  "两道开关都必须由你手动打开。每日预算按滚动的 24 小时统计：用完只出清单。同一项 24 小时内只自动处理一次，需要人判断的项永远不进自动队列；反思里的页面设计、项目结构、输出质量、交互体验四类就是只进清单不自动动手。":
+    "Both switches have to be turned on by you. The daily budget rolls over 24 hours: once it is used up Pilot only produces the list. Each item is auto-handled at most once per 24 hours, and anything needing human judgement never enters the auto queue — the four reflection topics page design, project structure, output quality and interaction experience are listed only.",
+  "按间隔自动分析": "Analyze on a schedule",
+  "只读采集信号并生成清单，不改任何文件。":
+    "Collects signals read-only and produces a list; it never changes a file.",
+  "允许自动动手": "Allow automatic fixes",
+  "每轮最多开一个普通会话去修。审批策略、沙箱、权限规则都不受影响，被拒绝时这一轮只记失败。":
+    "At most one normal session per round does the work. Approval policy, sandbox and permission rules stay untouched; a denial is recorded as a failed action.",
+  "每日自动会话上限": "Daily automatic session limit",
+  "超出后只出清单，0 表示永不自动动手。":
+    "Beyond it Pilot only lists findings; 0 means it never acts automatically.",
+  "每日指令字符上限": "Daily prompt character limit",
+  "单条指令超预算会被截断并标注。":
+    "A prompt over budget is truncated and marked as truncated.",
+  "信号": "Signals",
+  "还没有分析过。点「立即分析一轮」生成第一份信号。":
+    "No analysis yet — click Analyze now to produce the first set of signals.",
+  "暂无信号。": "No signals yet.",
+  "本轮发现": "Findings this round",
+  "高 {v1} 项 · 需人工确认 {v2} 项 · 本轮动手 {v3} 次。":
+    "{v1} high · {v2} needing a human · {v3} action(s) taken this round.",
+  "这一块只列出结论与证据，不含被扫描文件的内容。":
+    "This section only lists conclusions and evidence, never the contents of scanned files.",
+  "这一轮没有发现需要处理的信号。": "This round found nothing to act on.",
+  "还没有分析结果。": "No analysis yet.",
+  "需人工确认": "Needs a human",
+  "动作记录": "Actions",
+  "每一轮的动作都记账：为什么动手、为什么跳过、为什么失败。":
+    "Every round records its actions: why it acted, why it skipped, why it failed.",
+  "这一轮没有产生动作。": "This round produced no actions.",
+  "指令 {v1} 字符": "{v1} prompt characters",
+  "历史轮次": "Past rounds",
+  "保留最近 {v1} 轮，供你回看健康分的变化。":
+    "Keeps the last {v1} rounds so you can follow the health score.",
+  "健康分 {v1}": "Score {v1}",
+  "{v1} 项信号": "{v1} signals",
+  "动过手": "Acted",
+  "未动手": "No action",
+  "还没有历史轮次。": "No past rounds yet.",
+  "可用运行样本": "Usable runs",
+  "运行成功率": "Success rate",
+  "工具错误率": "Tool error rate",
+  "内视异常": "Self-check issues",
+  "源码风险": "Source risks",
+  "偏好": "Preferences",
+  "偏好：外观与界面语言": "Preferences: appearance and interface language",
+  "偏好已保存。": "Preferences saved.",
+  "外观与语言": "Appearance and language",
+  "主题、字号和界面语言。选中会立刻预览，保存后生效。":
+    "Theme, font size and interface language. A change previews immediately and applies once saved.",
+  "模型设置已保存。": "Model settings saved.",
+  "会话 · 复盘 · 评估": "Sessions · Review · Evaluation",
+  "所有模型都从这里配置。会话、复盘和评估只引用资源；密钥仅保存在本机并加密。":
+    "Every model is configured here. Sessions, review and evaluation only reference these resources; keys are encrypted and kept on this machine.",
+  "模型：会话、复盘与评估引用的全部端点":
+    "Models: every endpoint referenced by sessions, review and evaluation",
+  "模型密钥与偏好见左下角「模型」「偏好」。":
+    "Model keys and preferences live in “Models” and “Preferences” at the bottom left.",
+  "设置（{v1} 项进化草稿待确认）": "Settings ({v1} evolution draft(s) awaiting review)",
 }

@@ -144,6 +144,10 @@ const REPLY_CLIP = 3_200
  * Keep the relay payload bounded for long sessions. Search runs against the
  * full text; only the returned copy is clipped, and the phone can jump back
  * to the original message for the rest.
+ *
+ * Only the phone relay uses this. The desktop reads the same store over local
+ * IPC, where a full round costs a few hundred kilobytes at most, so it passes
+ * `clip: false` and shows every reply end to end.
  */
 export function clipKnowledgePair(pair: KnowledgePair): KnowledgePair {
   const instruction = pair.instruction.length > INSTRUCTION_CLIP
@@ -160,15 +164,24 @@ export function clipKnowledgePair(pair: KnowledgePair): KnowledgePair {
   }
 }
 
+export interface KnowledgePairsOptions {
+  /**
+   * Clip long text to the relay budget. Defaults to true for callers that ship
+   * pairs to a phone; the desktop passes false so a round shows its whole reply.
+   */
+  clip?: boolean
+}
+
 /**
  * Browse or search one session's knowledge as instruction→reply pairs. Search
- * matches the full text, but only the newest `limit` pairs are returned, each
- * clipped, so a long session stays cheap to render.
+ * matches the full text; the newest `limit` pairs are returned, clipped unless
+ * the caller asks for full bodies.
  */
 export function knowledgePairsFor(
   messages: StoredMessage[],
   query = '',
   limit = 200,
+  options: KnowledgePairsOptions = {},
 ): KnowledgePairsResult {
   const all = buildKnowledgePairs(messages)
   const needle = query.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -181,6 +194,7 @@ export function knowledgePairsFor(
       )
     : all
   const max = Math.max(1, Math.min(500, Math.round(limit) || 200))
-  const selected = matched.slice(-max).map(clipKnowledgePair)
+  const clipped = options.clip !== false
+  const selected = matched.slice(-max).map((pair) => (clipped ? clipKnowledgePair(pair) : pair))
   return { pairs: selected, total: matched.length }
 }

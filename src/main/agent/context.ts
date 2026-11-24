@@ -139,12 +139,30 @@ export interface TrimResult {
 
 export const COMPACTED_MARKER = '【早先工具输出已压缩'
 
+/**
+ * A compacted result that only keeps head and tail throws away the part the
+ * model actually needs next: what is *in* the file. Measured on this repo, a
+ * 1300-character head/tail budget kept 0-2 of 5 sampled function declarations
+ * (head went to the licence header and the import block), so a model that
+ * needed a declaration in the middle had to re-read the whole file — paying
+ * the full token cost again on top of an extra round trip.
+ *
+ * Declaration lines are the cheapest useful index of a source file: dense,
+ * stable, and they never cost more than a fraction of the body they stand in
+ * for. Content with no such structure (logs, HTML, JSON) yields nothing and
+ * falls back to the plain head/tail rule.
+ */
+const DECLARATION_LINE =
+  /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum|const|let|var)\s+[A-Za-z_$]/
+
 export interface CompactOptions {
   /** Newest tool results that stay verbatim: they are the working set. */
   keepRecentToolResults?: number
   minToolChars?: number
   headChars?: number
   tailChars?: number
+  /** Character budget for the declaration skeleton kept from the elided middle. 0 disables it. */
+  skeletonChars?: number
   /**
    * Long assistant answers are re-sent on every step too. A pasted report or a
    * verbose explanation could dominate the window while compaction only ever
@@ -163,6 +181,80 @@ export interface CompactResult {
 }
 
 /**
+ * Top-level declaration lines of `content`, in file order, up to `maxChars`.
+ *
+ * Returns nothing when the content has no such structure (logs, HTML, JSON
+ * blobs): those fall back to the plain head/tail rule rather than pretending
+ * an arbitrary first line is a declaration.
+ */
+export function declarationSkeleton(content: string, maxChars: number): string[] {
+  if (maxChars <= 0) return []
+  const all: string[] = []
+  for (const raw of content.split('\n')) {
+    const line = raw.trimEnd()
+    // A declaration line is short; anything longer is prose or minified code.
+    if (line.length < 6 || line.length > 200) continue
+    if (!DECLARATION_LINE.test(line)) continue
+    all.push(line.length > 140 ? `${line.slice(0, 140)}…` : line)
+  }
+  // Two or fewer lines is not a skeleton, it is a coincidence; keep the plain
+  // head/tail form so the output stays predictable.
+  if (all.length < 3) return []
+  const cost = (lines: string[]): number => lines.reduce((sum, line) => sum + line.length + 1, 0)
+  if (cost(all) <= maxChars) return all
+  // Over budget: keep every stride-th declaration, always including the first
+  // and the last, so a 3000-line file still shows both ends of its shape
+  // instead of only the exports that happen to sit near the top. Stride only
+  // grows, so the first stride that fits is the densest one that fits.
+  for (let stride = 2; stride <= all.length; stride += 1) {
+    const picked: string[] = []
+    for (let index = 0; index < all.length; index += stride) picked.push(all[index]!)
+    const last = all[all.length - 1]!
+    if (picked[picked.length - 1] !== last) picked.push(last)
+    if (cost(picked) <= maxChars) return picked
+  }
+  return []
+}
+
+export interface ElideOptions {
+  headChars: number
+  tailChars: number
+  skeletonChars: number
+  /** `"tool_name target"` when the transcript still knows what produced this. */
+  source?: string
+}
+
+/**
+ * Replace the middle of a long tool result or answer.
+ *
+ * Head/tail alone preserved 0-2 of 5 sampled declarations on this repo; adding
+ * the declaration skeleton keeps the model able to name what the file contains
+ * without a re-read, for a few hundred extra tokens instead of thousands.
+ */
+export function elidedContent(content: string, options: ElideOptions): string {
+  const skeleton = declarationSkeleton(content, options.skeletonChars)
+  const hasSkeleton = skeleton.length > 0
+  // With a skeleton the head only has to carry the header and the import block,
+  // so it can give up characters to the part that carries real structure.
+  const head = content.slice(0, hasSkeleton ? Math.min(options.headChars, 600) : options.headChars)
+  const tail = content.slice(-(hasSkeleton ? Math.min(options.tailChars, 400) : options.tailChars))
+  const omitted = content.length - head.length - tail.length
+  const sourceLine = options.source
+    ? `\n[来源] ${options.source} · 需要完整内容时请重新读取该路径`
+    : ''
+  const kept = hasSkeleton ? '仅保留首尾与声明骨架' : '仅保留首尾'
+  if (!hasSkeleton) {
+    return `${COMPACTED_MARKER}：原 ${content.length} 字符，${kept}】${sourceLine}\n${head}\n…（省略 ${omitted} 字符）…\n${tail}`
+  }
+  const already = new Set([...head.split('\n'), ...tail.split('\n')].map((line) => line.trim()))
+  const lines = skeleton.filter((line) => !already.has(line))
+  return (
+    `${COMPACTED_MARKER}：原 ${content.length} 字符，${kept}】${sourceLine}\n${head}` +
+    `\n…（中间省略 ${omitted} 字符，下面是它的声明骨架）…\n${lines.join('\n')}\n…（正文省略）…\n${tail}`
+  )
+}
+
+/**
  * Old tool output is re-sent on every step. Keep the newest results intact,
  * elide the middle of older ones, and preserve head/tail evidence (paths,
  * errors) without paying for the whole file again.
@@ -175,6 +267,7 @@ export function compactToolResults(
   const minChars = Math.max(200, options.minToolChars ?? 1_500)
   const headChars = Math.max(200, options.headChars ?? 900)
   const tailChars = Math.max(100, options.tailChars ?? 400)
+  const skeletonChars = Math.max(0, options.skeletonChars ?? 1_200)
   // Long answers count against the window as much as tool output does, but the
   // newest ones are still the thread the model is following. Anything within
   // the last few messages stays verbatim; older ones are elided.
@@ -203,12 +296,13 @@ export function compactToolResults(
     if (stale.has(index)) {
       const content = message.content ?? ''
       if (content.length > minChars && !content.startsWith(COMPACTED_MARKER)) {
-        const head = content.slice(0, headChars)
-        const tail = content.slice(-tailChars)
-        const omitted = content.length - head.length - tail.length
         const source = message.toolCallId ? sources.get(message.toolCallId) : undefined
-        const sourceLine = source ? `\n[来源] ${source} · 需要完整内容时请重新读取该路径` : ''
-        const replacement = `${COMPACTED_MARKER}：原 ${content.length} 字符，仅保留首尾】${sourceLine}\n${head}\n…（省略 ${omitted} 字符）…\n${tail}`
+        const replacement = elidedContent(content, {
+          headChars,
+          tailChars,
+          skeletonChars,
+          ...(source ? { source } : {}),
+        })
         if (replacement.length < content.length) {
           compacted += 1
           savedChars += content.length - replacement.length
@@ -221,10 +315,7 @@ export function compactToolResults(
     if (maxAnswerChars > 0 && index < answerFloor && message.role === 'assistant') {
       const content = message.content ?? ''
       if (content.length > maxAnswerChars && !content.startsWith(COMPACTED_MARKER)) {
-        const head = content.slice(0, headChars)
-        const tail = content.slice(-tailChars)
-        const omitted = content.length - head.length - tail.length
-        const replacement = `${COMPACTED_MARKER}：原 ${content.length} 字符，仅保留首尾】\n${head}\n…（省略 ${omitted} 字符）…\n${tail}`
+        const replacement = elidedContent(content, { headChars, tailChars, skeletonChars })
         if (replacement.length < content.length) {
           compactedAnswers += 1
           savedChars += content.length - replacement.length

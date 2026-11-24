@@ -10,6 +10,13 @@
  * capabilities once, `device.info` carries them to the panel, and the panel
  * decides what to hide or grey out.
  */
+/**
+ * Which host is rendering the panel. The two hosts share one renderer, so a
+ * layout or a control that only makes sense in one of them has to ask instead
+ * of inferring it from the platform (both report the same `process.platform`).
+ */
+export type HostKind = 'desktop' | 'server'
+
 export interface HostCapabilities {
   /** Screen capture needs a desktop session with a display attached. */
   screenshot: boolean

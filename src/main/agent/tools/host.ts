@@ -95,7 +95,10 @@ export function driveHints(root: string, args: Record<string, unknown>): DriveHi
 
 export function scheduleWhen(task: ScheduledTask): string {
   if (task.kind === 'interval') return `每 ${task.intervalMinutes ?? 0} 分钟`
-  if (task.kind === 'daily') return `每天 ${task.timeOfDay ?? ''}`
+  if (task.kind === 'daily') {
+    const time = `每天 ${task.timeOfDay ?? ''}`
+    return task.startDate ? `${time}（从 ${task.startDate} 起）` : time
+  }
   return '一次性'
 }
 

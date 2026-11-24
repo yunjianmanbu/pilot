@@ -122,6 +122,115 @@ export function processesIn(
   return out
 }
 
+/**
+ * How much of a run a tail page may swallow when its boundary would cut the
+ * run in half. A run longer than this is left to the placeholder, so opening
+ * one old conversation still cannot drag an unbounded transcript into the
+ * window.
+ */
+const MAX_TAIL_RUN_EXPAND = 400
+
+/** First index of the run `index` belongs to (itself when it opens the run). */
+function runStartIndex(messages: StoredMessage[], index: number): number {
+  const runId = messages[index]?.runId
+  if (!runId) return index
+  let start = index
+  while (start > 0 && messages[start - 1]?.runId === runId) start -= 1
+  return start
+}
+
+/** First index after the run `index` belongs to. */
+function runEndIndex(messages: StoredMessage[], index: number): number {
+  const runId = messages[index]?.runId
+  if (!runId) return index + 1
+  let end = index + 1
+  while (end < messages.length && messages[end]?.runId === runId) end += 1
+  return end
+}
+
+/**
+ * Move a tail boundary so it never opens in the middle of a run. Half a run
+ * renders as a truncated execution box whose earlier steps are unreachable,
+ * and re-opening that conversation would show only the second half because
+ * the page starts inside it. Prefer the run's first message; when that run is
+ * too big to pull in, skip the whole run so it comes back as a placeholder.
+ */
+export function alignTailStart(
+  messages: StoredMessage[],
+  start: number,
+  end: number,
+): number {
+  if (start <= 0 || start >= end) return Math.max(0, start)
+  const runStart = runStartIndex(messages, start)
+  if (runStart === start) return start
+  return start - runStart <= MAX_TAIL_RUN_EXPAND
+    ? withAnchor(messages, runStart)
+    : withAnchor(messages, runEndIndex(messages, start))
+}
+
+/**
+ * The dialogue message that introduced a run belongs to it: without it the
+ * reader sees steps whose question scrolled out of the window, and the
+ * placeholder has no anchor to sit after.
+ */
+function withAnchor(messages: StoredMessage[], index: number): number {
+  return index > 0 && !messages[index - 1]?.runId ? index - 1 : index
+}
+
+/**
+ * How many whole runs the newest page carries. A page bounded only by message
+ * count puts a dozen collapsed execution boxes above the reader's own question
+ * and makes a long conversation look like nothing but tool calls, so the tail
+ * is cut on run boundaries too.
+ */
+export const TAIL_RUN_LIMIT = 6
+
+/** Move the window start forward until it carries at most `TAIL_RUN_LIMIT` runs. */
+function capTailRuns(messages: StoredMessage[], start: number, end: number): number {
+  const starts: number[] = []
+  const seen = new Set<string>()
+  for (let index = start; index < end; index += 1) {
+    const runId = messages[index]?.runId
+    if (!runId || seen.has(runId)) continue
+    seen.add(runId)
+    starts.push(index)
+  }
+  if (starts.length <= TAIL_RUN_LIMIT) return start
+  const cut = starts[starts.length - TAIL_RUN_LIMIT]!
+  // Keep the question that introduced the oldest run in the window too.
+  return withAnchor(messages, cut)
+}
+
+/**
+ * The newest slice of a transcript, used as the first page when a session is
+ * opened. The window holds whole runs only and stops after a few of them, so
+ * opening a long conversation never lays out its entire tool history at once.
+ * Older turns stay behind "load earlier" and come back in transcript order;
+ * the runs a reader actually expanded are restored by the renderer, so no run
+ * is reported as a placeholder stacked above the window.
+ */
+export function sessionPage(session: Session, before?: string, limit = 120): SessionPage {
+  let end = session.messages.length
+  if (before) {
+    const index = session.messages.findIndex((message) => message.id === before)
+    if (index >= 0) end = index
+  }
+  const safeLimit = pageLimit(limit)
+  const start = capTailRuns(
+    session.messages,
+    alignTailStart(session.messages, Math.max(0, end - safeLimit), end),
+    end,
+  )
+  return {
+    session: {
+      ...session,
+      messages: session.messages.slice(start, end),
+      messageCount: session.messages.length,
+    },
+    hasMore: start > 0,
+  }
+}
+
 /** Stored messages of one run, oldest first. Capped so one huge run stays bounded. */
 export function runMessages(
   messages: StoredMessage[],

@@ -21,6 +21,7 @@ import type {
   SystemInfo,
   UpdateState,
 } from '../src/shared/types'
+import { sanitizeReport } from '../src/shared/module-check'
 
 /**
  * 内视的验收点：
@@ -195,6 +196,121 @@ describe('self-check report', () => {
     const report = buildSelfCheckReport(fakeContext())
     expect(findItem(report.items, 'dynamicTools').status).toBe('off')
     expect(findItem(report.items, 'mcp').status).toBe('off')
+  })
+
+  it('内视把行数与拆分决策分开说，并在报告未命中时退回仓库决策表', () => {
+    const report = buildSelfCheckReport(fakeContext())
+    const moduleCheck = findItem(report.items, 'moduleCheck')
+    const text = moduleCheck.facts.join('\n')
+    // 没有报告：行数与决策都该说“没有”，而不是把 0 条决策当成“不需要拆”。
+    expect(text).toContain('超过 800 行的文件 0 个')
+    expect(text).toContain('仓库记录')
+    expect(text).toContain('src/main/agent/loop.ts')
+  })
+
+  it('已决策的大文件不计入“待决策”，未量过的与已有判据的分开说', () => {
+    const report = buildSelfCheckReport(
+      fakeContext({
+        moduleCheck: {
+          settings: { enabled: true, intervalHours: 24, modules: [] },
+          history: [],
+          decisions: [],
+          proposals: [],
+          lastRunAt: '2026-11-20T10:00:00.000Z',
+          lastReport: {
+            id: 'mr_1',
+            trigger: 'manual',
+            workspace: 'C:/ws',
+            startedAt: '2026-11-20T09:59:00.000Z',
+            finishedAt: '2026-11-20T10:00:00.000Z',
+            modules: ['pilot'],
+            targets: [],
+            risks: [],
+            scannedFiles: 10,
+            scannedLines: 1000,
+            score: 100,
+            largeFiles: [
+              { path: 'src/main/agent/runner.ts', lines: 1900, decided: true },
+              { path: 'src/main/new-big.ts', lines: 900, decided: false },
+            ],
+          },
+        },
+      }),
+    )
+    const facts = findItem(report.items, 'moduleCheck').facts.join('\n')
+    expect(facts).toContain('2 个：1 个待决策（0 个已有判据、1 个还没量过），1 个已有拆分决策')
+    // 行数不是结论：没量过的文件要求先跑脚本，而不是直接建议拆。
+    expect(facts).toContain('还没量过的：src/main/new-big.ts')
+    expect(facts).toContain('split-candidates.mjs')
+    // 实测判据分布作为背景，避免把行数读成拆分理由。
+    expect(facts).toContain('实测判据分布')
+    // 本次扫描没有命中任何决策，但决策表本身仍是事实，不能显示成“没有决策”。
+    expect(facts).toContain('仓库记录')
+  })
+
+  it('旧报告没写 decided 时也认得仓库里的拆分决策', () => {
+    const report = buildSelfCheckReport(
+      fakeContext({
+        moduleCheck: {
+          settings: { enabled: true, intervalHours: 24, modules: [] },
+          history: [],
+          decisions: [],
+          proposals: [],
+          lastRunAt: '2026-11-20T10:00:00.000Z',
+          // 上一版写盘的报告没有 decided 字段：不拿决策表兜底的话，
+          // 已经拍过板的 runner.ts 会重新变成“待决策”。这里走真实读盘路径。
+          lastReport: sanitizeReport({
+            id: 'mr_legacy',
+            trigger: 'manual',
+            workspace: 'C:/ws',
+            startedAt: '2026-11-20T09:59:00.000Z',
+            finishedAt: '2026-11-20T10:00:00.000Z',
+            modules: ['pilot'],
+            targets: [],
+            risks: [],
+            scannedFiles: 10,
+            scannedLines: 1000,
+            score: 100,
+            largeFiles: [{ path: 'src/main/agent/runner.ts', lines: 1900 }],
+          })!,
+        },
+      }),
+    )
+    const facts = findItem(report.items, 'moduleCheck').facts.join('\n')
+    expect(facts).toContain('1 个已有拆分决策')
+    expect(facts).not.toContain('待决策（')
+  })
+
+  it('已量过判据但未决策的文件不再要求重跑脚本', () => {
+    const report = buildSelfCheckReport(
+      fakeContext({
+        moduleCheck: {
+          settings: { enabled: true, intervalHours: 24, modules: [] },
+          history: [],
+          decisions: [],
+          proposals: [],
+          lastRunAt: '2026-11-20T10:00:00.000Z',
+          lastReport: {
+            id: 'mr_2',
+            trigger: 'manual',
+            workspace: 'C:/ws',
+            startedAt: '2026-11-20T09:59:00.000Z',
+            finishedAt: '2026-11-20T10:00:00.000Z',
+            modules: ['pilot'],
+            targets: [],
+            risks: [],
+            scannedFiles: 10,
+            scannedLines: 1000,
+            score: 100,
+            largeFiles: [{ path: 'src/main/new-big.ts', lines: 900, decided: false, verdict: 'SHARED' }],
+          },
+        },
+      }),
+    )
+    const facts = findItem(report.items, 'moduleCheck').facts.join('\n')
+    expect(facts).toContain('1 个待决策（1 个已有判据、0 个还没量过）')
+    expect(facts).toContain('只差决策的：src/main/new-big.ts SHARED')
+    expect(facts).not.toContain('还没量过的')
   })
 
   it('renders a copyable text report with groups, facts and hints', () => {

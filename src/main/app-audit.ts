@@ -162,8 +162,33 @@ export function runSettledEntry(input: {
  * 崩溃类记录：主进程未捕获异常、未处理的 Promise、渲染进程消失、子进程消失。
  * `source` 是崩溃发生的位置（`main` / `renderer` / `child`），`event` 说明种类。
  */
-export function crashEntry(input: {
-  event: string
+/**
+ * 完全自主档的审计记录：越界读取、自身配置写入、无人值守构建、自动系统授权。
+ *
+ * 字段名避开 `token` / `content` / `prompt` 这类键：`app-log.ts` 的 `SENSITIVE_KEY`
+ * 会把它们整段替换成 `<redacted>`，所以预算写成 `budget`、步数写成 `steps`。
+ */
+export function autonomyAuditEntry(input: {
+  kind: 'read-outside' | 'write-own-config' | 'unattended-build' | 'system-access'
+  tool: string
+  detail: string
+  budget: number
+  steps: number
+}): AppLogEntry {
+  return {
+    area: 'autonomy',
+    event: `autonomy.${input.kind}`,
+    level: input.kind === 'read-outside' ? 'info' : 'warn',
+    detail: {
+      tool: input.tool,
+      summary: input.detail.slice(0, MAX_FIELD),
+      budget: input.budget,
+      steps: input.steps,
+    },
+  }
+}
+
+export function crashEntry(input: {  event: string
   source: 'main' | 'renderer' | 'child'
   error?: unknown
   detail?: Record<string, unknown>

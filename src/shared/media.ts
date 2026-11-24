@@ -16,6 +16,38 @@ const MEDIA_HOST = 'local'
 const DIR_SEGMENT = 'd'
 
 /**
+ * HTTP prefix used when no custom scheme exists (`pilot serve` in a browser).
+ *
+ * A browser tab cannot register `pilot-media:`, so the headless host serves the
+ * same URLs under `/media/`. The renderer sets this once from its entry point;
+ * the desktop window leaves it empty and keeps the protocol handler.
+ */
+export const MEDIA_HTTP_PREFIX = '/media'
+
+let mediaOrigin: string | null = null
+
+/** Switch URL generation between `pilot-media:` and an HTTP prefix. */
+export function setMediaOrigin(prefix: string | null): void {
+  const value = (prefix ?? '').trim()
+  mediaOrigin = value ? value.replace(/\/+$/, '') : null
+}
+
+/** The `/media`-style prefix in use, or null for the `pilot-media:` scheme. */
+export function currentMediaOrigin(): string | null {
+  return mediaOrigin
+}
+
+/**
+ * Turn a served `/media/...` path back into the `pilot-media:` URL the shared
+ * parser already understands, so the jail check stays in one place.
+ */
+export function mediaUrlFromHttpPath(pathname: string): string | null {
+  if (!pathname.startsWith(`${MEDIA_HTTP_PREFIX}/`)) return null
+  const rest = pathname.slice(MEDIA_HTTP_PREFIX.length + 1)
+  return rest ? `${MEDIA_SCHEME}://${MEDIA_HOST}/${rest}` : null
+}
+
+/**
  * `text` and `markdown` are read into memory and rendered by React; every other
  * kind is streamed by the protocol handler.
  */
@@ -173,7 +205,8 @@ function posixSegments(value: string): string[] {
  * are refused, because the main process decodes this with the workspace jail.
  */
 export function mediaUrlFor(relativePath: string): string {
-  return `${MEDIA_SCHEME}://${MEDIA_HOST}/${encodeMediaPath(relativePath)}`
+  const encoded = encodeMediaPath(relativePath)
+  return mediaOrigin ? `${mediaOrigin}/${encoded}` : `${MEDIA_SCHEME}://${MEDIA_HOST}/${encoded}`
 }
 
 /**
@@ -183,7 +216,8 @@ export function mediaUrlFor(relativePath: string): string {
  */
 export function mediaDirUrlFor(dir: string): string {
   const normalized = posixSegments(dir).join('/')
-  return `${MEDIA_SCHEME}://${MEDIA_HOST}/${DIR_SEGMENT}/${encodeMediaPath(normalized || '.')}/`
+  const path = `${DIR_SEGMENT}/${encodeMediaPath(normalized || '.')}/`
+  return mediaOrigin ? `${mediaOrigin}/${path}` : `${MEDIA_SCHEME}://${MEDIA_HOST}/${path}`
 }
 
 /**

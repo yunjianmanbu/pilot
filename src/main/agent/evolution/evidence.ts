@@ -11,9 +11,16 @@ import { isUserTaskTurn } from '../context'
 
 const MAX_EVIDENCE_RUNS = 40
 
+/** 密钥形状的串：落盘与进提示词前都要抹掉。 */
+const SECRET_PATTERN = /(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,})/g
+
+/** 只脱敏、不动空白：证据全文要按原结构落盘供人回查。 */
+export function redactSecrets(text: string): string {
+  return text.replace(SECRET_PATTERN, '<redacted>')
+}
+
 export function scrub(text: string, limit: number): string {
-  return text
-    .replace(/(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,})/g, '<redacted>')
+  return redactSecrets(text)
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, limit)

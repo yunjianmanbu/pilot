@@ -23,6 +23,7 @@ import {
   PUBLIC_KEY_RE,
 } from '../constants'
 import { asRecord, cleanText, nowIso, seal, unseal } from '../helpers'
+import { accessLevelOf } from '../access-level'
 import type { ClientConnection, StoredPhone } from '../types'
 import type { CompanionServer } from '../server'
 
@@ -52,7 +53,11 @@ export async function handlePairJoin(
     host.sendRaw(connection.socket, { type: 'pair.rejected', reason: '手机公钥不正确' })
     return
   }
-  const offer = host.activeOffer()
+  // 两条入口并存：扫码配对用终端里那一个 offer（`activeOffer`），浏览器直连用
+  // `/access` 签发的 offer（按 lookup 存在 map 里）。服务端启动时会先打印一条
+  // 配对链接，若先问 `activeOffer`，任何浏览器直连都会被它顶掉并判成「已失效」。
+  // 所以先按页面带来的 lookup 精确命中，再回落到当前二维码。
+  const offer = host.takeAccessOffer(lookup) ?? host.activeOffer()
   if (!offer || offer.lookup !== lookup) {
     host.sendRaw(connection.socket, {
       type: 'pair.rejected',
@@ -71,10 +76,18 @@ export async function handlePairJoin(
   // 普通配对二维码只发起请求，必须等电脑前的人确认；换机二维码由已配对
   // 手机经认证通道申请，扫码本身已经证明持有一次性密钥，直接放行。
   // 两条路径都受 TTL 和「一次使用后清空 offer」约束。
+  let decidedRole: 'host' | 'client' | undefined = offer.viaAccess ? offer.role : undefined
   if (!offer.autoApprove) {
     const busy = Boolean(host.pendingPair)
     if (!busy) host.sendRaw(connection.socket, { type: 'pair.pending' })
-    const decision = await host.requestPairApproval(connection, { phoneId, name, platform })
+    const decision = await host.requestPairApproval(connection, {
+      phoneId,
+      name,
+      platform,
+      mode: offer.viaAccess ? 'browser' : 'qr',
+      // 页面自报的身份只是审批页的默认值，最终以这里的决定为准。
+      ...(offer.viaAccess && offer.role ? { role: offer.role } : {}),
+    })
     if (!decision.approved) {
       host.sendRaw(connection.socket, {
         type: 'pair.rejected',
@@ -82,9 +95,10 @@ export async function handlePairJoin(
       })
       return
     }
+    if (offer.viaAccess) decidedRole = decision.role ?? decidedRole ?? 'client'
   }
   // The answer can arrive after the QR code was replaced or the socket died.
-  if (host.activeOffer() !== offer) {
+  if (!host.offerAlive(offer)) {
     host.sendRaw(connection.socket, {
       type: 'pair.rejected',
       reason: '配对二维码已失效，请在电脑上重新生成',
@@ -107,13 +121,17 @@ export async function handlePairJoin(
     phoneToPc: seal(keys.phoneToPc.toString('base64url')),
     outSeq: 1,
     inSeq: 0,
+    // 扫码配对 = 本人设备；浏览器直接打开网址申请 = 受限访问者。
+    via: offer.viaAccess ? 'browser' : 'qr',
+    // 浏览器凭据记下审批身份：host 与本机同权同数据，client 只有独立数据面。
+    ...(offer.viaAccess && decidedRole ? { role: decidedRole } : {}),
     pairedAt,
     lastSeen: pairedAt,
     ...(relayEnabled
       ? { relayRoom: offer.room, relayKey: offer.roomKey, relayUrl }
       : {}),
   }
-  host.clearOffer()
+  host.consumeOffer(offer)
   await host.saveNow()
   const confirmationValue: Record<string, unknown> = {
     type: 'pair.accept',
@@ -329,8 +347,14 @@ export async function handleEncrypted(
   if (!id) return
   const method = typeof value['method'] === 'string' ? value['method'] : ''
   const params = asRecord(value['params'])
+  // 本机还是远端看承载这条请求的连接：中继连接即使由本机出站，也算远端。
+  const access = accessLevelOf({
+    ...(host.byPhone.get(phoneId) ?? { via: 'relay' as const, address: null }),
+    credential: phone.via,
+    role: phone.role,
+  })
   try {
-    const data = await host.handleRequest(method, params, phone)
+    const data = await host.handleRequest(method, params, phone, access)
     await host.sendEncrypted(phoneId, { type: 'response', id, ok: true, data })
   } catch (error) {
     await host.sendEncrypted(phoneId, {

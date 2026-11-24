@@ -37,7 +37,7 @@ import { t } from '../i18n'
 import { ApprovalDock } from './chat/approval'
 import { Composer } from './chat/composer'
 import { AssistantMessageRow, UserMessageRow } from './chat/message-rows'
-import { ContinueBar, QueuePanel, ThinkingIndicator, Welcome } from './chat/panels'
+import { ContinueBar, LiveElapsed, QueuePanel, ThinkingIndicator, Welcome } from './chat/panels'
 
 export interface ChatViewProps {
   workspace: WorkspaceSummary | null
@@ -556,7 +556,7 @@ export function ChatView({
           ) : null}
 
           {running && !live?.content && !process ? (
-            <ThinkingIndicator step={live?.step ?? 0} />
+            <ThinkingIndicator step={live?.step ?? 0} startedAt={live?.startedAt} />
           ) : null}
 
           {running && live?.content && !process ? (
@@ -566,6 +566,7 @@ export function ChatView({
                 <i />
                 <i />
               </span>
+              <LiveElapsed startedAt={live?.startedAt} />
             </div>
           ) : null}
 
@@ -618,7 +619,12 @@ export function ChatView({
             : {})}
         />
         {session && !running && (session.paused || session.canContinue) ? (
-          <ContinueBar session={session} busy={continuing} onContinue={onContinue} />
+          <ContinueBar
+            session={session}
+            busy={continuing}
+            onContinue={onContinue}
+            onOpenSettings={onOpenSettings}
+          />
         ) : null}
         <QueuePanel
           queue={session?.queue ?? []}

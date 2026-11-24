@@ -1,0 +1,93 @@
+{
+  "id": "snippet",
+  "name": "片段速查",
+  "version": 1,
+  "api": 1,
+  "runtime": "node",
+  "entry": "index.mjs",
+  "description": "把常用的命令、提示词、报错处置存成片段，随时按关键词取回；每次命中会累加使用次数，每 4 小时按用量清理超出上限的旧片段。上限、默认标签与清理提醒都在插件页设置。",
+  "permissions": ["snippets:read", "snippets:write", "host:notify"],
+  "provides": null,
+  "roles": [],
+  "routes": [
+    {
+      "method": "POST",
+      "path": "save",
+      "auth": "required",
+      "permission": "snippets:write",
+      "description": "保存或覆盖一个片段"
+    },
+    {
+      "method": "POST",
+      "path": "search",
+      "auth": "required",
+      "permission": "snippets:read",
+      "description": "按关键词或标签搜索片段"
+    },
+    {
+      "method": "GET",
+      "path": "health",
+      "auth": "public",
+      "description": "存活检查"
+    }
+  ],
+  "tools": [
+    {
+      "name": "save",
+      "description": "保存一个可复用的片段（命令、提示词、检查清单等），同名会覆盖并保留使用次数。",
+      "route": "save",
+      "method": "POST",
+      "permission": "snippets:write",
+      "risk": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "片段名字，用来之后取回，例如 发布移动端" },
+          "text": { "type": "string", "description": "片段正文，可以是一行命令，也可以是多行步骤" },
+          "tags": { "type": "string", "description": "可选标签，多个用逗号分隔，例如 发布,Android" }
+        },
+        "required": ["name", "text"]
+      }
+    },
+    {
+      "name": "search",
+      "description": "按关键词在自己存的片段里查找，返回最常用的前几条；不给关键词就列出全部。",
+      "route": "search",
+      "method": "POST",
+      "permission": "snippets:read",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "关键词，匹配名字、正文和标签；留空表示列出全部" },
+          "tag": { "type": "string", "description": "只看带这个标签的片段" },
+          "limit": { "type": "number", "description": "条数，默认 10，最多 30" }
+        }
+      }
+    }
+  ],
+  "settings": [
+    {
+      "key": "maxSnippets",
+      "label": "最多保存条数",
+      "type": "number",
+      "placeholder": "200",
+      "description": "超过后按使用次数从少到多清理，默认 200，范围 10-2000。"
+    },
+    {
+      "key": "defaultTag",
+      "label": "默认标签",
+      "type": "text",
+      "placeholder": "general",
+      "description": "保存时没给标签就用这个；留空表示 general。"
+    },
+    {
+      "key": "notifyOnTrim",
+      "label": "清理时通知",
+      "type": "boolean",
+      "description": "打开后每次定时清理删了片段会发一条通知，方便确认没有删错。"
+    }
+  ],
+  "triggers": [{ "event": "schedule", "everyMinutes": 240 }],
+  "limits": { "timeoutMs": 6000, "rateLimitPerMinute": 120 }
+}

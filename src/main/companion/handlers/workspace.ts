@@ -6,6 +6,7 @@ import { collectSessionArtifacts } from '../../agent/artifacts'
 import { abortWorkspaceUpload, appendWorkspaceUpload, beginWorkspaceUpload, finishWorkspaceUpload, listDirectory, MAX_UPLOAD_BYTES, MAX_UPLOAD_CHUNK_BYTES, previewFile, readFileChunk } from '../../workspace'
 import { MAX_PENDING_UPLOADS, MAX_UPLOAD_CHUNK_BASE64 } from '../constants'
 import { requireString } from '../helpers'
+import type { AccessLevel } from '../access-level'
 import type { CompanionServer } from '../server'
 import type { StoredPhone } from '../types'
 
@@ -14,6 +15,9 @@ export async function handleWorkspaceRequest(
   method: string,
   params: Record<string, unknown>,
   _phone: StoredPhone,
+  // workspaces.browse/create/open/remove 已在本机专属矩阵里被拦下，
+  // 这里的文件读写属于「工作内容」，远端可用。
+  _access: AccessLevel = 'paired',
 ): Promise<unknown> {
   switch (method) {
     case 'workspaces.list':

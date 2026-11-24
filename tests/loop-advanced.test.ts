@@ -921,6 +921,203 @@ describe('agent loop analysis wrap-up', () => {
   })
 })
 
+describe('agent loop budget wrap-up', () => {
+  it('asks once to close out with done/left/next before the step cap', async () => {
+    const model = scripted([
+      response('', [call('r1', 'read_file', { path: 'src/a.ts' })]),
+      response('', [call('r2', 'read_file', { path: 'src/b.ts' })]),
+      response('', [call('r3', 'read_file', { path: 'src/c.ts' })]),
+      response('', [call('r4', 'read_file', { path: 'src/d.ts' })]),
+      response('', [call('r5', 'read_file', { path: 'src/e.ts' })]),
+      response('done'),
+    ])
+    const notices: string[] = []
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'fix the failing test' }],
+      tools,
+      maxSteps: 6,
+      budgetWrapUp: true,
+      verificationGate: false,
+      policy: () => 'auto',
+      emit: (event) => {
+        if (event.type === 'notice') notices.push(event.message)
+      },
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+
+    expect(result.status).toBe('completed')
+    expect(notices.some((message) => message.includes('收尾'))).toBe(true)
+    const lastRequest = model.requests[model.requests.length - 1]
+    const wrapUps = lastRequest!.messages.filter((message) =>
+      message.content.includes('[步数预算]'),
+    )
+    expect(wrapUps).toHaveLength(1)
+    // The prompt has to say what to report, otherwise the run still ends with a
+    // bare "step limit reached" and the next attempt starts over.
+    expect(wrapUps[0]!.content).toContain('已完成')
+    expect(wrapUps[0]!.content).toContain('未完成')
+    expect(wrapUps[0]!.content).toContain('下一步')
+  })
+
+  it('stays off when the option is not set', async () => {
+    const model = scripted([
+      response('', [call('r1', 'read_file', { path: 'src/a.ts' })]),
+      response('', [call('r2', 'read_file', { path: 'src/b.ts' })]),
+      response('done'),
+    ])
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'fix the failing test' }],
+      tools,
+      maxSteps: 6,
+      verificationGate: false,
+      policy: () => 'auto',
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+    expect(result.status).toBe('completed')
+    expect(messagesFor(model.requests[model.requests.length - 1]!)).not.toContain('[步数预算]')
+  })
+
+  it('skips the budget wrap-up for a cap too small to leave room', async () => {
+    const model = scripted([
+      response('', [call('r1', 'read_file', { path: 'src/a.ts' })]),
+      response('', [call('r2', 'read_file', { path: 'src/b.ts' })]),
+    ])
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'fix the failing test' }],
+      tools,
+      maxSteps: 2,
+      budgetWrapUp: true,
+      verificationGate: false,
+      policy: () => 'auto',
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+    expect(result.status).toBe('max_steps')
+    expect(messagesFor(model.requests[model.requests.length - 1]!)).not.toContain('[步数预算]')
+  })
+
+  it('keeps the analysis wrap-up alone when both could fire', async () => {
+    const model = scripted([
+      response('', [call('r1', 'read_file', { path: 'src/a.ts' })]),
+      response('', [call('r2', 'read_file', { path: 'src/b.ts' })]),
+      response('done'),
+    ])
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'analyze the project' }],
+      tools,
+      maxSteps: 8,
+      wrapUpAt: 2,
+      budgetWrapUp: true,
+      verificationGate: false,
+      policy: () => 'auto',
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+    expect(result.status).toBe('completed')
+    const body = messagesFor(model.requests[model.requests.length - 1]!)
+    expect(body).toContain('[收尾]')
+    expect(body).not.toContain('[步数预算]')
+  })
+
+  it('asks once to close out when the token budget is nearly spent', async () => {
+    // 92% of long runs compacted and 581 万 token per workspace means the token
+    // cap can arrive before the step cap, cutting the answer off mid-sentence.
+    // One warning at 85% turns that into a planned close-out.
+    const model = scripted([
+      {
+        content: '',
+        toolCalls: [call('r1', 'read_file', { path: 'src/a.ts' })],
+        usage: { promptTokens: 800, completionTokens: 100, totalTokens: 900 },
+      },
+      response('done'),
+    ])
+    const notices: string[] = []
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'fix the failing test' }],
+      tools,
+      maxSteps: 8,
+      maxTokens: 1_000,
+      budgetWrapUp: true,
+      verificationGate: false,
+      policy: () => 'auto',
+      emit: (event) => {
+        if (event.type === 'notice') notices.push(event.message)
+      },
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+
+    expect(result.status).toBe('completed')
+    const lastRequest = model.requests[model.requests.length - 1]
+    const tokenWraps = lastRequest!.messages.filter((message) =>
+      message.content.includes('[额度预算]'),
+    )
+    expect(tokenWraps).toHaveLength(1)
+    expect(tokenWraps[0]!.content).toContain('已完成')
+    expect(tokenWraps[0]!.content).toContain('未完成')
+    expect(tokenWraps[0]!.content).toContain('下一步')
+    // The notice has to show the numbers, otherwise "nearly out of budget" is
+    // indistinguishable from every other warning in the transcript.
+    expect(notices.some((message) => message.includes('900/1000 token'))).toBe(true)
+  })
+
+  it('sends one close-out when both the token and step budgets are close', async () => {
+    // Both warnings ask for the same report; paying for two extra messages on a
+    // run that is already short on budget is exactly the cost this is fixing.
+    const model = scripted([
+      {
+        content: '',
+        toolCalls: [call('r1', 'read_file', { path: 'src/a.ts' })],
+        usage: { promptTokens: 800, completionTokens: 100, totalTokens: 900 },
+      },
+      response('', [call('r2', 'read_file', { path: 'src/b.ts' })]),
+      response('', [call('r3', 'read_file', { path: 'src/c.ts' })]),
+      response('done'),
+    ])
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'fix the failing test' }],
+      tools,
+      maxSteps: 6,
+      maxTokens: 1_000,
+      budgetWrapUp: true,
+      verificationGate: false,
+      policy: () => 'auto',
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+
+    expect(result.status).toBe('completed')
+    const body = messagesFor(model.requests[model.requests.length - 1]!)
+    expect(body.split('[额度预算]')).toHaveLength(2)
+    expect(body).not.toContain('[步数预算]')
+  })
+
+  it('stays off without the option even past 85% of the token budget', async () => {
+    const model = scripted([
+      {
+        content: '',
+        toolCalls: [call('r1', 'read_file', { path: 'src/a.ts' })],
+        usage: { promptTokens: 800, completionTokens: 100, totalTokens: 900 },
+      },
+      response('done'),
+    ])
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'fix the failing test' }],
+      tools,
+      maxSteps: 8,
+      maxTokens: 1_000,
+      verificationGate: false,
+      policy: () => 'auto',
+      executeTool: async () => ({ ok: true, output: 'ok' }),
+    })
+    expect(result.status).toBe('completed')
+    expect(messagesFor(model.requests[model.requests.length - 1]!)).not.toContain('[额度预算]')
+  })
+})
+
 describe('per-step usage telemetry', () => {
   it('records one sample per model call with the prompt footprint that call sent', async () => {
     const model = scripted([

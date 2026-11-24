@@ -1,10 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type {
   ApprovalMode,
-  FontSizePreference,
-  ConnectionTestResult,
-  JudgeProvider,
-  ModelBalanceState,
+  CompanionStatus,
   QualityPublishTarget,
   SandboxMode,
   SandboxStatus,
@@ -13,62 +10,42 @@ import type {
   SettingsView,
   SystemInfo,
   TestCaptchaMode,
-  ThemeMode,
-  ContrastPreference,
-  SaturationPreference,
 } from '../../../shared/types'
 import { DISK_LOW_BYTES, formatBytes } from '../../../shared/system-info'
 import { formatLogRecords } from '../../../shared/app-log-view'
+import { autonomyBlockers as autonomyBlockersFor } from '../../../shared/autonomy'
 import { modelLimits, SETTING_CONTEXT_MAX, SETTING_OUTPUT_MAX } from '../../../shared/modelLimits'
-import { MODEL_TAG_MAX_LENGTH, modelOptionLabel, normalizeModelTag } from '../../../shared/model-label'
-import type { LocaleSetting } from '../../../shared/i18n'
-import { CheckIcon, InfoIcon, RefreshIcon, XIcon } from '../icons'
+import {
+  DEFAULT_SERVER_PORT,
+  MAX_SERVER_PORT,
+  MIN_SERVER_PORT,
+  normalizeServerPort,
+} from '../../../shared/server-mode'
+import { InfoIcon, SparkIcon, XIcon } from '../icons'
 import { copyText } from '../clipboard'
-import { applyLocaleSetting, t } from '../i18n'
-import { BillingPanel, balanceSummary } from './BillingPanel'
+import { t } from '../i18n'
+import { EvolutionHub, type EvolutionTab } from './EvolutionHub'
+import { Field, Toggle } from './form-fields'
+import {
+  MailNotifySettings,
+  mailSettingsDraftFrom,
+  notifyToggleForSave,
+  type MailSettingsDraft,
+} from './MailNotifySettings'
 import { SelectMenu } from './SelectMenu'
 import { useEscapeClose } from './useEscapeClose'
 
-const MAX_MODEL_RESOURCES = 12
-const MAX_EVALUATION_MODELS = 6
-
-/**
- * One editable model endpoint. Session, review and evaluation roles all point
- * at these rows; the stored key never reaches the renderer.
- */
-interface ResourceDraft extends JudgeProvider {
-  /** 四字以内的短标签，只用于辨识。 */
-  tag: string
-  apiKey: string
-  clearKey: boolean
+/** 授权记录要带日期：只给时分的话，跨天之后就分不清哪条是今天的。 */
+function grantedAtLabel(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
-
-const FONT_SIZE_OPTIONS: Array<{ value: FontSizePreference; label: string }> = [
-  { value: 'standard', label: t("标准") },
-  { value: 'large', label: t("大") },
-  { value: 'xlarge', label: t("特大") },
-]
-
-const CONTRAST_OPTIONS: Array<{ value: ContrastPreference; label: string }> = [
-  { value: 'low', label: t("低") },
-  { value: 'standard', label: t("标准") },
-  { value: 'high', label: t("高") },
-]
-
-const SATURATION_OPTIONS: Array<{ value: SaturationPreference; label: string }> = [
-  { value: 'low', label: t("低") },
-  { value: 'standard', label: t("标准") },
-  { value: 'high', label: t("高") },
-]
-
-const EVALUATION_LABELS = [
-  t("第一评估"),
-  t("第二评估"),
-  t("第三评估"),
-  t("第四评估"),
-  t("第五评估"),
-  t("第六评估"),
-]
 
 /**
  * Left-hand index of the settings sheet.
@@ -78,95 +55,36 @@ const EVALUATION_LABELS = [
  * you can jump to, and the active group follows the scroll position.
  */
 type SettingsSectionId =
-  | 'models'
   | 'runtime'
   | 'testing'
   | 'sandbox'
-  | 'learning'
-  | 'appearance'
-  | 'locale'
+  | 'evolution'
+  | 'server'
   | 'notify'
 
+/**
+ * 进化是唯一入口：复盘评估、自动复盘、自动进化、探索学习与质量闸门
+ * 都是它下面的页签，所以索引里不再单列「自我学习」。
+ */
 const SETTING_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
-  { id: 'models', label: t("模型资源") },
   { id: 'runtime', label: t("运行参数") },
   { id: 'testing', label: t("测试与工具") },
   { id: 'sandbox', label: t("权限与沙箱") },
-  { id: 'learning', label: t("自我学习") },
-  { id: 'appearance', label: t("外观") },
-  { id: 'locale', label: t("语言") },
+  { id: 'evolution', label: t("进化") },
+  { id: 'server', label: t("网页服务") },
   { id: 'notify', label: t("通知") },
 ]
 
-function newResourceDraft(): ResourceDraft {
-  return {
-    id: crypto.randomUUID(),
-    label: '',
-    baseUrl: '',
-    model: '',
-    tag: '',
-    enabled: true,
-    hasKey: false,
-    keyHint: '',
-    apiKey: '',
-    clearKey: false,
-  }
+/** 设置里的「进化」分节由 App 注入：它要拿运行状态和十几个回调，透传会撑大这个签名。 */
+export interface SettingsEvolutionHelpers {
+  /** 进化面板里跳到通知配置：这里不关弹窗，直接切分节。 */
+  openNotify: () => void
 }
 
-function resourceTitle(resource: ResourceDraft): string {
-  return resource.label.trim() || resource.model.trim() || t("未命名模型")
-}
-
-function Field({
-  label,
-  hint,
-  children,
-  wide,
-}: {
-  label: string
-  hint?: string
-  children: ReactNode
-  wide?: boolean
-}) {
-  return (
-    <label className={`settings-field${wide ? ' wide' : ''}`}>
-      <span className="field-label">
-        {label}
-        {hint ? <small>{hint}</small> : null}
-      </span>
-      {children}
-    </label>
-  )
-}
-
-function Toggle({
-  checked,
-  onChange,
-  label,
-  description,
-}: {
-  checked: boolean
-  onChange: (value: boolean) => void
-  label: string
-  description: string
-}) {
-  return (
-    <button
-      type="button"
-      className={`toggle-row${checked ? ' is-on' : ''}`}
-      onClick={() => onChange(!checked)}
-      role="switch"
-      aria-checked={checked}
-    >
-      <span className="toggle-text">
-        <span>{label}</span>
-        <small>{description}</small>
-      </span>
-      <span className="toggle-switch">
-        <i />
-      </span>
-    </button>
-  )
+/** 复盘页签里的历史列表：只带列表要显示的两项，不引整个 SessionSummary。 */
+export interface ReviewSessionEntry {
+  id: string
+  title: string
 }
 
 const APPROVAL_OPTIONS: Array<{ value: ApprovalMode; label: string }> = [
@@ -194,8 +112,12 @@ function linesOf(value: string): string[] {
     .slice(0, 200)
 }
 
-/** Which section the settings dialog should reveal on open. */
-export type SettingsFocus = 'reviewers' | null
+/**
+ * Which section the settings dialog should reveal on open.
+ *
+ * 'notify' 是反思页把邮箱与通知搬到设置后留在原地的入口：点过去要直接落在「通知」分组上。
+ */
+export type SettingsFocus = 'notify' | null
 
 export function SettingsDialog({
   settings,
@@ -203,7 +125,12 @@ export function SettingsDialog({
   onClose,
   onSaved,
   onError,
+  onWarn,
   focusSection = null,
+  evolutionTabs,
+  onOpenReview,
+  reviewSessions,
+  onOpenReviewSession,
 }: {
   settings: SettingsView
   /** Active workspace; only decides which volume the environment panel measures. */
@@ -211,7 +138,22 @@ export function SettingsDialog({
   onClose: () => void
   onSaved: (view: SettingsView) => void
   onError: (message: string) => void
+  /** 不阻断保存、但需要让用户知道的降级（目前只有「邮件通知本次未启用」）。 */
+  onWarn?: (message: string) => void
   focusSection?: SettingsFocus
+  /**
+   * 「进化」的核心页签（自我进化 / 自主优化 / 模块自检 / 内视 / 反思）。
+   *
+   * 进化需要当前工作区、会话回调与一大批运行函数，把它们全部加成这个弹窗的 props 只会
+   * 让签名跟着 App 一起膨胀；改成由 App 传一个页签工厂，弹窗负责拼上自己的两个页签
+   * （复盘评估、自动与学习）并统一渲染。
+   */
+  evolutionTabs?: (helpers: SettingsEvolutionHelpers) => EvolutionTab[]
+  /** 复盘页签的「新建」：先关掉设置弹窗，再开复盘对话框。 */
+  onOpenReview: () => void
+  /** 复盘页签的历史列表。 */
+  reviewSessions: ReviewSessionEntry[]
+  onOpenReviewSession: (sessionId: string) => void
 }) {
   const [maxSteps, setMaxSteps] = useState(String(settings.maxSteps))
   const [maxTokens, setMaxTokens] = useState(String(settings.maxTokens))
@@ -219,29 +161,6 @@ export function SettingsDialog({
   useEscapeClose(onClose)
   const [maxOutputTokens, setMaxOutputTokens] = useState(String(settings.maxOutputTokens))
   const [temperature, setTemperature] = useState(String(settings.temperature))
-  const [resources, setResources] = useState<ResourceDraft[]>(() =>
-    settings.modelResources.map((resource) => ({
-      ...resource,
-      apiKey: '',
-      clearKey: false,
-    })),
-  )
-  const [sessionModelId, setSessionModelId] = useState(settings.sessionModelId)
-  const [evaluationIds, setEvaluationIds] = useState<string[]>(() => {
-    const valid = settings.evaluationModelIds.filter((id) =>
-      settings.modelResources.some((resource) => resource.id === id),
-    )
-    return valid.length >= 2 ? valid : [...valid, ...Array(2 - valid.length).fill('')]
-  })
-  const [reviewModelId, setReviewModelId] = useState(settings.reviewModelId)
-  const [resourceTesting, setResourceTesting] = useState('')
-  const [resourceResults, setResourceResults] = useState<
-    Record<string, ConnectionTestResult | null>
-  >({})
-  const [resourceBalanceTesting, setResourceBalanceTesting] = useState('')
-  const [resourceBalances, setResourceBalances] = useState<
-    Record<string, ModelBalanceState | null>
-  >({})
   const [autoReflect, setAutoReflect] = useState(settings.autoReflect)
   const [autoEvolve, setAutoEvolve] = useState(settings.autoEvolve)
   const [autoContinue, setAutoContinue] = useState(settings.autoContinue)
@@ -266,6 +185,17 @@ export function SettingsDialog({
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>(settings.sandboxMode)
   const [sandboxNetwork, setSandboxNetwork] = useState(settings.sandboxNetwork)
   const [sandboxAutoAllow, setSandboxAutoAllow] = useState(settings.sandboxAutoAllow)
+  const [fullAutonomy, setFullAutonomy] = useState(settings.fullAutonomy)
+  // 设置页只能看到默认审批模式：会话级模式由用户随时切换，所以这里只能给出
+  // 「按当前设置会/不会生效」的预判，真正生效仍由运行时的 autonomyPolicy 判定。
+  const autonomyBlockers = fullAutonomy
+    ? autonomyBlockersFor({
+        fullAutonomy,
+        approvalMode: defaultApprovalMode,
+        maxTokens: Number(maxTokens) || 0,
+        maxSteps: Number(maxSteps) || 0,
+      })
+    : []
   const [allowUnattendedBuild, setAllowUnattendedBuild] = useState(
     settings.allowUnattendedBuild,
   )
@@ -300,27 +230,23 @@ export function SettingsDialog({
   const [logDir, setLogDir] = useState('')
   const [logCopied, setLogCopied] = useState(false)
   const [notifyDesktop, setNotifyDesktop] = useState(settings.notifyDesktop)
-  const [theme, setTheme] = useState<ThemeMode>(settings.theme)
-  const [fontSize, setFontSize] = useState<FontSizePreference>(settings.fontSize)
-  const [contrast, setContrast] = useState<ContrastPreference>(settings.contrast)
-  const [saturation, setSaturation] = useState<SaturationPreference>(settings.saturation)
-  const [locale, setLocale] = useState<LocaleSetting>(settings.locale)
+  // 邮箱与通知配置的草稿：和整张设置表一起提交，所以放在这里而不是子组件里。
+  const [mail, setMail] = useState<MailSettingsDraft>(() => mailSettingsDraftFrom(settings))
+  const [serverMode, setServerMode] = useState(settings.serverMode)
+  /** 端口用字符串保存：输入框会经过「空」「80」这些中间态，保存时再收敛。 */
+  const [serverPort, setServerPort] = useState(String(settings.serverPort))
+  /** 当前监听状态：开完关后地址与报错只能从主进程拿。 */
+  const [companion, setCompanion] = useState<CompanionStatus | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const bodyRef = useRef<HTMLDivElement>(null)
-  const reviewersRef = useRef<HTMLElement>(null)
-  const [activeSection, setActiveSection] = useState<SettingsSectionId>('models')
-  /** 刚加的资源卡片：插在列表第一条，高亮到用户开始填写。 */
-  const [newResourceId, setNewResourceId] = useState('')
-  const pendingResourceFocus = useRef('')
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>('runtime')
   /** One ref per group; a deep link can scroll to the group it names. */
   const sectionRefs = useRef<Partial<Record<SettingsSectionId, HTMLElement | null>>>({})
 
-  // A shortcut from the evolution panel opens the model section directly.
+  // The reflection page links here for the mailbox and notification block.
   useEffect(() => {
-    if (focusSection !== 'reviewers') return
-    setActiveSection('models')
-    reviewersRef.current?.scrollIntoView({ block: 'start' })
+    if (focusSection === 'notify') setActiveSection('notify')
   }, [focusSection])
 
   // Switching a group shows only that group, so the panel is never a long
@@ -329,49 +255,43 @@ export function SettingsDialog({
     bodyRef.current?.scrollTo({ top: 0 })
   }, [activeSection])
 
+  // 网页服务段需要「现在真的在哪个端口上」：设置里的数字是意图，监听端口是事实，
+  // 两者不一致（端口被占、还没启动）时只展示设置里的值会误导人。
+  useEffect(() => {
+    if (activeSection !== 'server') return
+    let cancelled = false
+    void window.pilot
+      .companionStatus()
+      .then((status) => {
+        if (!cancelled) setCompanion(status)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [activeSection])
+
   const jumpTo = (id: SettingsSectionId) => setActiveSection(id)
+
+  /**
+   * 网页服务分节要回答「谁拿到了这台电脑的访问权」：来源地址、授权时间、角色。
+   * 只列浏览器记录，手机（`via: 'phone'`）由手机连接那套面板管理。
+   */
+  const webSessions = (companion?.phones ?? []).filter(
+    (phone) => phone.via === 'browser' || phone.platform === 'browser',
+  )
+  const revokeWeb = (phoneId: string) => {
+    void window.pilot
+      .revokeCompanion(phoneId)
+      .then((status) => setCompanion(status))
+      .catch(() => undefined)
+  }
 
   // 新加的资源卡片插在列表最上面：把它滚到视野内并把光标放进名称输入框，
   // 用户不用再滑到列表末尾去找那张空白卡片。
-  useEffect(() => {
-    const id = pendingResourceFocus.current
-    if (!id) return
-    pendingResourceFocus.current = ''
-    const body = bodyRef.current
-    const row = body?.querySelector<HTMLElement>(`[data-resource-id="${id}"]`)
-    if (!body || !row) return
-    body.scrollTo({ top: 0 })
-    row.querySelector('input')?.focus({ preventScroll: true })
-  }, [resources])
 
   // Preview the appearance while the dialog is open. Cancel restores the saved
   // values; saving updates `settings` and the parent effect takes over.
-  useEffect(() => {
-    const root = document.documentElement
-    root.dataset['theme'] = theme
-    root.dataset['fontSize'] = fontSize
-    root.dataset['contrast'] = contrast
-    root.dataset['saturation'] = saturation
-    void window.pilot
-      .previewTheme({ theme, contrast, saturation })
-      .catch(() => undefined)
-    return () => {
-      root.dataset['theme'] = settings.theme
-      root.dataset['fontSize'] = settings.fontSize
-      root.dataset['contrast'] = settings.contrast
-      root.dataset['saturation'] = settings.saturation
-      void window.pilot.previewTheme(null).catch(() => undefined)
-    }
-  }, [
-    theme,
-    fontSize,
-    contrast,
-    saturation,
-    settings.theme,
-    settings.fontSize,
-    settings.contrast,
-    settings.saturation,
-  ])
 
   useEffect(() => {
     void window.pilot
@@ -396,6 +316,7 @@ export function SettingsDialog({
       .then(setLogDir)
       .catch(() => setLogDir(''))
   }, [])
+
 
   const envLines: Array<[string, string]> = envInfo
     ? [
@@ -438,124 +359,12 @@ export function SettingsDialog({
     if (!ok) setError(t("剪贴板不可用"))
   }
 
-  const sessionResource =
-    resources.find((resource) => resource.id === sessionModelId) ?? resources[0]
-  const sessionModel = sessionResource?.model.trim() || ''
-  const effectiveHasKey = sessionResource
-    ? sessionResource.hasKey || Boolean(sessionResource.apiKey.trim())
-    : settings.hasKey
 
-  const patchResource = (id: string, patch: Partial<ResourceDraft>) => {
-    setResources((list) => list.map((item) => (item.id === id ? { ...item, ...patch } : item)))
-    if (id === newResourceId) setNewResourceId('')
-    if (patch.clearKey || patch.apiKey !== undefined) {
-      setResourceResults((current) => ({ ...current, [id]: null }))
-    }
-  }
 
-  const addResource = () => {
-    if (resources.length >= MAX_MODEL_RESOURCES) return
-    const draft = newResourceDraft()
-    pendingResourceFocus.current = draft.id
-    setNewResourceId(draft.id)
-    setResources((list) => (list.length >= MAX_MODEL_RESOURCES ? list : [draft, ...list]))
-  }
-
-  const removeResource = (id: string) => {
-    if (resources.length <= 1) return
-    setResources((list) => {
-      const next = list.filter((resource) => resource.id !== id)
-      const fallback = next[0]?.id ?? ''
-      setSessionModelId((current) => (current === id ? fallback : current))
-      setReviewModelId((current) => (current === id ? '' : current))
-      setEvaluationIds((current) => current.map((value) => (value === id ? '' : value)))
-      return next
-    })
-    setResourceResults((current) => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-    setResourceBalances((current) => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-  }
-
-  const testResource = async (resource: ResourceDraft) => {
-    setResourceTesting(resource.id)
-    setResourceResults((current) => ({ ...current, [resource.id]: null }))
-    try {
-      const result = await window.pilot.testConnection({
-        ...(resource.apiKey.trim() ? { apiKey: resource.apiKey.trim() } : {}),
-        ...(resource.baseUrl.trim() ? { baseUrl: resource.baseUrl.trim() } : {}),
-        ...(resource.model.trim() ? { model: resource.model.trim() } : {}),
-        ...(resource.hasKey ? { providerId: resource.id } : {}),
-      })
-      setResourceResults((current) => ({ ...current, [resource.id]: result }))
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught)
-      setResourceResults((current) => ({
-        ...current,
-        [resource.id]: { ok: false, message },
-      }))
-    } finally {
-      setResourceTesting('')
-    }
-  }
-
-  const checkResourceBalance = async (resource: ResourceDraft) => {
-    setResourceBalanceTesting(resource.id)
-    setResourceBalances((current) => ({ ...current, [resource.id]: null }))
-    try {
-      const result = await window.pilot.judgeBalance({
-        ...(resource.apiKey.trim() ? { apiKey: resource.apiKey.trim() } : {}),
-        ...(resource.baseUrl.trim() ? { baseUrl: resource.baseUrl.trim() } : {}),
-        ...(resource.model.trim() ? { model: resource.model.trim() } : {}),
-        ...(resource.hasKey ? { providerId: resource.id } : {}),
-      })
-      setResourceBalances((current) => ({ ...current, [resource.id]: result }))
-    } catch (caught) {
-      setResourceBalances((current) => ({
-        ...current,
-        [resource.id]: {
-          ok: false,
-          available: false,
-          entries: [],
-          source: '',
-          fetchedAt: new Date().toISOString(),
-          error: 'error',
-          errorDetail: caught instanceof Error ? caught.message : String(caught),
-        },
-      }))
-    } finally {
-      setResourceBalanceTesting('')
-    }
-  }
-
-  const setEvaluationAt = (index: number, id: string) => {
-    setEvaluationIds((list) => list.map((value, at) => (at === index ? id : value)))
-  }
-
-  const addEvaluation = () => {
-    setEvaluationIds((list) => (list.length >= MAX_EVALUATION_MODELS ? list : [...list, '']))
-  }
-
-  const removeEvaluation = (index: number) => {
-    setEvaluationIds((list) => (list.length <= 1 ? list : list.filter((_, at) => at !== index)))
-  }
-
-  const modelSelectOptions = resources.map((resource) => ({
-    value: resource.id,
-    // 名称 · 标签：标签是给人看的，没填就只显示名称。
-    label: modelOptionLabel(
-      `${resourceTitle(resource)} · ${resource.model || t("未配置")}`,
-      resource.tag,
-    ),
-    disabled: !resource.enabled,
-  }))
-
+  /**
+   * 反思表单已搬到「进化 → 反思」页签（ReflectionPanel），这里不再持有它的状态：
+   * 反思需要“立即跑一轮 / 发测试邮件 / 清空历史”这些即时动作，和弹窗“整份表单一起保存”的节奏不同。
+   */
   const openGlobalInstructions = async () => {
     setError('')
     setOpeningGlobal(true)
@@ -579,6 +388,24 @@ export function SettingsDialog({
     const approvalTimeout = Number(approvalTimeoutSec)
     const retention = Number(checkpointRetention)
     const maxMb = Number(checkpointMaxMb)
+    // 端口不合法时不静默回退：用户填了端口就期望是那个端口，默默换一个
+    // 会让他在浏览器里打开一个空页。
+    //
+    // 只在网页服务打开时校验：开关关着时端口那一栏是禁用的，用户可能是先填了
+    // 一个值再关掉开关；这时为一个不生效的字段挡住整张设置表，改语言也保存不了。
+    const port = Number(serverPort)
+    if (
+      serverMode &&
+      (!Number.isInteger(port) || port < MIN_SERVER_PORT || port > MAX_SERVER_PORT)
+    ) {
+      setError(
+        t("端口需要是 {v1} 到 {v2} 之间的整数。", {
+          v1: MIN_SERVER_PORT.toLocaleString(),
+          v2: MAX_SERVER_PORT.toLocaleString(),
+        }),
+      )
+      return
+    }
 
     if (!Number.isFinite(steps) || steps < 1 || steps > 1_000) {
       setError(t("最大步数需要在 1 到 1,000 之间。"))
@@ -616,40 +443,11 @@ export function SettingsDialog({
       setError(t("回退点总空间上限需要在 512 MB 到 20,480 MB 之间。"))
       return
     }
-    if (resources.length === 0) {
-      setError(t("至少保留一个模型资源。"))
-      return
-    }
-    for (const resource of resources) {
-      const address = resource.baseUrl.trim()
-      if (!address || !resource.model.trim()) {
-        setError(t("每个模型资源都要填写接口地址和模型名。"))
-        return
-      }
-      try {
-        const url = new URL(address)
-        if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
-          throw new Error('invalid')
-        }
-      } catch {
-        setError(t("模型资源的接口地址必须是 http:// 或 https:// 地址：{v1}", { v1: address }))
-        return
-      }
-    }
-    const enabledResources = resources.filter((resource) => resource.enabled)
-    if (enabledResources.length === 0) {
-      setError(t("至少启用一个模型资源。"))
-      return
-    }
-    if (!sessionResource?.enabled) {
-      setError(t("会话模型不能使用已停用的模型资源。"))
-      return
-    }
-    const selectedEvaluation = evaluationIds.map((id) => id.trim()).filter(Boolean)
-    if (new Set(selectedEvaluation).size !== selectedEvaluation.length) {
-      setError(t("同一个模型资源不能重复作为评估模型。"))
-      return
-    }
+    // 邮件缺项只影响「发信」这一件事，不能把整张设置表一起挡下：以前这里直接
+    // return，于是「邮件通知开着但收件地址没填」会让 serverMode 根本没提交，
+    // 表现成「没绑邮箱就开不了网页服务」。现在降级为本次不启用邮件通知，其余
+    // 字段照常保存，保存后再把原因提示出来。
+    const mailPlan = notifyToggleForSave(mail)
     const targetLines = testTargets
       .split('\n')
       .map((line) => line.trim())
@@ -671,22 +469,6 @@ export function SettingsDialog({
     }
 
     const input: SettingsUpdate = {
-      modelResources: resources.map((resource) => ({
-        id: resource.id,
-        label: resource.label.trim(),
-        baseUrl: resource.baseUrl.trim(),
-        model: resource.model.trim(),
-        tag: resource.tag.trim(),
-        enabled: resource.enabled,
-        ...(resource.clearKey
-          ? { apiKey: null }
-          : resource.apiKey.trim()
-            ? { apiKey: resource.apiKey.trim() }
-            : {}),
-      })),
-      sessionModelId,
-      evaluationModelIds: selectedEvaluation,
-      reviewModelId,
       maxSteps: Math.round(steps),
       maxTokens: Math.round(budget),
       maxContextTokens: Math.round(context),
@@ -713,10 +495,10 @@ export function SettingsDialog({
         ask: linesOf(askRules),
         deny: linesOf(denyRules),
       },
-      classifierModel: sessionModel,
       sandboxMode,
       sandboxNetwork,
       sandboxAutoAllow,
+      fullAutonomy,
       allowUnattendedBuild,
       learningMode,
       learningHosts: linesOf(learningHosts),
@@ -734,19 +516,29 @@ export function SettingsDialog({
       hooksEnabled,
       mcpEnabled,
       notifyDesktop,
-      theme,
-      fontSize,
-      contrast,
-      saturation,
-      locale,
+      notifyEmailEnabled: mailPlan.enabled,
+      notifyEmailEvents: mail.notifyEmailEvents,
+      reflectEmailTo: mail.reflectEmailTo.trim(),
+      reflectSmtpHost: mail.reflectSmtpHost.trim(),
+      reflectSmtpPort: Number.isFinite(Number(mail.reflectSmtpPort))
+        ? Math.round(Number(mail.reflectSmtpPort))
+        : settings.reflectSmtpPort,
+      reflectSmtpSecurity: mail.reflectSmtpSecurity,
+      ...(mail.clearReflectPassword
+        ? { reflectSmtpPassword: null }
+        : mail.reflectSmtpPassword.trim()
+          ? { reflectSmtpPassword: mail.reflectSmtpPassword.trim() }
+          : {}),
+      serverMode,
+      serverPort: normalizeServerPort(port, DEFAULT_SERVER_PORT),
     }
 
     setSaving(true)
     try {
       const view = await window.pilot.updateSettings(input)
       onSaved(view)
+      if (mailPlan.warning) onWarn?.(mailPlan.warning)
       onClose()
-      if (applyLocaleSetting(view.locale, [view.systemLocale])) window.location.reload()
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught)
       setError(message)
@@ -755,6 +547,135 @@ export function SettingsDialog({
       setSaving(false)
     }
   }
+
+  /**
+   * 复盘评估页签：入口从左侧栏搬到这里，历史会话点开即进入对应会话。
+   * 复盘只注册读取工具，所以这里只提供「新建」和「打开」两件事。
+   */
+  const reviewTab = (
+    <div className="evolution-tab-body">
+      <p className="settings-hint">
+        {t("复盘会话只注册读取工具：它读你选定范围内的会话记录、运行记录和代码，给出一份带分值的报告。结论只保存为记忆参考和未激活的进化草稿，不会自行改动行为；需要改代码时，再用“交接修复”新建普通会话。")}
+      </p>
+      <div className="evolution-tab-actions">
+        <button type="button" className="button primary" onClick={onOpenReview}>
+          <SparkIcon width={15} height={15} />
+          {t("新建复盘评估")}</button>
+      </div>
+
+      <h4 className="evolution-tab-title">{t("最近的复盘会话")}</h4>
+      {reviewSessions.length > 0 ? (
+        <ul className="evolution-review-list">
+          {reviewSessions.map((entry) => (
+            <li key={entry.id}>
+              <button
+                type="button"
+                className="evolution-review-item"
+                onClick={() => onOpenReviewSession(entry.id)}
+              >
+                {entry.title || t("未命名复盘")}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="settings-hint">{t("还没有复盘会话。新建一次后会出现在这里。")}</p>
+      )}
+    </div>
+  )
+
+  /**
+   * 自动与学习页签：开关本身和整张设置表一起提交，所以内容仍写在这里，
+   * 只是从「运行参数」和「自我学习」两处搬到同一个页签里。
+   */
+  const learningTab = (
+    <div className="evolution-tab-body">
+      <div className="toggle-list">
+          <Toggle
+            checked={autoReflect}
+            onChange={setAutoReflect}
+            label={t("自动复盘")}
+            description={t("失败、工具报错和负反馈后，结合具体报错自动复盘，把可复用经验写入项目记忆。")}
+          />
+          <Toggle
+            checked={autoEvolve}
+            onChange={setAutoEvolve}
+            label={t("自动运行系统进化")}
+            description={t("按进化机制的节奏自动完成提案、独立评审和启用；失败率明显上升时自动回滚。")}
+          />
+          <Toggle
+            checked={learningMode}
+            onChange={setLearningMode}
+            label={t("自主探索学习")}
+            description={t("允许智能体从白名单公开站点只读搜集资料、自己决定做什么任务，并把来源、任务与阶段成果记在工作区的 .pilot/learning 账本里。开启后请求仍只允许 GET/HEAD：抓到的内容只落在工作区，任何上传、提交、发布、推送类命令都会被拒绝；每个阶段成果都要你点头才算完成。")}
+          />
+          {learningMode ? (
+            <Toggle
+              checked={learningShellIsolation}
+              onChange={setLearningShellIsolation}
+              label={t("学习探索期间让 shell 断网")}
+              description={t("默认关闭：学习的白名单只约束 learning_research，任务会话照你用下面的「沙箱网络」设置联网，安装依赖、访问接口都不受影响。开启后，学习探索开启期间 shell 沙箱拿不到网络，作为文本匹配之外的兜底。")}
+            />
+          ) : null}
+          {learningMode ? (
+            <Field
+              label={t("学习来源白名单")}
+              hint={t("一行一个主机名，子域自动包含（写 example.com 也涵盖 docs.example.com）。留空使用内置默认的公开文档站点。本机、内网与云元数据地址永远不在允许范围内。")}
+            >
+              <textarea
+                className="input textarea"
+                rows={4}
+                value={learningHosts}
+                onChange={(event) => setLearningHosts(event.target.value)}
+                placeholder={"developer.mozilla.org\nnodejs.org"}
+              />
+            </Field>
+          ) : null}
+          <Toggle
+            checked={qualityGate}
+            onChange={setQualityGate}
+            label={t("产出质量闸门")}
+            description={t("让探索任务围绕可度量的产出质量展开：由你在下面配置的评估模型按可自动调优的指标给当前产出打分，分数高于现行基线时，在 App 顶部小铃铛和桌面通知里提醒你。它不会自己上线：只有你在铃铛里批准某个候选版本后，才会用固定脚本打包。评估模型不可用时仍记录客观指标，只是缺少评审分。")}
+          />
+          {qualityGate ? (
+            <div className="field-grid">
+              <Field
+                label={t("授权后执行的打包命令")}
+                hint={t("只提供白名单脚本，批准候选版本后原样运行、不接受附加参数。选“不自动打包”时，批准只更新质量基线。")}
+              >
+                <SelectMenu
+                  value={qualityPublishTarget}
+                  options={[
+                    { value: 'none', label: t("不自动打包（只更新基线）") },
+                    { value: 'package:dir', label: t("打包到目录（package:dir）") },
+                    { value: 'package:win', label: 'package:win' },
+                    { value: 'package:mac', label: 'package:mac' },
+                    { value: 'package:linux', label: 'package:linux' },
+                  ]}
+                  onChange={(value) =>
+                    setQualityPublishTarget(value as QualityPublishTarget)
+                  }
+                  ariaLabel={t("授权后执行的打包命令")}
+                />
+              </Field>
+              <Field
+                label={t("指标重调频次")}
+                hint={t("每评估多少次重新计算一次指标权重（低分与无样本维度会被重新分配比重）。填 0 关闭自动调优，改为在铃铛里手动重调。")}
+              >
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  max={50}
+                  value={qualityTuneEvery}
+                  onChange={(event) => setQualityTuneEvery(event.target.value)}
+                />
+              </Field>
+            </div>
+          ) : null}
+      </div>
+    </div>
+  )
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -792,316 +713,6 @@ export function SettingsDialog({
 
           <div className="settings-main" ref={bodyRef}>
           <section
-            className={`settings-section${focusSection === 'reviewers' ? ' settings-section-focus' : ''}`}
-            hidden={activeSection !== 'models'}
-            ref={(element) => {
-              reviewersRef.current = element
-              sectionRefs.current.models = element
-            }}
-          >
-            <div className="settings-section-head">
-              <div>
-                <h3>{t("模型资源")}</h3>
-                <p>{t("所有模型都从这里统一配置。会话、复盘和评估只引用资源；密钥仅保存在本机并加密。")}</p>
-              </div>
-              <button
-                type="button"
-                className="button ghost small"
-                onClick={addResource}
-                disabled={resources.length >= MAX_MODEL_RESOURCES}
-              >
-                {t("添加模型资源")}
-              </button>
-            </div>
-
-            <div className="judge-list">
-              {resources.map((resource) => (
-                <div
-                  className={`judge-row${resource.id === newResourceId ? ' is-new' : ''}`}
-                  key={resource.id}
-                  data-resource-id={resource.id}
-                >
-                  <div className="model-resource-head">
-                    <strong>{resourceTitle(resource)}</strong>
-                    <span className={`key-state${resource.hasKey || resource.apiKey ? ' ok' : ''}`}>
-                      <i className="key-dot" />
-                      {resource.hasKey || resource.apiKey ? t("已配置密钥") : t("缺少密钥")}
-                    </span>
-                  </div>
-                  <div className="field-grid three">
-                    <Field label={t("名称")} hint={t("只在本机显示")}>
-                      <input
-                        className="text-input"
-                        value={resource.label}
-                        placeholder={t("例如 通义千问")}
-                        onChange={(event) =>
-                          patchResource(resource.id, { label: event.target.value })
-                        }
-                      />
-                    </Field>
-                    <Field label={t("模型")}>
-                      <input
-                        className="text-input mono"
-                        value={resource.model}
-                        placeholder="qwen-plus"
-                        onChange={(event) =>
-                          patchResource(resource.id, { model: event.target.value })
-                        }
-                        spellCheck={false}
-                      />
-                    </Field>
-                    <Field label={t("标签")} hint={t("最多四个字，如“个人”“公司A”")}>
-                      <input
-                        className="text-input"
-                        value={resource.tag}
-                        maxLength={MODEL_TAG_MAX_LENGTH}
-                        placeholder={t("不超过四字")}
-                        onChange={(event) =>
-                          patchResource(resource.id, {
-                            tag: normalizeModelTag(event.target.value),
-                          })
-                        }
-                        spellCheck={false}
-                      />
-                    </Field>
-                  </div>
-                  <Field label="Base URL" hint={t("OpenAI 兼容接口地址")}>
-                    <input
-                      className="text-input mono"
-                      value={resource.baseUrl}
-                      placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-                      onChange={(event) =>
-                        patchResource(resource.id, { baseUrl: event.target.value })
-                      }
-                      spellCheck={false}
-                    />
-                  </Field>
-                  <Field
-                    label="API Key"
-                    hint={resource.hasKey ? resource.keyHint : t("仅保存在本机并加密")}
-                  >
-                    <div className="key-input-row">
-                      <input
-                        className="text-input mono"
-                        type="password"
-                        value={resource.apiKey}
-                        placeholder={
-                          resource.clearKey
-                            ? t("保存后将清除 Key")
-                            : resource.hasKey
-                              ? t("{v1}（留空保持不变）", { v1: resource.keyHint })
-                              : 'sk-...'
-                        }
-                        onChange={(event) =>
-                          patchResource(resource.id, {
-                            apiKey: event.target.value,
-                            clearKey: false,
-                          })
-                        }
-                        spellCheck={false}
-                        autoComplete="off"
-                      />
-                      {resource.hasKey || resource.apiKey ? (
-                        <button
-                          type="button"
-                          className="button ghost small"
-                          onClick={() =>
-                            patchResource(resource.id, {
-                              apiKey: '',
-                              clearKey: !resource.clearKey,
-                            })
-                          }
-                        >
-                          {resource.clearKey ? t("撤销清除") : t("清除")}
-                        </button>
-                      ) : null}
-                    </div>
-                  </Field>
-                  <div className="test-row">
-                    <button
-                      type="button"
-                      className="button ghost small"
-                      onClick={() => void testResource(resource)}
-                      disabled={
-                        resourceTesting === resource.id ||
-                        (!resource.hasKey && !resource.apiKey.trim())
-                      }
-                    >
-                      {resourceTesting === resource.id ? (
-                        <i className="spinner" />
-                      ) : (
-                        <RefreshIcon width={15} height={15} />
-                      )}
-                      {resourceTesting === resource.id ? t("测试中…") : t("测试连接")}
-                    </button>
-                    <button
-                      type="button"
-                      className="button ghost small"
-                      onClick={() => void checkResourceBalance(resource)}
-                      disabled={
-                        resourceBalanceTesting === resource.id ||
-                        !resource.baseUrl.trim() ||
-                        (!resource.hasKey && !resource.apiKey.trim())
-                      }
-                    >
-                      {resourceBalanceTesting === resource.id ? (
-                        <i className="spinner" />
-                      ) : (
-                        <RefreshIcon width={15} height={15} />
-                      )}
-                      {resourceBalanceTesting === resource.id ? t("查询中…") : t("查询余额")}
-                    </button>
-                    <label className="judge-toggle">
-                      <input
-                        type="checkbox"
-                        checked={resource.enabled}
-                        onChange={(event) => {
-                          const enabled = event.target.checked
-                          patchResource(resource.id, { enabled })
-                          if (!enabled) {
-                            if (sessionModelId === resource.id) {
-                              const fallback = resources.find(
-                                (item) => item.id !== resource.id && item.enabled,
-                              )
-                              if (fallback) setSessionModelId(fallback.id)
-                            }
-                            if (reviewModelId === resource.id) setReviewModelId('')
-                            setEvaluationIds((list) =>
-                              list.map((value) => (value === resource.id ? '' : value)),
-                            )
-                          }
-                        }}
-                      />
-                      {t("启用")}
-                    </label>
-                    <button
-                      type="button"
-                      className="button ghost small"
-                      onClick={() => removeResource(resource.id)}
-                      disabled={resources.length <= 1}
-                    >
-                      {t("删除")}
-                    </button>
-                    {resourceResults[resource.id] ? (
-                      <span
-                        className={`test-result${resourceResults[resource.id]!.ok ? ' ok' : ' failed'}`}
-                      >
-                        {resourceResults[resource.id]!.ok ? (
-                          <CheckIcon width={14} height={14} />
-                        ) : (
-                          <XIcon width={14} height={14} />
-                        )}
-                        {resourceResults[resource.id]!.message}
-                      </span>
-                    ) : null}
-                    {resourceBalances[resource.id] ? (
-                      <span
-                        className={`test-result${resourceBalances[resource.id]!.ok ? ' ok' : ' failed'}`}
-                        title={
-                          resourceBalances[resource.id]!.errorDetail ??
-                          resourceBalances[resource.id]!.source
-                        }
-                      >
-                        {resourceBalances[resource.id]!.ok ? (
-                          <CheckIcon width={14} height={14} />
-                        ) : (
-                          <XIcon width={14} height={14} />
-                        )}
-                        {resourceBalances[resource.id]!.ok
-                          ? t("余额：{v1}", {
-                              v1: balanceSummary(resourceBalances[resource.id]!),
-                            })
-                          : balanceSummary(resourceBalances[resource.id]!)}
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="settings-subhead">
-              <strong>{t("会话与复盘")}</strong>
-              <span>{t("会话模型用于普通对话与工具调用；复盘模型只在评审会话里使用。")}</span>
-            </div>
-            <div className="field-grid">
-              <Field label={t("会话模型")} hint={t("普通会话、分析和工具调用使用这个资源。")}>
-                <SelectMenu
-                  value={sessionModelId}
-                  options={modelSelectOptions}
-                  onChange={setSessionModelId}
-                  ariaLabel={t("会话模型")}
-                  maxListWidth={360}
-                />
-              </Field>
-              <Field label={t("复盘模型")} hint={t("复盘会话使用；跟随会话模型时不需要单独配置。")}>
-                <SelectMenu
-                  value={reviewModelId}
-                  options={[
-                    { value: '', label: t("跟随会话模型") },
-                    ...modelSelectOptions,
-                  ]}
-                  onChange={setReviewModelId}
-                  ariaLabel={t("复盘模型")}
-                  maxListWidth={360}
-                />
-              </Field>
-            </div>
-
-            <div className="settings-subhead">
-              <strong>{t("评估模型")}</strong>
-              <span>{t("推荐两个独立模型")}</span>
-            </div>
-            <p className="settings-note">
-              {t("默认第一评估和第二评估；可增加更多，也可减少到一个。未选择时由会话模型自评，不算独立评审。")}
-            </p>
-            <div className="model-eval-list">
-              {evaluationIds.map((id, index) => (
-                <div className="model-eval-row" key={`eval-${index}`}>
-                  <span className="model-eval-label">
-                    {EVALUATION_LABELS[index] ?? t("评估模型")}
-                  </span>
-                  <SelectMenu
-                    className="model-eval-menu"
-                    value={id}
-                    options={[
-                      { value: '', label: t("选择模型资源") },
-                      ...modelSelectOptions.map((option) => ({
-                        ...option,
-                        disabled: option.disabled || evaluationIds.includes(option.value),
-                      })),
-                    ]}
-                    onChange={(value) => setEvaluationAt(index, value)}
-                    ariaLabel={EVALUATION_LABELS[index] ?? t("评估模型")}
-                    maxListWidth={360}
-                  />
-                  <button
-                    type="button"
-                    className="button ghost small"
-                    onClick={() => removeEvaluation(index)}
-                    disabled={evaluationIds.length <= 1}
-                  >
-                    {t("移除")}
-                  </button>
-                </div>
-              ))}
-            </div>
-            <button
-              type="button"
-              className="button ghost small"
-              onClick={addEvaluation}
-              disabled={evaluationIds.length >= MAX_EVALUATION_MODELS}
-            >
-              {t("添加评估模型")}
-            </button>
-          </section>
-
-          <BillingPanel
-            hasKey={effectiveHasKey}
-            model={sessionModel || settings.model}
-            hidden={activeSection !== 'models'}
-          />
-
-          <section
             className="settings-section"
             hidden={activeSection !== 'runtime'}
             ref={(element) => {
@@ -1113,8 +724,8 @@ export function SettingsDialog({
                 <h3>{t("运行参数")}</h3>
                 <p>
                   {t("默认值适合大多数任务；增大上下文会消耗更多 tokens。当前模型")}{' '}
-                  <code>{sessionModel || t("未知")}</code> {t("的窗口为")}{' '}
-                  {modelLimits(sessionModel).contextTokens.toLocaleString()}{' '}
+                  <code>{settings.model || t("未知")}</code> {t("的窗口为")}{' '}
+                  {modelLimits(settings.model).contextTokens.toLocaleString()}{' '}
                   {t("tokens，超出部分会被自动收敛。")}</p>
               </div>
             </div>
@@ -1227,76 +838,6 @@ export function SettingsDialog({
                 description={t("开启后，全部自动模式的会话在构建个人实验版（self-build、package:*、electron-builder）时不再逐次确认。构建会把可修改的源码变成可执行文件，只在你确实会离开电脑时开启；只读自动和逐条审批模式仍然需要确认。")}
               />
               <Toggle
-                checked={learningMode}
-                onChange={setLearningMode}
-                label={t("自主探索学习")}
-                description={t("允许智能体从白名单公开站点只读搜集资料、自己决定做什么任务，并把来源、任务与阶段成果记在工作区的 .pilot/learning 账本里。开启后请求仍只允许 GET/HEAD：抓到的内容只落在工作区，任何上传、提交、发布、推送类命令都会被拒绝；每个阶段成果都要你点头才算完成。")}
-              />
-              {learningMode ? (
-                <Toggle
-                  checked={learningShellIsolation}
-                  onChange={setLearningShellIsolation}
-                  label={t("学习探索期间让 shell 断网")}
-                  description={t("默认关闭：学习的白名单只约束 learning_research，任务会话照你用下面的「沙箱网络」设置联网，安装依赖、访问接口都不受影响。开启后，学习探索开启期间 shell 沙箱拿不到网络，作为文本匹配之外的兜底。")}
-                />
-              ) : null}
-              {learningMode ? (
-                <Field
-                  label={t("学习来源白名单")}
-                  hint={t("一行一个主机名，子域自动包含（写 example.com 也涵盖 docs.example.com）。留空使用内置默认的公开文档站点。本机、内网与云元数据地址永远不在允许范围内。")}
-                >
-                  <textarea
-                    className="input textarea"
-                    rows={4}
-                    value={learningHosts}
-                    onChange={(event) => setLearningHosts(event.target.value)}
-                    placeholder={"developer.mozilla.org\nnodejs.org"}
-                  />
-                </Field>
-              ) : null}
-              <Toggle
-                checked={qualityGate}
-                onChange={setQualityGate}
-                label={t("产出质量闸门")}
-                description={t("让探索任务围绕可度量的产出质量展开：由你在下面配置的评估模型按可自动调优的指标给当前产出打分，分数高于现行基线时，在 App 顶部小铃铛和桌面通知里提醒你。它不会自己上线：只有你在铃铛里批准某个候选版本后，才会用固定脚本打包。评估模型不可用时仍记录客观指标，只是缺少评审分。")}
-              />
-              {qualityGate ? (
-                <div className="field-grid">
-                  <Field
-                    label={t("授权后执行的打包命令")}
-                    hint={t("只提供白名单脚本，批准候选版本后原样运行、不接受附加参数。选“不自动打包”时，批准只更新质量基线。")}
-                  >
-                    <SelectMenu
-                      value={qualityPublishTarget}
-                      options={[
-                        { value: 'none', label: t("不自动打包（只更新基线）") },
-                        { value: 'package:dir', label: t("打包到目录（package:dir）") },
-                        { value: 'package:win', label: 'package:win' },
-                        { value: 'package:mac', label: 'package:mac' },
-                        { value: 'package:linux', label: 'package:linux' },
-                      ]}
-                      onChange={(value) =>
-                        setQualityPublishTarget(value as QualityPublishTarget)
-                      }
-                      ariaLabel={t("授权后执行的打包命令")}
-                    />
-                  </Field>
-                  <Field
-                    label={t("指标重调频次")}
-                    hint={t("每评估多少次重新计算一次指标权重（低分与无样本维度会被重新分配比重）。填 0 关闭自动调优，改为在铃铛里手动重调。")}
-                  >
-                    <input
-                      className="input"
-                      type="number"
-                      min={0}
-                      max={50}
-                      value={qualityTuneEvery}
-                      onChange={(event) => setQualityTuneEvery(event.target.value)}
-                    />
-                  </Field>
-                </div>
-              ) : null}
-              <Toggle
                 checked={screenshotFeedback}
                 onChange={setScreenshotFeedback}
                 label={t("截图视觉反馈")}
@@ -1328,6 +869,30 @@ export function SettingsDialog({
                   ariaLabel={t("Shell 解释器")}
                   maxListWidth={360}
                 />
+              </Field>
+            </div>
+            <div className="field-grid">
+              <Field
+                label={t("全局指令文件")}
+                hint={t("所有工作区都会读取；编辑后新运行生效。项目专属规则仍写在各工作区的 PILOT.md / AGENTS.md。")}
+                wide
+              >
+                <div className="path-row">
+                  <input
+                    className="text-input mono"
+                    value={settings.globalInstructionsPath}
+                    readOnly
+                    spellCheck={false}
+                  />
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    onClick={() => void openGlobalInstructions()}
+                    disabled={openingGlobal}
+                  >
+                    {openingGlobal ? <i className="spinner" /> : null}
+                    {t("打开")}</button>
+                </div>
               </Field>
             </div>
           </section>
@@ -1615,6 +1180,29 @@ export function SettingsDialog({
 
             <div className="toggle-list">
               <Toggle
+                checked={fullAutonomy}
+                onChange={setFullAutonomy}
+                label={t("完全自主（放开全部限制）")}
+                description={t(
+                  "开启后不再逐次询问：可访问任意网络，可在工作区外读取任意资源、数据与日志，并可在工作区外的目录执行命令与长驻进程，可修改 Pilot 自身源码与 .pilot 配置（写入仍限于工作区和自身源码目录），可在无人值守时构建，并自动获得内视与自检权限。只在本会话为「全部自动」且 token 与步数上限都达标时生效；凭据、密钥、浏览器会话等隐私路径仍永远拒绝，每次越界都会写审计日志。",
+                )}
+              />
+              {fullAutonomy && autonomyBlockers.length > 0 ? (
+                <p className="settings-hint">
+                  {t("完全自主暂未生效：{v1}。补齐后自动生效，无需重新开启。", {
+                    v1: autonomyBlockers
+                      .map((blocker) =>
+                        blocker === 'manual-mode'
+                          ? t("默认审批模式不是「全部自动」")
+                          : blocker === 'token-budget'
+                            ? t("token 总量上限低于 100000")
+                            : t("步数上限低于 20"),
+                      )
+                      .join(t("；")),
+                  })}
+                </p>
+              ) : null}
+              <Toggle
                 checked={sandboxAutoAllow}
                 onChange={setSandboxAutoAllow}
                 label={t("沙箱内命令自动放行")}
@@ -1647,191 +1235,155 @@ export function SettingsDialog({
             </div>
           </section>
 
+
+          <section
+            className="settings-section settings-section-evolution"
+            hidden={activeSection !== 'evolution'}
+            ref={(element) => {
+              sectionRefs.current.evolution = element
+            }}
+          >
+            {/*
+              进化面板自带页签与打分卡，外层不再包一层 settings-section-head：
+              它自己的标题比这里的 h3 更具体。
+
+              复盘评估与自动/学习开关也在这里：进化是全产品唯一入口，
+              侧栏不再单独放复盘按钮，运行参数里也不再散落探索学习与质量闸门。
+            */}
+            {evolutionTabs ? (
+              <EvolutionHub
+                tabs={[
+                  ...evolutionTabs({ openNotify: () => setActiveSection('notify') }),
+                  {
+                    id: 'review',
+                    label: t("复盘评估"),
+                    hint: t("只读审查会话与代码，产出带分值的报告"),
+                    content: reviewTab,
+                  },
+                  {
+                    id: 'learning',
+                    label: t("自动与学习"),
+                    hint: t("自动复盘、自动进化、探索学习与质量闸门"),
+                    content: learningTab,
+                  },
+                ]}
+              />
+            ) : null}
+          </section>
+
           <section
             className="settings-section"
-            hidden={activeSection !== 'learning'}
+            hidden={activeSection !== 'server'}
             ref={(element) => {
-              sectionRefs.current.learning = element
+              sectionRefs.current.server = element
             }}
           >
             <div className="settings-section-head">
               <div>
-                <h3>{t("自我学习")}</h3>
-                <p>{t("让 Pilot 从真实运行中提炼经验，并在通过独立评审后更新运行画像。")}</p>
+                <h3>{t("网页服务")}</h3>
+                <p>
+                  {t("打开后，浏览器访问下面这个端口看到的就是当前窗口这套界面（会话、知识库、设置都一样），操作与 `pilot serve` 启动的网页服务完全相同。服务只在本机与局域网内监听；关掉开关即停止。")}
+                </p>
               </div>
             </div>
-
             <div className="toggle-list">
               <Toggle
-                checked={autoReflect}
-                onChange={setAutoReflect}
-                label={t("自动复盘")}
-                description={t("失败、工具报错和负反馈后，结合具体报错自动复盘，把可复用经验写入项目记忆。")}
-              />
-              <Toggle
-                checked={autoEvolve}
-                onChange={setAutoEvolve}
-                label={t("自动运行系统进化")}
-                description={t("按进化机制的节奏自动完成提案、独立评审和启用；失败率明显上升时自动回滚。")}
+                checked={serverMode}
+                onChange={setServerMode}
+                label={t("开启网页服务")}
+                description={t("任一应用内的电脑都能用浏览器打开。若不打开这个开关，浏览器访问只能看到手机配对面板。")}
               />
             </div>
-
             <div className="field-grid">
               <Field
-                label={t("全局指令文件")}
-                hint={t("所有工作区都会读取；编辑后新运行生效。项目专属规则仍写在各工作区的 PILOT.md / AGENTS.md。")}
-                wide
+                label={t("端口")}
+                hint={t("{v1} – {v2}，默认 {v3}", {
+                  v1: MIN_SERVER_PORT.toLocaleString(),
+                  v2: MAX_SERVER_PORT.toLocaleString(),
+                  v3: DEFAULT_SERVER_PORT.toLocaleString(),
+                })}
+              >
+                <input
+                  className="text-input mono"
+                  value={serverPort}
+                  inputMode="numeric"
+                  disabled={!serverMode}
+                  onChange={(event) => setServerPort(event.target.value.replace(/[^0-9]/g, ''))}
+                  placeholder={String(DEFAULT_SERVER_PORT)}
+                  spellCheck={false}
+                />
+              </Field>
+              <Field
+                label={t("访问地址")}
+                hint={
+                  companion?.running
+                    ? t("保存后如果端口变了，旧地址会失效。")
+                    : t("保存设置后开始监听。")
+                }
               >
                 <div className="path-row">
                   <input
                     className="text-input mono"
-                    value={settings.globalInstructionsPath}
+                    value={companion?.address ?? `http://127.0.0.1:${serverPort}`}
                     readOnly
                     spellCheck={false}
                   />
                   <button
                     type="button"
                     className="button ghost small"
-                    onClick={() => void openGlobalInstructions()}
-                    disabled={openingGlobal}
+                    disabled={!companion?.address}
+                    onClick={() => {
+                      if (companion?.address) void copyText(companion.address)
+                    }}
                   >
-                    {openingGlobal ? <i className="spinner" /> : null}
-                    {t("打开")}</button>
+                    {t("复制")}</button>
                 </div>
               </Field>
             </div>
+            {companion?.error ? (
+              <div className="settings-error">
+                <InfoIcon width={14} height={14} />
+                {companion.error}
+              </div>
+            ) : null}
+            <div className="settings-subhead">
+              <strong>{t("已授权的网页")}</strong>
+              <span>
+                {t("浏览器每次申请并被允许访问都会留一条记录；关掉上面的开关会全部撤销，刷新页面需要重新申请。")}
+              </span>
+            </div>
+            {webSessions.length ? (
+              <div className="web-grant-list">
+                {webSessions.map((session) => (
+                  <div className="web-grant" key={session.phoneId}>
+                    <div className="web-grant-main">
+                      <strong className="mono">{session.address ?? t("未知地址")}</strong>
+                      <span>
+                        {session.role === 'client' ? t("客户机") : t("主机")}
+                        {' · '}
+                        {t("授权时间 {v1}", { v1: grantedAtLabel(session.pairedAt) })}
+                        {session.lastSeen
+                          ? ` · ${t("最后活动 {v1}", { v1: grantedAtLabel(session.lastSeen) })}`
+                          : ''}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="button ghost small"
+                      onClick={() => revokeWeb(session.phoneId)}
+                    >
+                      {t("撤销")}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="settings-hint">{t("还没有网页授权记录。")}</p>
+            )}
           </section>
 
           <section
-            className="settings-section"
-            hidden={activeSection !== 'appearance'}
-            ref={(element) => {
-              sectionRefs.current.appearance = element
-            }}
-          >
-            <div className="settings-section-head">
-              <div>
-                <h3>{t("外观")}</h3>
-                <p>{t("暗色与浅色两套主题，只有一处主题色标记选中、焦点和进度，长时间使用也不刺眼。")}</p>
-              </div>
-            </div>
-            <div className="appearance-block">
-              <span className="field-label">{t("主题模式")}</span>
-              <div className="appearance-modes" role="group" aria-label={t("主题模式")}>
-                <button
-                  type="button"
-                  className={`appearance-mode${theme === 'dark' ? ' is-on' : ''}`}
-                  onClick={() => setTheme('dark')}
-                  aria-pressed={theme === 'dark'}
-                >
-                  {t("深色")}
-                </button>
-                <button
-                  type="button"
-                  className={`appearance-mode${theme === 'light' ? ' is-on' : ''}`}
-                  onClick={() => setTheme('light')}
-                  aria-pressed={theme === 'light'}
-                >
-                  {t("浅色")}
-                </button>
-              </div>
-            </div>
-            <div className="appearance-block">
-              <span className="field-label">{t("对比度")}</span>
-              <div className="appearance-modes" role="group" aria-label={t("对比度")}>
-                {CONTRAST_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`appearance-mode${contrast === option.value ? ' is-on' : ''}`}
-                    onClick={() => setContrast(option.value)}
-                    aria-pressed={contrast === option.value}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              <p className="settings-hint">
-                {t("调整文字与页面底色的分离程度；低档更柔和，高档更鲜明，主题色保持不变。")}
-              </p>
-            </div>
-            <div className="appearance-block">
-              <span className="field-label">{t("饱和度")}</span>
-              <div className="appearance-modes" role="group" aria-label={t("饱和度")}>
-                {SATURATION_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`appearance-mode${saturation === option.value ? ' is-on' : ''}`}
-                    onClick={() => setSaturation(option.value)}
-                    aria-pressed={saturation === option.value}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              <p className="settings-hint">
-                {t("调整主题色与功能色的鲜艳程度；两套主题都按灰阶推算，高档更鲜明。")}
-              </p>
-            </div>
-            <div className="appearance-block">
-              <span className="field-label">{t("字号")}</span>
-              <div className="appearance-modes" role="group" aria-label={t("字号")}>
-                {FONT_SIZE_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`appearance-mode${fontSize === option.value ? ' is-on' : ''}`}
-                    onClick={() => setFontSize(option.value)}
-                    aria-pressed={fontSize === option.value}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              <p className="settings-hint">
-                {t("只放大文字，按钮和间距保持不变；标准就是原来的字号。")}
-              </p>
-            </div>
-          </section>
-
-          <section
-            className="settings-section"
-            hidden={activeSection !== 'locale'}
-            ref={(element) => {
-              sectionRefs.current.locale = element
-            }}
-          >
-            <div className="settings-section-head">
-              <div>
-                <h3>{t("语言")}</h3>
-                <p>{t("界面语言。默认跟随系统；智能体始终使用你提问的语言回复。")}</p>
-              </div>
-            </div>
-            <div className="field-grid">
-              <Field
-                label={t("界面语言")}
-                hint={t("系统语言：{locale}", { locale: settings.systemLocale || '—' })}
-              >
-                <SelectMenu
-                  value={locale}
-                  options={[
-                    {
-                      value: 'auto',
-                      label: `${t("跟随系统")} · ${settings.systemLocale || 'Auto'}`,
-                    },
-                    { value: 'zh-CN', label: t("简体中文") },
-                    { value: 'en', label: 'English' },
-                  ]}
-                  onChange={(value) => setLocale(value as LocaleSetting)}
-                  ariaLabel={t("界面语言")}
-                />
-              </Field>
-            </div>
-          </section>
-
-          <section
-            className="settings-section"
+            className={`settings-section${focusSection === 'notify' ? ' settings-section-focus' : ''}`}
             hidden={activeSection !== 'notify'}
             ref={(element) => {
               sectionRefs.current.notify = element
@@ -1840,8 +1392,13 @@ export function SettingsDialog({
             <div className="settings-section-head">
               <div>
                 <h3>{t("通知")}</h3>
-                <p>{t("任务完成、运行失败或等待审批时提醒你；版本与更新入口在左下角。")}</p>
+                <p>{t("任务完成、运行失败或等待审批时提醒你；桌面通知与邮件通知都在这里。")}</p>
               </div>
+            </div>
+
+            <div className="settings-subhead">
+              <strong>{t("桌面通知")}</strong>
+              <span>{t("Pilot 在前台时也会显示；点击通知可回到对应会话。")}</span>
             </div>
             <div className="toggle-list">
               <Toggle
@@ -1851,6 +1408,12 @@ export function SettingsDialog({
                 description={t("Pilot 不在前台时，任务完成、运行失败或等待审批会发一条系统通知。点击通知可回到对应会话。")}
               />
             </div>
+
+            <MailNotifySettings
+              draft={mail}
+              onChange={(patch) => setMail((current) => ({ ...current, ...patch }))}
+              hasSmtpPassword={settings.hasSmtpPassword}
+            />
           </section>
 
           {error ? (
@@ -1863,7 +1426,7 @@ export function SettingsDialog({
         </div>
 
         <div className="modal-footer">
-          <span className="settings-note">{t("Key 由 Electron safeStorage 加密后保存在 userData。")}</span>
+          <span className="settings-note">{t("模型密钥与偏好见左下角「模型」「偏好」。")}</span>
           <div className="modal-actions">
             <button type="button" className="button ghost" onClick={onClose}>
               {t("取消")}</button>

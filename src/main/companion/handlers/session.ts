@@ -1,8 +1,10 @@
 // 会话与运行控制：sessions / chat / queue / run / checkpoints / changes / 审批。
 // 由 server.ts 的 handleRequest switch 按域拆出；协议文案与错误提示保持原样。
+import { canApproveRisk, APPROVAL_EXEC_LOCAL_ONLY_ERROR } from '../access-level'
 import { sanitizeImages, sanitizeReferences } from '../../agent/attachments'
 import { MAX_MESSAGE_CHARS } from '../constants'
 import { requireString } from '../helpers'
+import type { AccessLevel } from '../access-level'
 import type { CompanionServer } from '../server'
 import type { StoredPhone } from '../types'
 
@@ -11,6 +13,9 @@ export async function handleSessionRequest(
   method: string,
   params: Record<string, unknown>,
   _phone: StoredPhone,
+  // 会话域几乎全部是「工作内容」，本机与远端都可做；唯一的例外是
+  // `approval.decide` 放行命令类工具，所以这里要拿到访问级别。
+  access: AccessLevel = 'paired',
 ): Promise<unknown> {
   switch (method) {
     case 'sessions.list':
@@ -198,6 +203,13 @@ export async function handleSessionRequest(
       const approved = params['approved'] === true
       const reason =
         typeof params['reason'] === 'string' ? params['reason'].slice(0, 500) : undefined
+      if (approved) {
+        // 风险只在待批列表里，客户端自报的 risk 不可信，所以按 callId 回查。
+        const pending = host.options.runner.pendingApprovalList().find((entry) => entry.callId === callId)
+        if (pending && !canApproveRisk(access, pending.risk)) {
+          throw new Error(APPROVAL_EXEC_LOCAL_ONLY_ERROR)
+        }
+      }
       await host.options.runner.decideApproval(callId, approved, reason)
       return { ok: true }
     }

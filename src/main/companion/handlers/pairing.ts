@@ -123,11 +123,13 @@ export function resolvePairing(
   server: CompanionServer,
   requestId: string,
   approved: boolean,
+  role?: 'host' | 'client',
 ): boolean {
   return server.settlePairing(
     requestId,
     approved,
     approved ? undefined : '电脑端拒绝了本次配对',
+    role,
   )
 }
 
@@ -139,9 +141,20 @@ export function pendingPairing(
 
 export function requestPairApproval(
   server: CompanionServer,
-  connection: ClientConnection,
-  input: { phoneId: string; name: string; platform: string },
-): Promise<{ approved: boolean; reason?: string }> {
+  /**
+   * 申请人。`connection` 传带 socket 的连接对象（扫码/握手）；网页服务的 ticket
+   * 申请只有来源地址，传 `{ address, via: 'lan' }` 即可。
+   */
+  connection: Pick<ClientConnection, 'address' | 'via'> & Partial<ClientConnection>,
+  input: {
+    phoneId: string
+    name: string
+    platform: string
+    mode?: 'qr' | 'browser'
+    /** 浏览器申请时页面自报的期望身份；审批时本机可以改。 */
+    role?: 'host' | 'client'
+  },
+): Promise<{ approved: boolean; reason?: string; role?: 'host' | 'client' }> {
   if (server.pendingPair) {
     // Checked before `pair.pending` so the phone never sees "waiting" and then
     // an immediate rejection for the same attempt.
@@ -155,11 +168,17 @@ export function requestPairApproval(
     platform: input.platform,
     address: connection.address,
     via: connection.via,
+    mode: input.mode ?? 'qr',
+    ...(input.role ? { role: input.role } : {}),
     requestedAt: nowIso(),
     expiresAt: new Date(Date.now() + ttl).toISOString(),
   }
   return new Promise((resolvePromise) => {
-    server.pendingPair = { request, connection, resolve: resolvePromise }
+    server.pendingPair = {
+      request,
+      ...(connection.socket ? { connection: connection as ClientConnection } : {}),
+      resolve: resolvePromise,
+    }
     server.pairApprovalTimer = setTimeout(() => {
       server.settlePairing(
         request.requestId,
@@ -186,6 +205,7 @@ export function settlePairing(
   requestId: string,
   approved: boolean,
   reason?: string,
+  role?: 'host' | 'client',
 ): boolean {
   const pending = server.pendingPair
   if (!pending || pending.request.requestId !== requestId) return false
@@ -194,9 +214,17 @@ export function settlePairing(
     clearTimeout(server.pairApprovalTimer)
     server.pairApprovalTimer = null
   }
-  pending.resolve({ approved, reason })
+  // 角色只对「浏览器直连申请」有意义：扫码配对是本机手机，走的是 paired。
+  const granted = pending.request.mode === 'browser' && role ? role : undefined
+  pending.resolve({ approved, reason, ...(granted ? { role: granted } : {}) })
   try {
-    server.options.onEvent?.({ type: 'companion.pair_resolved', requestId, approved, reason })
+    server.options.onEvent?.({
+      type: 'companion.pair_resolved',
+      requestId,
+      approved,
+      reason,
+      ...(granted ? { role: granted } : {}),
+    })
   } catch {
     // The desktop mirror is best-effort.
   }

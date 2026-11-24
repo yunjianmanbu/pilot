@@ -12,8 +12,15 @@ export type ConsoleCommand =
   | { kind: 'pair' }
   | { kind: 'status' }
   | { kind: 'workspaces' }
-  /** Approve the phone that is waiting for the desktop answer. */
-  | { kind: 'pair-allow' }
+  /**
+   * Approve the phone that is waiting for the desktop answer.
+   *
+   * `role` only matters for a browser page that opened the panel URL directly:
+   * `host` gives it the same data and permissions as this machine, `client`
+   * gives it an independent identity and its own data. A QR-paired phone is
+   * always the owner's own device, so both spellings behave the same there.
+   */
+  | { kind: 'pair-allow'; role?: 'host' | 'client' }
   /** Reject the phone that is waiting for the desktop answer. */
   | { kind: 'pair-deny' }
   /** Check for a new server version, download only the changed files, install. */
@@ -41,6 +48,17 @@ export function parseConsoleCommand(raw: string): ConsoleCommand {
     return { kind: 'apikey-set', key: value }
   }
 
+  const [head, argument, ...rest] = line.toLowerCase().split(/\s+/)
+  if (head === 'allow' || head === 'approve') {
+    // `allow host` / `allow client` pick the identity for a browser request;
+    // a bare `allow` keeps the page's own request (never more than `client`).
+    if (!argument) return { kind: 'pair-allow' }
+    if (!rest.length && (argument === 'host' || argument === 'client')) {
+      return { kind: 'pair-allow', role: argument }
+    }
+    return { kind: 'unknown', input: line }
+  }
+
   switch (line.toLowerCase()) {
     case 'pair':
       return { kind: 'pair' }
@@ -48,9 +66,6 @@ export function parseConsoleCommand(raw: string): ConsoleCommand {
       return { kind: 'status' }
     case 'workspaces':
       return { kind: 'workspaces' }
-    case 'allow':
-    case 'approve':
-      return { kind: 'pair-allow' }
     case 'deny':
     case 'reject':
       return { kind: 'pair-deny' }
@@ -69,4 +84,4 @@ export function parseConsoleCommand(raw: string): ConsoleCommand {
 }
 
 export const CONSOLE_HELP =
-  '可用命令：pair（新配对链接） allow（允许正在等待的手机配对） deny（拒绝该手机） status（运行状态） apikey（模型密钥） workspaces（工作区） update（增量升级服务器） quit（退出）'
+  '可用命令：pair（新配对链接） allow（允许正在等待的设备；可写 allow host / allow client 指定浏览器访问的身份） deny（拒绝该设备） status（运行状态） apikey（模型密钥） workspaces（工作区） update（增量升级服务器） quit（退出）'

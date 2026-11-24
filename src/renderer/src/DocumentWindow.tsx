@@ -30,8 +30,6 @@ export function DocumentWindow({ workspace, path }: { workspace: string; path: s
         if (cancelled) return
         const root = document.documentElement
         root.dataset['theme'] = state.theme
-        root.dataset['contrast'] = state.contrast
-        root.dataset['saturation'] = state.saturation
         root.dataset['fontSize'] = state.fontSize
         root.dataset['platform'] = state.platform
         applyLocaleSetting(state.locale)

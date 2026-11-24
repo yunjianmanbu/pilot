@@ -1,6 +1,5 @@
 // 平台相关的窗口辅助：原生窗口配色、开始菜单根目录与 Windows 快捷方式自愈。
-import { applyContrastColor } from '../shared/theme'
-import type { ThemeMode, ContrastPreference } from '../shared/types'
+import type { ThemeMode } from '../shared/types'
 import { appUserModelId, foreignShortcuts, ShortcutIdentity } from './win-identity'
 import { app, Menu, shell } from 'electron'
 import { existsSync, readdirSync, unlinkSync } from 'node:fs'
@@ -21,14 +20,9 @@ export function safeUrl(raw: string): string {
  * before the renderer boots, so an exact match avoids a flash of the wrong
  * colour on theme switch.
  */
-export function windowPalette(
-  theme: ThemeMode,
-  contrast: ContrastPreference,
-): { color: string; symbolColor: string } {
-  if (theme === 'light') {
-    return { color: applyContrastColor('#ffffff', theme, contrast), symbolColor: '#191a1c' }
-  }
-  return { color: applyContrastColor('#191a1c', theme, contrast), symbolColor: '#e3e5e8' }
+export function windowPalette(theme: ThemeMode): { color: string; symbolColor: string } {
+  if (theme === 'light') return { color: '#ffffff', symbolColor: '#191a1c' }
+  return { color: '#191a1c', symbolColor: '#e3e5e8' }
 }
 
 /**

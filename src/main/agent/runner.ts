@@ -31,6 +31,15 @@ import {
 } from '../instructions'
 import type { Store } from '../store'
 import { sandboxStatus } from '../sandbox'
+import {
+  autonomyAuditKind,
+  autonomyPolicy,
+  extraWritableRoots,
+  type AutonomyAuditKind,
+  type AutonomyPolicy,
+} from '../../shared/autonomy'
+import { autonomyAuditEntry } from '../app-audit'
+import { writeAppLog } from '../app-state'
 import { shellInterpreterLabel } from '../shell'
 import { listDirectoryTree, resolveExisting } from '../workspace'
 import { sanitizeImages, sanitizeReferences } from './attachments'
@@ -52,7 +61,8 @@ import { runAgentLoop, type ApprovalRequest, type LoopEvent, type ToolPolicyResu
 import { SkillsService, writeSkill } from './skills'
 import { runSubagent } from './subagent'
 import { summarizeConversation } from './summarize'
-import { DeepSeekClient } from './model'
+import { DeepSeekClient, isFatalProviderError } from './model'
+import { FAILURE_ACTION_TEXT, failureAction } from '../../shared/run-failure'
 import { isEmptyAssistant } from './message-guard'
 import { commandLine } from './permissions'
 import { settlePlan, shouldResetPlan } from './plan'
@@ -84,6 +94,7 @@ import {
 } from './system-access'
 import { ensureBuiltinTools } from './builtin-tools'
 import { DynamicToolRegistry } from './toolsmith'
+import { PluginToolBridge } from './plugin-tools'
 import {
   executePilotTool,
   filterLearningTools,
@@ -91,6 +102,7 @@ import {
   LEARNING_RESEARCH,
   pilotTools,
   RUN_SHELL,
+  withAutonomyAccess,
   withReferenceRoots,
   withShellDescription,
   type PlanUpdate,
@@ -1205,6 +1217,8 @@ export class AgentRunner {
     let finalContent = ''
     let messagesHandled = false
     let mcp: McpService | null = null
+    // 插件工具桥：每个 run 重建，run 结束就释放；finally 里要读它，故在 try 外声明。
+    let pluginTools: PluginToolBridge | null = null
     // One manager per run. Whatever the model starts is killed when this run
     // reaches any terminal state, including a pause or a provider error.
     const processes = new ProcessManager()
@@ -1255,6 +1269,65 @@ export class AgentRunner {
       }
       const settings = this.store.settings()
       // Agent-written tools are scoped to this workspace and this run's abort
+      const autonomy = autonomyPolicy({
+        fullAutonomy: settings.fullAutonomy,
+        approvalMode: ctx.approvalMode,
+        maxTokens: settings.maxTokens,
+        maxSteps: settings.maxSteps,
+      })
+      // 完全自主档：设置开启 + 全部自动 + token/步数上限达标才生效。
+      // 生效时把「自视/自检」所需的系统授权预置到本次运行（只读、随运行结束失效），
+      // 并让沙箱网络无条件联网；未生效时下面每一处都退回原行为。
+      if (autonomy.active && !review && ctx.systemAccess === undefined) {
+        const nowMs = Date.now()
+        ctx.systemAccess = {
+          id: randomUUID().slice(0, 8),
+          scopes: ['execution_records', 'system_strategy'],
+          allWorkspaces: true,
+          grantedAt: nowMs,
+          expiresAt: nowMs + 60 * 60_000,
+        }
+        this.auditAutonomy(ctx, {
+          kind: 'system-access',
+          tool: 'session',
+          detail: 'scopes=execution_records,system_strategy; workspaces=all',
+          settings,
+        })
+      }
+      /**
+       * 越界读取与自身配置写入的留痕。同一个工具一次运行内只记前 20 条：
+       * 模型可能连读几十个工作区外文件，记到底只会把日志推向保留上限。
+       */
+      const autonomyAuditCounts = new Map<string, number>()
+      const auditCall = (call: { name: string; arguments: Record<string, unknown> }, risk: string): void => {
+        if (!autonomy.active) return
+        const kind = autonomyAuditKind(
+          { name: call.name, risk },
+          call.arguments ?? {},
+          workspacePath,
+        )
+        if (!kind) return
+        const key = `${kind}:${call.name}`
+        const seen = autonomyAuditCounts.get(key) ?? 0
+        if (seen >= 20) return
+        autonomyAuditCounts.set(key, seen + 1)
+        // 只留元数据：路径取前 200 字符；命令只取首个词（程序名），
+        // 因为命令行里可能带密钥或业务参数，全文写进日志没有审计价值。
+        const args = call.arguments ?? {}
+        const raw =
+          typeof args['path'] === 'string'
+            ? args['path']
+            : typeof args['command'] === 'string'
+              ? (args['command'].trim().split(/\s+/)[0] ?? '')
+              : ''
+        this.auditAutonomy(ctx, {
+          kind,
+          tool: call.name,
+          detail: raw.slice(0, 200),
+          settings,
+        })
+      }
+      // Agent-written tools are scoped to this workspace and this run's abort
       // signal. Registration runs the declared self-test; editing any tool file
       // changes its hash and revokes approval until it is registered again.
       const toolRegistry = review
@@ -1302,6 +1375,27 @@ export class AgentRunner {
         // model, and evaluatePermission denies them if they are called anyway.
         tools = tools.filter((tool) => tool.risk !== 'write' && tool.risk !== 'exec')
       }
+      // Plugin tools join before the plan filter so a plugin's own `risk`
+      // decides whether plan mode sees them. The bridge is rebuilt per run, so
+      // enabling or reconfiguring a plugin takes effect on the next turn.
+      pluginTools = review
+        ? null
+        : await PluginToolBridge.create({
+            workspacePath,
+            notify: (message) => this.emit({ type: 'notice', level: 'info', message }),
+            onPluginEvent: (pluginId, event, payload) =>
+              this.emit({
+                type: 'notice',
+                level: 'info',
+                message: `插件 ${pluginId} 发出事件 ${event}${summarizePluginPayload(payload)}`,
+              }),
+          }).catch(() => null)
+      if (pluginTools) {
+        tools = [...tools, ...pluginTools.tools()]
+        if (!review && ctx.approvalMode === 'plan') {
+          tools = tools.filter((tool) => tool.risk !== 'write' && tool.risk !== 'exec')
+        }
+      }
       // Tools are re-read per step: a server created later in the run extends
       // the MCP part only, so builtins and their prompt-synced descriptions
       // survive untouched.
@@ -1340,6 +1434,11 @@ export class AgentRunner {
             ? 'bash inside the OS sandbox (POSIX syntax)'
             : shellInterpreterLabel(settings.shellInterpreter),
         )
+      }
+      // 完全自主档：读类工具确实接受工作区外绝对路径，描述要与实现一致，
+      // 否则模型会以为只能读工作区而放弃调用。
+      if (autonomy.active && !review) {
+        tools = withAutonomyAccess(tools, true)
       }
       // Review must be independent of the profiles that shaped the work under
       // review, so it runs without the active global or workspace profile.
@@ -1466,6 +1565,7 @@ export class AgentRunner {
                 : shellInterpreterLabel(settings.shellInterpreter),
               approvalMode: ctx.approvalMode,
               sandboxed: sandboxEnabled && settings.shellMode,
+              fullAutonomy: autonomy.active,
               ...(learningEnabled && learning
                 ? {
                     learning: {
@@ -1545,17 +1645,39 @@ export class AgentRunner {
       // per-answer plan snapshot; unrelated follow-ups stay clean.
       let planTouched = false
 
+      // 完全自主档的写边界：工作区之外只允许多改自身源码（自定义路径优先，
+      // 否则就是打包脚本 / 安装后自带的 self-src）。文件工具与 shell 沙箱共用
+      // 这一个值，免得「写文件能改、shell 改不了」这种漂移。
+      const selfSourceRoot = !autonomy.active
+        ? ''
+        : settings.selfSourceMode === 'custom' && settings.selfSourceCustomPath.trim() !== ''
+          ? settings.selfSourceCustomPath.trim()
+          : this.packageRoot
+      const sandboxWritableRoots = autonomy.active
+        ? extraWritableRoots(workspacePath, selfSourceRoot)
+        : []
+
       const host: ToolHost = {
         root: workspacePath,
         ...(review ? { roots: review.roots } : {}),
         ...(referenceRoots.length > 0 ? { referenceRoots } : {}),
+        ...(autonomy.active ? { fullAutonomy: true } : {}),
+        ...(selfSourceRoot !== '' ? { selfSourceRoot } : {}),
         sandbox: sandboxEnabled
           ? {
-              network: sandboxNetworkFor(
-                learning,
-                settings.sandboxNetwork,
-                settings.learningShellIsolation,
-              ),
+              // 完全自主档要求能联网：学习隔离在这里不再把网络关掉。
+              network:
+                autonomy.network === 'allow'
+                  ? true
+                  : sandboxNetworkFor(
+                      learning,
+                      settings.sandboxNetwork,
+                      settings.learningShellIsolation,
+                    ),
+              // 沙箱默认只给工作区写权限；自身源码在工作区外时要显式加进来。
+              ...(sandboxWritableRoots.length > 0
+                ? { writableRoots: sandboxWritableRoots }
+                : {}),
             }
           : null,
         shellInterpreter: settings.shellInterpreter,
@@ -1667,6 +1789,8 @@ export class AgentRunner {
             ...(request.maxSteps !== undefined ? { maxSteps: request.maxSteps } : {}),
             maxContextTokens: subagentContextTokens(settings.maxContextTokens, settings.model),
             locale: this.store.uiLocale(),
+            // 完全自主档：只读探索也能读工作区之外（隐私路径仍在权限层被拒）。
+            fullAutonomy: autonomy.active,
             signal,
           })
           delegations += 1
@@ -1692,6 +1816,7 @@ export class AgentRunner {
             // Same switch as the parent's run_shell: turning the shell off must
             // not leave a whitelisted executor behind in the nested loop.
             shellEnabled: settings.shellMode,
+            fullAutonomy: autonomy.active,
             signal,
           })
           const label =
@@ -1891,8 +2016,9 @@ export class AgentRunner {
         pullTools,
         maxSteps,
         // A budget of 0 means "no cap". Review runs keep their own small step
-        // ceiling, so no separate token budget is applied there.
-        maxTokens: review ? 0 : settings.maxTokens,
+        // ceiling, so no separate token budget is applied there. 完全自主档下
+        // 0 会被 autonomyPolicy 换成一份兜底预算，所以这里用它的值。
+        maxTokens: review ? 0 : autonomy.active ? autonomy.tokenBudget : settings.maxTokens,
         maxContextTokens: effectiveContextTokens(
           settings.maxContextTokens,
           review ? reviewModel : sessionModelName,
@@ -1910,6 +2036,11 @@ export class AgentRunner {
         hasPlan: Boolean(session.plan && session.plan.items.length > 0),
         planReminderEvery: analysisRun ? 0 : 20,
         ...(analysisRun ? { wrapUpAt: 24 } : {}),
+        // Normal runs used to hit the hard cap with no warning and then auto-
+        // continue into another full budget. Give the model one turn before the
+        // cap to close out with what is done and what is left; the analysis and
+        // review paths have their own wrap-up rules.
+        budgetWrapUp: !review && !analysisRun && maxSteps >= 20,
         // Independent reads are the cheapest step to batch: one model round
         // trip instead of four. The cap still bounds concurrent disk work.
         maxParallelReadTools: 8,
@@ -1962,7 +2093,7 @@ export class AgentRunner {
             toolCalls += 1
           }, () => {
             toolErrors += 1
-          })
+          }, auditCall)
         },
         pullMessages: async () => {
           const pending = ctx.pendingSteering.filter((entry) => !entry.consumed)
@@ -2017,6 +2148,9 @@ export class AgentRunner {
           }
           if (mcp?.has(call.name)) {
             return mcp.call(call.name, call.arguments)
+          }
+          if (pluginTools?.has(call.name)) {
+            return pluginTools.call(call.name, call.arguments ?? {})
           }
           const result = await executePilotTool(call.name, call.arguments, host, signal)
           // A write that just created a generated directory registers it before
@@ -2209,12 +2343,27 @@ export class AgentRunner {
         this.autoContinueAttempts.delete(sessionId)
         this.clearAutoContinue(sessionId)
       }
+      const fatalError =
+        finalStatus === 'failed' && isFatalProviderError(result.error?.message ?? result.error)
       const autoEligible =
         (finalStatus === 'failed' ||
           (finalStatus === 'max_steps' && !analysisRun) ||
           planContinues) &&
         result.status !== 'token_limit' &&
+        // A wrong key, an empty balance or a model the account cannot use fails
+        // identically on every replay; auto-continue would only spend the same
+        // tokens again (and, on 402, keep failing while the user is unaware).
+        !fatalError &&
         !ctx.controller.signal.aborted
+      if (fatalError) {
+        this.autoContinueAttempts.delete(sessionId)
+        this.clearAutoContinue(sessionId)
+        this.emit({
+          type: 'notice',
+          level: 'error',
+          message: `模型侧错误，重试不会改变结果，已停止自动继续：${(finalError ?? '').slice(0, 200)} ${FAILURE_ACTION_TEXT[failureAction(finalError) ?? 'config']}`,
+        })
+      }
       const autoScheduled =
         autoEligible &&
         this.scheduleAutoContinue(
@@ -2293,20 +2442,74 @@ export class AgentRunner {
       ) {
         this.autoReflect(workspacePath, ctx.runId, prompt, produced)
       }
+      const fatalError = isFatalProviderError(error)
       const autoScheduled =
+        !fatalError &&
         !ctx.paused &&
         !ctx.controller.signal.aborted &&
         !/token/i.test(message) &&
         this.scheduleAutoContinue(sessionId, '运行时出错')
+      if (fatalError) {
+        this.autoContinueAttempts.delete(sessionId)
+        this.clearAutoContinue(sessionId)
+        this.emit({
+          type: 'notice',
+          level: 'error',
+          message: `模型侧错误，重试不会改变结果，已停止自动继续：${message.slice(0, 200)} ${FAILURE_ACTION_TEXT[failureAction(message) ?? 'config']}`,
+        })
+      }
       if (!ctx.paused && !autoScheduled) void this.promoteNext(sessionId)
     } finally {
       if (mcp) await mcp.dispose().catch(() => undefined)
+      if (pluginTools) {
+        // 插件只收到“这一轮结束了”这一事实；失败原因也可能被它记录下来。
+        await pluginTools
+          .emit('run.completed', {
+            sessionId,
+            runId: ctx.runId,
+            status: finalStatus,
+            error: finalError ?? null,
+            steps,
+            toolCalls,
+          })
+          .catch(() => undefined)
+        await pluginTools.dispose()
+        pluginTools = null
+      }
       await processes.stopAll().catch(() => undefined)
       for (const callId of [...ctx.pendingApprovals]) {
         this.settleApproval(callId, { approved: false, reason: 'Run ended', decidedBy: 'interrupted' })
       }
       void finalContent
     }
+  }
+
+  /**
+   * 完全自主档的审计：越界读取、自身配置写入、无人授权、无人值守构建。
+   *
+   * 只记录元数据（工具名 + 一句摘要 + 当次预算），不记文件内容、命令原文或输出；
+   * `app-log.ts` 写盘前还会再按 `SENSITIVE_KEY` 做一次脱敏。
+   */
+  private auditAutonomy(
+    ctx: ActiveRun,
+    input: {
+      kind: AutonomyAuditKind
+      tool: string
+      detail: string
+      settings: { maxTokens: number; maxSteps: number }
+    },
+  ): void {
+    const entry = autonomyAuditEntry({
+      kind: input.kind,
+      tool: input.tool,
+      detail: input.detail,
+      budget: Number(input.settings.maxTokens ?? 0),
+      steps: Number(input.settings.maxSteps ?? 0),
+    })
+    writeAppLog({
+      ...entry,
+      detail: { ...entry.detail, sessionId: ctx.sessionId, runId: ctx.runId },
+    })
   }
 
   private deltaKey(ctx: ActiveRun): string {
@@ -2371,6 +2574,7 @@ export class AgentRunner {
     reasoningTurns: string[],
     countCall: () => void,
     countError: () => void,
+    onCall?: (call: { name: string; arguments: Record<string, unknown> }, risk: string) => void,
   ): void {
     const base = { sessionId: ctx.sessionId, runId: ctx.runId }
     // Anything that is not a raw token must arrive after the text produced so
@@ -2396,6 +2600,7 @@ export class AgentRunner {
         return
       case 'tool.call':
         countCall()
+        onCall?.(event.call, event.risk)
         this.emit({ ...base, type: 'tool.call', call: event.call, risk: event.risk })
         return
       case 'tool.approval_required': {
@@ -2784,3 +2989,14 @@ export class AgentRunner {
 }
 
 export type { ToolCall, ToolResult }
+
+/** One line describing a plugin's `host.emit` payload without dumping it. */
+function summarizePluginPayload(payload: unknown): string {
+  if (payload === null || payload === undefined) return ''
+  try {
+    const text = JSON.stringify(payload)
+    return text && text !== '{}' ? `：${text.slice(0, 200)}` : ''
+  } catch {
+    return ''
+  }
+}

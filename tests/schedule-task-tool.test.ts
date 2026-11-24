@@ -138,6 +138,42 @@ describe('schedule_task actions', () => {
     ])
   })
 
+  it('passes a daily start date through add and update', async () => {
+    const { host, requests } = fakeHost([task()])
+    await executePilotTool(
+      SCHEDULE_TASK,
+      {
+        action: 'add',
+        content: '每天 20:00 发布小红书',
+        kind: 'daily',
+        timeOfDay: '20:00',
+        startDate: '2026-11-25',
+      },
+      host,
+      signal,
+    )
+    // 空串是「从今天起」，必须原样透传而不是被当成没传。
+    await executePilotTool(
+      SCHEDULE_TASK,
+      { action: 'update', taskId: '3f2a1b9c', startDate: '' },
+      host,
+      signal,
+    )
+    expect(requests).toEqual([
+      {
+        action: 'add',
+        input: { content: '每天 20:00 发布小红书', kind: 'daily', timeOfDay: '20:00', startDate: '2026-11-25' },
+      },
+      { action: 'update', taskId: '3f2a1b9c', input: { startDate: '' } },
+    ])
+  })
+
+  it('mentions the start date in the listed schedule', async () => {
+    const { host } = fakeHost([task({ startDate: '2026-11-25' })])
+    const result = await executePilotTool(SCHEDULE_TASK, { action: 'list' }, host, signal)
+    expect(result.output).toContain('每天 09:00（从 2026-11-25 起）')
+  })
+
   it('rejects an empty content and a daily task without a time', async () => {
     const { host, requests } = fakeHost()
     await expect(

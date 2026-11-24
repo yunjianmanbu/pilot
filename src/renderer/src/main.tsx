@@ -1,5 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+// 浏览器里（`pilot serve` 托管）没有 preload，这一行装上 `WS /bridge` 版的
+// `window.pilot`；桌面客户端里 preload 已经放好了同一个对象，它直接返回。
+import './browser-bridge'
 import { App } from './App'
 import './styles.css'
 

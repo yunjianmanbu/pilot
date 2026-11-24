@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import { ChevronDownIcon, InfoIcon } from '../icons'
-import { processParts, recentProcessParts, type ProcessPart, type ToolView, type UIMessage } from '../ui'
+import { processParts, recentProcessParts, runElapsedLabel, type ProcessPart, type ToolView, type UIMessage } from '../ui'
 import { Markdown } from './Markdown'
 import { ProcessTime } from './ProcessTime'
 import { ReasoningBlock } from './ReasoningBlock'
@@ -21,6 +21,22 @@ type ProcessMessage = Extract<UIMessage, { kind: 'process' }>
 const LATEST_PARTS = 5
 /** While a run streams, stay glued to the bottom until the user scrolls up. */
 const STICK_THRESHOLD_PX = 24
+
+/**
+ * One-second heartbeat, active only while the box is still running. A long run
+ * that has produced nothing new looks the same as a stuck one; the counter is
+ * what separates the two.
+ */
+function useNowTicker(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [active])
+  return now
+}
 
 function renderReasoning(part: ProcessPart & { kind: 'reasoning' }) {
   // The folded title carries the first line of the thinking, like the phone app.
@@ -48,6 +64,9 @@ function ProcessBoxRow({
   const pinningRef = useRef(false)
   const failures = process.tools.filter((tool) => tool.status === 'error').length
   const running = process.live && !process.error
+  const startedAt = process.startedAt
+  const now = useNowTicker(Boolean(running) && Boolean(startedAt))
+  const elapsed = running ? runElapsedLabel(startedAt, now) : ''
   const parts = processParts(process)
   const windowed = recentProcessParts(process, LATEST_PARTS)
   const hidden = expanded ? 0 : windowed.hidden
@@ -210,6 +229,7 @@ function ProcessBoxRow({
             ? t("{v1} 项步骤", { v1: pending.stepCount })
             : `${process.tools.length} ${t("个工具")}${process.reasoning.length > 0 ? t(" · 含思考") : ''}`}
         </span>
+        {elapsed ? <span className="process-elapsed">{elapsed}</span> : null}
         <span className={`process-status text-${status}`}>{statusText}</span>
         <span className="process-expand">{expanded ? t("收起") : t("展开")}</span>
         <ChevronDownIcon

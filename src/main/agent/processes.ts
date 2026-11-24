@@ -1,12 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { basename } from 'node:path'
 import type { ToolResult } from '../../shared/types'
-import { planCommand } from '../workspace'
+import { planCommand, type CommandScope } from '../workspace'
+import { killWindowsTree } from '../workspace/process-tree'
 
 /**
  * Long-lived processes the agent starts while working on a project (dev
  * servers, watchers, an Electron shell). Every process is:
- * - started through the same deny list / cwd jail as run_command,
+ * - started through the same deny list / cwd scope as run_command,
  * - capped per run and killed when the run ends,
  * - observed through a bounded output ring buffer, never an unbounded pipe.
  *
@@ -187,14 +188,12 @@ function tail(text: string, maxChars: number): string {
   return trimmed.length > maxChars ? `…\n${trimmed.slice(-maxChars)}` : trimmed
 }
 
-function killTree(child: ChildProcess): void {
-  if (!child.pid) return
+function killTree(child: ChildProcess): Promise<void> {
+  if (!child.pid) return Promise.resolve()
   if (process.platform === 'win32') {
-    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
-      windowsHide: true,
-      stdio: 'ignore',
-    })
-    return
+    // 不用 `taskkill /T /F`：沿父子关系强杀会把用户开着的 Word/Excel 一起关掉。
+    // `killWindowsTree` 先单杀根，再按快照把这类 GUI 应用从待杀树里摘出去。
+    return killWindowsTree(child.pid)
   }
   try {
     process.kill(-child.pid, 'SIGKILL')
@@ -205,6 +204,7 @@ function killTree(child: ChildProcess): void {
       // Process already gone.
     }
   }
+  return Promise.resolve()
 }
 
 function probe(url: string): Promise<boolean> {
@@ -226,7 +226,11 @@ export class ProcessManager {
   private counter = 0
   private disposed = false
 
-  async start(root: string, args: Record<string, unknown>): Promise<ToolResult> {
+  async start(
+    root: string,
+    args: Record<string, unknown>,
+    scope: CommandScope = {},
+  ): Promise<ToolResult> {
     if (this.disposed) throw new Error('This run has ended; no new processes can be started')
     const running = [...this.entries.values()].filter((entry) => entry.running)
     if (running.length >= MAX_PROCESSES) {
@@ -237,7 +241,7 @@ export class ProcessManager {
       )
     }
 
-    const plan = await planCommand(root, args)
+    const plan = await planCommand(root, args, scope)
     const argv = (Array.isArray(args['args']) ? args['args'] : []).map(safeArgument)
     const labelInput = typeof args['label'] === 'string' ? args['label'].trim() : ''
     if (labelInput.length > 80) throw new Error('label is too long (max 80 characters)')
@@ -424,8 +428,8 @@ export class ProcessManager {
         metadata: this.metadata(entry),
       }
     }
-    killTree(entry.child)
-    const deadline = Date.now() + 2_000
+    await killTree(entry.child)
+    const deadline = Date.now() + 3_500
     while (entry.running && Date.now() < deadline) await delay(100)
     if (entry.running) {
       // taskkill is asynchronous; report the truth rather than claiming success.
@@ -446,8 +450,8 @@ export class ProcessManager {
   async stopAll(): Promise<void> {
     this.disposed = true
     const running = [...this.entries.values()].filter((entry) => entry.running)
-    for (const entry of running) killTree(entry.child)
-    const deadline = Date.now() + 2_000
+    await Promise.all(running.map((entry) => killTree(entry.child)))
+    const deadline = Date.now() + 3_500
     while (running.some((entry) => entry.running) && Date.now() < deadline) {
       await delay(100)
     }

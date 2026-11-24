@@ -35,6 +35,17 @@ describe('buildExplorePrompt', () => {
     expect(buildExplorePrompt('/repo', 'find tests')).not.toContain('Focus your search on')
   })
 
+  it('states the full-autonomy read scope without loosening the privacy rule', () => {
+    const prompt = buildExplorePrompt('/repo', 'find tests', undefined, 'en', true)
+    expect(prompt).toContain('Full autonomy is on')
+    expect(prompt).toContain('absolute paths outside the workspace')
+    expect(prompt).toContain('stay refused')
+    // 未开档时仍是原句，不能因为一句话变了两档混用。
+    expect(buildExplorePrompt('/repo', 'find tests', undefined, 'en')).toContain(
+      'You may only inspect the workspace',
+    )
+  })
+
   it('writes the thinking text in the app language', () => {
     expect(buildExplorePrompt('/repo', 'find tests', undefined, 'en')).toContain(
       'reasoning/thinking block in English',

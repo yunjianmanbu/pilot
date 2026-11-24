@@ -18,6 +18,7 @@ import type {
   SessionProcessSummary,
   SessionSummary,
   SettingsView,
+  StoredMessage,
   TodoItem,
   TodoPriority,
   UpdateState,
@@ -25,23 +26,25 @@ import type {
   WorkspaceSummary,
 } from '../../shared/types'
 import { modelOptionLabel, modelResourceName, normalizeModelTag } from '../../shared/model-label'
+import type { HostKind } from '../../shared/capabilities'
 import { copyText } from './clipboard'
 import { ChangeReviewPanel } from './components/ChangeReviewPanel'
 import { ChatView } from './components/ChatView'
 import { CheckpointDialog } from './components/CheckpointDialog'
 import { CompanionDialog } from './components/CompanionDialog'
 import { PairRequestDialog } from './components/PairRequestDialog'
-import { EvolutionPanel } from './components/EvolutionPanel'
+import { evolutionWorkspaceTabs } from './components/EvolutionWorkspace'
 import { SessionResourcesPanel } from './components/SessionResourcesPanel'
 import { QualityBell } from './components/QualityBell'
 import { ResourceMeters } from './components/ResourceMeters'
+import { RunningPill } from './components/RunningPill'
 import { SystemResourceDialog } from './components/SystemResourceDialog'
 import { SystemToolsPanel } from './components/SystemToolsPanel'
 import { AllTodosPanel } from './components/AllTodosPanel'
 import { AllScheduledPanel } from './components/AllScheduledPanel'
 import { MemoryPanel } from './components/MemoryPanel'
-import { ModuleCheckPanel } from './components/ModuleCheckPanel'
-import { SelfCheckPanel } from './components/SelfCheckPanel'
+import { ModelPanel } from './components/ModelPanel'
+import { PreferencesPanel } from './components/PreferencesPanel'
 import { PluginsPanel } from './components/PluginsPanel'
 import { ReviewDialog } from './components/ReviewDialog'
 import { ReviewReportDialog } from './components/ReviewReportDialog'
@@ -77,7 +80,13 @@ import {
   emptyLiveRun,
   inferRisk,
   insertProcessMessages,
+  isDeliverableText,
+  mergePendingProcesses,
+  processPlaceholders,
+  restoreCachedRuns,
+  runsWithSteps,
   stripIpcWrapper,
+  type CachedRun,
   type LiveRun,
   type MainView,
   type ProcessPart,
@@ -108,6 +117,14 @@ const APPROVAL_LABELS: Record<ApprovalMode, string> = {
 }
 
 const SESSION_PAGE_SIZE = 120
+/**
+ * How many dialogue messages one "load earlier" step brings back. Two messages
+ * make a turn, so this is six turns: scrolling back stays in transcript order
+ * instead of dumping the rest of the conversation above the reader at once.
+ */
+const EARLIER_DIALOGUE_LIMIT = 12
+/** How many opened runs one session keeps cached for later switches. */
+const LOADED_RUN_CACHE_SIZE = 8
 
 const INITIAL_UPDATE: UpdateState = {
   status: 'idle',
@@ -139,6 +156,8 @@ function summaryOf(session: Session): SessionSummary {
     ...(session.pausedAt ? { pausedAt: session.pausedAt } : {}),
     ...(session.pauseInstruction ? { pauseInstruction: session.pauseInstruction } : {}),
     canContinue: session.canContinue,
+    ...(session.lastRunStatus ? { lastRunStatus: session.lastRunStatus } : {}),
+    ...(session.lastRunError ? { lastRunError: session.lastRunError } : {}),
     sessionModelId: session.sessionModelId,
     messageCount: session.messages.length,
     instructionCount: session.messages.filter(
@@ -388,6 +407,14 @@ export function App() {
   const [fatal, setFatal] = useState<string | null>(null)
   const [version, setVersion] = useState('')
   const [platform, setPlatform] = useState('')
+  /**
+   * 同一个面板跑在两个宿主里：桌面端有自己的窗口（含右上角最小化/最大化/关闭），
+   * `pilot serve` 只是在浏览器标签页里。顶栏要为原生按钮留的空白、以及全屏
+   * 要走哪条路，都得按这个标识决定，不能按平台名猜。
+   */
+  const [host, setHost] = useState<HostKind>('desktop')
+  /** 浏览器的全屏状态。桌面端没有这条入口，所以永远保持 false。 */
+  const [fullscreen, setFullscreen] = useState(false)
   const [update, setUpdate] = useState<UpdateState>(INITIAL_UPDATE)
   const [projectInstructions, setProjectInstructions] = useState<ProjectInstructionFile[]>([])
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null)
@@ -401,6 +428,14 @@ export function App() {
   const composerSeedKeyRef = useRef(0)
   const sessionRef = useRef<Session | null>(null)
   const pendingProcessesRef = useRef<SessionProcessSummary[]>([])
+  /**
+   * Steps the reader already opened, per session and per run, with the dialogue
+   * message each run follows. Reopening a conversation restores the boxes that
+   * were already read instead of replacing them with "not loaded yet"; the
+   * anchor decides where they go, so a run whose question is no longer on
+   * screen stays in the earlier history rather than piling up above the window.
+   */
+  const loadedRuns = useRef(new Map<string, Map<string, CachedRun>>())
   const sessionHasMoreRef = useRef(false)
   const sessionSeq = useRef<Record<string, number>>({})
   const detailSeq = useRef(0)
@@ -491,12 +526,12 @@ export function App() {
    * out while the prompt was on screen).
    */
   const decidePairing = useCallback(
-    (requestId: string, approved: boolean) => {
+    (requestId: string, approved: boolean, role?: 'host' | 'client') => {
       setPairRequest((current) =>
         current && current.requestId === requestId ? null : current,
       )
       void window.pilot
-        .companionPairDecision(requestId, approved)
+        .companionPairDecision(requestId, approved, role)
         .then((answered) => {
           if (answered) return
           pushToast(t('这个配对请求已失效，请让手机重新扫码。'), 'warn')
@@ -511,6 +546,20 @@ export function App() {
     setSettingsFocus(focus)
     setSettingsOpen(true)
   }, [])
+
+  /**
+   * 浏览器里没有原生窗口按钮，全屏只能走 Fullscreen API。必须由用户手势触发
+   * （双击顶栏算手势，但还是可能被策略或 iframe 拒绝，要告诉用户而不是静默失败）。
+   * 顶栏不放全屏按钮：那条只剩系统级入口，多一个四角箭头容易被读成
+   * 「展开/收拢」这类面板开关，真正的开关留在会话资源抽屉头部。
+   */
+  const toggleFullscreen = useCallback(() => {
+    const enter = document.fullscreenElement === null
+    const action = enter
+      ? document.documentElement.requestFullscreen()
+      : document.exitFullscreen()
+    void action.catch((caught: unknown) => showError(errorMessage(caught)))
+  }, [showError])
 
   const checkForUpdates = useCallback(() => {
     window.pilot.updates
@@ -569,18 +618,40 @@ export function App() {
         if (sessionSeq.current[sessionId] !== seq) return next
         if (activeSessionRef.current === sessionId) {
           const previous = sessionRef.current
-          if (next && previous && previous.id === next.id) {
+          const sameSession = Boolean(next && previous && previous.id === next.id)
+          let messages = next?.messages ?? []
+          if (next && sameSession && previous) {
             // Keep messages the user has already paged in, then apply the
             // refreshed newest page. Map preserves the older-first order.
             const merged = new Map(previous.messages.map((message) => [message.id, message]))
             for (const message of next.messages) merged.set(message.id, message)
-            setSession({ ...next, messages: [...merged.values()] })
-          } else {
-            setSession(next)
-            setSessionHasMoreBoth(page?.hasMore ?? false)
-            // A different session must not inherit the previous one's pending runs.
-            setPendingProcesses([])
+            messages = [...merged.values()]
           }
+          // Put the steps the reader already opened back in place, so returning
+          // to a conversation shows the same execution boxes it showed when
+          // they left. Only runs whose question is still in the window come
+          // back; earlier ones stay in the history behind "load earlier".
+          const cachedRuns = next ? loadedRuns.current.get(sessionId) : undefined
+          if (cachedRuns && cachedRuns.size > 0) {
+            messages = restoreCachedRuns(messages, cachedRuns)
+          }
+          if (next) {
+            setSession({ ...next, messages })
+            if (!sameSession) setSessionHasMoreBoth(page?.hasMore ?? false)
+          } else {
+            setSession(null)
+            setSessionHasMoreBoth(page?.hasMore ?? false)
+          }
+          // A run that stopped without an answer keeps a collapsed placeholder
+          // where its own question is, so the box is the only thing left to
+          // open. Runs that finished keep nothing: their answer is the result,
+          // and one placeholder per turn is what buried the dialogue. A
+          // different session must not inherit the previous one's placeholders.
+          const loadedRunIds = runsWithSteps(messages)
+          const reported = processPlaceholders(page?.processes ?? [], messages)
+          setPendingProcesses((current) =>
+            mergePendingProcesses(sameSession ? current : [], reported, loadedRunIds),
+          )
           setSessionLoading(false)
         }
         if (next) {
@@ -608,31 +679,36 @@ export function App() {
     setLoadingEarlier(true)
     try {
       // Dialogue only: execution steps are huge and rarely why someone scrolls
-      // back. Each skipped run comes back as a summary the box can expand into.
+      // back. Each skipped run comes back as a summary the box can expand into,
+      // placed after its own question. The page is short by design, so one
+      // scroll-up adds a few turns in transcript order instead of the rest of
+      // the session at once.
       const page: SessionPage | null = await window.pilot.getSessionPage(
         current.id,
         first.id,
-        SESSION_PAGE_SIZE,
+        EARLIER_DIALOGUE_LIMIT,
         { dialogue: true },
       )
       if (!page) return false
-      if (sessionRef.current?.id !== current.id) return false
-      setSession((previous) => {
-        if (!previous || previous.id !== current.id) return previous
-        const existing = new Set(previous.messages.map((message) => message.id))
-        const older = page.session.messages.filter((message) => !existing.has(message.id))
-        return { ...previous, messages: [...older, ...previous.messages] }
-      })
-      const skipped = page.processes ?? []
-      if (skipped.length > 0) {
-        setPendingProcesses((previous) => {
-          const seen = new Set(previous.map((entry) => entry.runId))
-          const fresh = skipped.filter((entry) => !seen.has(entry.runId))
-          return fresh.length === 0 ? previous : [...fresh, ...previous]
-        })
-      }
+      const current_ = sessionRef.current
+      if (!current_ || current_.id !== current.id) return false
+      const cachedRuns = loadedRuns.current.get(current.id)
+      const existing = new Set(current_.messages.map((message) => message.id))
+      const older = page.session.messages.filter((message) => !existing.has(message.id))
+      const merged = [...older, ...current_.messages]
+      // A run the reader opened before scrolling this far comes back as its
+      // steps, not as another placeholder to click again.
+      const restored = cachedRuns && cachedRuns.size > 0 ? restoreCachedRuns(merged, cachedRuns) : merged
+      setSession({ ...current_, messages: restored })
+      // Only runs whose steps are still missing - and that never produced an
+      // answer - get a placeholder, so scrolling back never shows a box twice
+      // and never stacks one grey box per turn above the reader's question.
+      const loadedRunIds = runsWithSteps(restored)
+      setPendingProcesses((previous) =>
+        mergePendingProcesses(previous, processPlaceholders(page.processes ?? [], restored), loadedRunIds),
+      )
       setSessionHasMoreBoth(page.hasMore)
-      return page.session.messages.length > 0 || skipped.length > 0
+      return page.session.messages.length > 0
     } catch (caught) {
       pushToast(errorMessage(caught), 'error')
       return false
@@ -653,7 +729,19 @@ export function App() {
           pushToast(t('这一轮的执行过程已经不在会话记录里了。'), 'warn')
           return false
         }
+        // Remember the steps so switching away and back does not turn this box
+        // into "not loaded" again. Oldest runs fall off once a session keeps
+        // more than the cap, so the cache cannot grow without bound.
         const afterId = pendingProcessesRef.current.find((entry) => entry.runId === runId)?.afterId
+        const perSession = loadedRuns.current.get(current.id) ?? new Map<string, CachedRun>()
+        perSession.delete(runId)
+        perSession.set(runId, { ...(afterId ? { afterId } : {}), messages })
+        while (perSession.size > LOADED_RUN_CACHE_SIZE) {
+          const oldest = perSession.keys().next().value
+          if (!oldest) break
+          perSession.delete(oldest)
+        }
+        loadedRuns.current.set(current.id, perSession)
         setSession((previous) =>
           previous && previous.id === current.id
             ? {
@@ -747,6 +835,7 @@ export function App() {
       setChangesOpen(false)
       setVersion(data.version)
       setPlatform(data.platform)
+      setHost(data.host)
       if (data.activeWorkspace) void loadDetail(data.activeWorkspace)
       if (data.activeSession) void loadSession(data.activeSession)
       else setSessionLoading(false)
@@ -822,19 +911,18 @@ export function App() {
     document.documentElement.dataset['fontSize'] = settings?.fontSize ?? 'standard'
   }, [settings?.fontSize])
 
-  // Contrast only shifts the page/card ladder and text; saturation only shifts
-  // accent and functional colors. The two dimensions never fight over a token.
-  useEffect(() => {
-    document.documentElement.dataset['contrast'] = settings?.contrast ?? 'standard'
-  }, [settings?.contrast])
-
-  useEffect(() => {
-    document.documentElement.dataset['saturation'] = settings?.saturation ?? 'standard'
-  }, [settings?.saturation])
-
   useEffect(() => {
     document.documentElement.dataset['platform'] = platform
   }, [platform])
+
+  // 浏览器全屏是标签页级的：按 Esc、F11 或用户用浏览器菜单进出时不会走我们的
+  // 双击处理，只能监听 `fullscreenchange` 才知道当前是不是全屏态。
+  useEffect(() => {
+    const sync = (): void => setFullscreen(Boolean(document.fullscreenElement))
+    sync()
+    document.addEventListener('fullscreenchange', sync)
+    return () => document.removeEventListener('fullscreenchange', sync)
+  }, [])
 
   const flushPendingDeltas = useCallback(() => {
     if (deltaFrame.current !== null) {
@@ -946,22 +1034,26 @@ export function App() {
               const tool = createToolView(event.call, event.risk)
               const note = live.content.trim() ? live.content : ''
               const reasoning = live.reasoning.trim() ? live.reasoning : ''
+              // A report stays in the answer area instead of sliding into the
+              // step box: the step here is only the cleanup after it, and the
+              // replay would put the report back in the dialogue.
+              const report = note ? isDeliverableText(note) : false
               // Reasoning and interim text belong to the step that ends with this call.
               const parts: ProcessPart[] = [
                 ...(live.parts ?? []),
                 ...(reasoning
                   ? [{ kind: 'reasoning' as const, key: `r-${tool.id}`, text: reasoning, at: tool.at }]
                   : []),
-                ...(note
+                ...(note && !report
                   ? [{ kind: 'note' as const, key: `n-${tool.id}`, text: note, at: tool.at }]
                   : []),
                 { kind: 'tool' as const, key: tool.id, toolId: tool.id },
               ]
               return {
                 ...live,
-                content: '',
+                content: report ? live.content : '',
                 reasoning: '',
-                processText: note ? [...live.processText, note] : live.processText,
+                processText: note && !report ? [...live.processText, note] : live.processText,
                 processReasoning: reasoning
                   ? [...live.processReasoning, reasoning]
                   : live.processReasoning,
@@ -1358,6 +1450,10 @@ export function App() {
         setSession(created)
         setSessionHasMoreBoth(false)
         setSessionLoading(false)
+        // 新会话没有历史：上一个会话的占位框必须就地丢掉。它们带着旧会话的
+        // runId，留在状态里既会在新会话顶部挤出成排执行框，点开也只会得到
+        // 「这一轮的执行过程已经不在会话记录里」，因为按新会话 id 查不到。
+        setPendingProcesses([])
         setSessions((previous) => [
           summaryOf(created),
           ...previous.filter((entry) => entry.id !== created.id),
@@ -1385,6 +1481,7 @@ export function App() {
         setSession(created)
         setSessionHasMoreBoth(false)
         setSessionLoading(false)
+        setPendingProcesses([])
         setSessions((previous) => [
           summaryOf(created),
           ...previous.filter((entry) => entry.id !== created.id),
@@ -1399,7 +1496,21 @@ export function App() {
     [loadDetail, pushToast, refreshSessions, setSessionHasMoreBoth],
   )
 
-  const openReview = useCallback(() => {    if (!activeWorkspaceRef.current) {
+  /**
+   * 复盘评估页签里的历史列表：进化是它唯一入口，所以列表从会话里筛出 kind=review 的项，
+   * 最近更新的排在最上面。
+   */
+  const reviewSessionEntries = useMemo(
+    () =>
+      sessions
+        .filter((entry) => entry.kind === 'review')
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .map((entry) => ({ id: entry.id, title: entry.title })),
+    [sessions],
+  )
+
+  const openReview = useCallback(() => {
+    if (!activeWorkspaceRef.current) {
       setWorkspaceDialogOpen(true)
       pushToast(t("先选择一个工作区，再新建复盘评估。"), 'warn')
       return
@@ -1509,6 +1620,9 @@ export function App() {
           setActiveSessionId(created.id)
           setSession(created)
           setSessionHasMoreBoth(false)
+          // A fresh session has no history, so hold on to no placeholder from
+          // the conversation that was open before.
+          setPendingProcesses([])
           setSessions((previous) => [
             summaryOf(created),
             ...previous.filter((entry) => entry.id !== created.id),
@@ -1602,6 +1716,7 @@ export function App() {
       }
       try {
         await window.pilot.deleteSession(target.id)
+        loadedRuns.current.delete(target.id)
         const list = await window.pilot.listSessions(target.workspacePath)
         setSessions((previous) => [
           ...previous.filter((entry) => entry.workspacePath !== target.workspacePath),
@@ -1988,6 +2103,7 @@ export function App() {
           setActiveSessionId(created.id)
           setSession(created)
           setSessionHasMoreBoth(false)
+          setPendingProcesses([])
           setSessions((previous) => [
             summaryOf(created),
             ...previous.filter((entry) => entry.id !== created.id),
@@ -2703,6 +2819,9 @@ export function App() {
   const running = Boolean(
     activeSessionId && (activeRuns[activeSessionId] || session?.running),
   )
+  const runningSince =
+    live?.startedAt ??
+    (session?.runStartedAt ? Date.parse(session.runStartedAt) : undefined)
   const activeApprovals = approvals.filter(
     (entry) => entry.sessionId === activeSessionId,
   )
@@ -2782,8 +2901,19 @@ export function App() {
   }
 
   return (
-    <div className="app" data-platform={platform}>
-      <div className="titlebar">
+    <div className="app" data-platform={platform} data-host={host}>
+      <div
+        className="titlebar"
+        data-fullscreen={fullscreen ? 'true' : undefined}
+        title={host === 'server' ? t("双击顶栏切换全屏") : undefined}
+        onDoubleClick={(event) => {
+          // 网页端双击顶栏空白处切换全屏。按钮、链接、资源条上的双击留给它们自己。
+          if (host !== 'server') return
+          const target = event.target as HTMLElement
+          if (target.closest('button, a, input, select, textarea, [role="button"], .resource-meters')) return
+          toggleFullscreen()
+        }}
+      >
         <div className="titlebar-brand">
           <PilotLogo width={18} height={18} />
           <span>PILOT</span>
@@ -2797,15 +2927,23 @@ export function App() {
           workspacePath={detail?.workspace.path ?? activeWorkspace ?? undefined}
           onOpen={() => setResourceDialogOpen(true)}
         />
-        {/* 设置放在资源条后面：它属于「这台机器」这一组，不跟会话操作混在一起。 */}
+        {/* 设置放在资源条后面：它属于「这台机器」这一组，不跟会话操作混在一起。
+            「进化」收进设置后，待确认草稿数改成这颗齿轮上的徽标：进化入口只此一个。 */}
         <button
           type="button"
           className={`titlebar-icon${settingsOpen ? ' is-active' : ''}`}
-          title={t("设置")}
+          title={
+            draftProfileCount > 0
+              ? t("设置（{v1} 项进化草稿待确认）", { v1: draftProfileCount })
+              : t("设置")
+          }
           aria-label={t("设置")}
           onClick={() => openSettings()}
         >
           <SettingsIcon width={15} height={15} />
+          {draftProfileCount > 0 ? (
+            <span className="titlebar-icon-badge">{draftProfileCount}</span>
+          ) : null}
         </button>
       </div>
 
@@ -2816,21 +2954,18 @@ export function App() {
           sessions={sessions}
           activeSession={activeSessionId}
           view={view}
-          settings={settings}
           feedbackOpen={feedbackOpen}
           version={version}
           update={update}
           updateOpen={updateOpen}
           onPickWorkspace={() => void pickWorkspace()}
           onNewSession={(workspacePath) => void newSession(workspacePath)}
-          onNewReview={openReview}
           todoCount={sessions.reduce((sum, entry) => sum + entry.todoCount, 0)}
           scheduledCount={scheduledCount}
           onSelectSession={selectSession}
           onDeleteSession={(target) => void deleteSession(target)}
           onOpenSearchHit={openSearchHit}
           onView={setView}
-          onOpenSettings={openSettings}
           onOpenFeedback={() => setFeedbackOpen(true)}
           onOpenUpdate={openUpdates}
           onCloseUpdate={closeUpdates}
@@ -2841,7 +2976,6 @@ export function App() {
             if (activeWorkspace) void revealWorkspace(activeWorkspace)
           }}
           onRefreshSessions={refreshSidebarSessions}
-          draftProfileCount={draftProfileCount}
           memoryCount={detail?.memory.length ?? 0}
         />
 
@@ -2866,17 +3000,15 @@ export function App() {
                     ? t("项目记忆")
                     : view === 'tools'
                       ? t("系统工具")
-                      : view === 'module-check'
-                      ? t("模块自检")
                       : view === 'todos'
                         ? t("全部待办")
                         : view === 'scheduled'
                           ? t("全部定时任务")
-                          : view === 'self-check'
-                        ? t("内视")
-                        : view === 'plugins'
-                          ? t("插件")
-                          : t("自我进化")}
+                          : view === 'plugins'
+                            ? t("插件")
+                            : view === 'models'
+                              ? t("模型")
+                              : t("偏好")}
                 </span>
               )}
             </div>
@@ -2962,9 +3094,7 @@ export function App() {
               ) : null}
 
               {running ? (
-                <span className="running-pill">
-                  <i className="live-dot" />
-                  {t("执行中")}</span>
+                <RunningPill startedAt={runningSince} step={live?.step} />
               ) : null}
 
               {/* 分隔线把「当前会话的模式与操作」与「全局的铃铛/模型/主题/连接」分开。 */}
@@ -3119,60 +3249,27 @@ export function App() {
               onOpenSession={openSessionById}
               onError={showError}
             />
-          ) : view === 'self-check' ? (
-            <SelfCheckPanel onError={showError} />
-          ) : view === 'module-check' ? (
-            <ModuleCheckPanel
-              onOpenSession={(sessionId) => {
-                void openModuleCheckSession(sessionId)
-              }}
-              onError={showError}
-            />
           ) : view === 'plugins' ? (
             <PluginsPanel workspace={workspace} />
-          ) : (
-            <EvolutionPanel
-              workspace={workspace}
-              detail={detail}
-              hasKey={settings?.hasKey ?? false}
-              autoEvolve={settings?.autoEvolve ?? false}
-              onToggleAutoEvolve={toggleAutoEvolve}
-              onRunEvolution={runSystemEvolution}
-              onImproveEvolution={improveEvolutionFlow}
-              onRollbackEvolutionPolicy={rollbackEvolutionPolicy}
-              onClearHistory={clearEvolutionHistory}
-              onPropose={proposeEvolution}
-              onReview={reviewProfile}
-              onBenchmark={benchmarkProfile}
-              onActivate={activateProfile}
-              onRollback={rollbackProfile}
-              onDelete={deleteProfile}
-              onPromote={promoteProfile}
-              onLocalize={localizeProfile}
-              onExplainProfile={explainProfile}
-              onOpenSettings={() => openSettings('reviewers')}
-              onBenchmarkGlobal={benchmarkGlobalProfile}
-              onReviewGlobal={reviewGlobalProfile}
-              onActivateGlobal={activateGlobalProfile}
-              onRollbackGlobal={rollbackGlobalProfile}
-              onDeleteGlobal={deleteGlobalProfile}
-              onOpenSelfSource={openSelfSource}
-              onChatSelfSource={chatSelfSource}
-              onLoadPersonal={loadPersonal}
-              onSavePersonalVersion={savePersonalVersion}
-              onRestorePersonalVersion={restorePersonalVersion}
-              onSubmitPersonalVersion={submitPersonalVersion}
-              onRevealPersonalContribution={revealPersonalContribution}
-              onAskBuild={askPilotToBuild}
-              onPreparePersonalUpgrade={preparePersonalUpgrade}
-              onApplyPersonalUpgrade={applyPersonalUpgrade}
-              onValidatePersonalUpgrade={validatePersonalUpgrade}
-              onRollbackPersonalUpgrade={rollbackPersonalUpgrade}
-              onAskResolveUpgrade={askResolveUpgrade}
-              onAskFixUpgrade={askFixUpgrade}
-              onError={showError}
-            />
-          )}
+          ) : view === 'models' ? (
+            settings ? (
+              <ModelPanel
+                settings={settings}
+                onSaved={(next) => setSettings(next)}
+                onNotice={(message) => pushToast(message, 'info')}
+                onError={showError}
+              />
+            ) : null
+          ) : view === 'preferences' ? (
+            settings ? (
+              <PreferencesPanel
+                settings={settings}
+                onSaved={(next) => setSettings(next)}
+                onNotice={(message) => pushToast(message, 'info')}
+                onError={showError}
+              />
+            ) : null
+          ) : null}
         </main>
       </div>
 
@@ -3269,6 +3366,69 @@ export function App() {
             pushToast(t("设置已保存。"), 'info')
           }}
           onError={showError}
+          onWarn={(message) => pushToast(message, 'warn')}
+          evolutionTabs={(helpers) =>
+            evolutionWorkspaceTabs({
+              settings,
+              onOpenSession: openSessionById,
+              onOpenModuleCheckSession: (sessionId) => {
+                void openModuleCheckSession(sessionId)
+              },
+              onSettingsSaved: (next) => setSettings(next),
+              onOpenNotifySettings: helpers.openNotify,
+              workspace,
+              detail,
+              hasKey: settings.hasKey,
+              autoEvolve: settings.autoEvolve,
+              onToggleAutoEvolve: toggleAutoEvolve,
+              onRunEvolution: runSystemEvolution,
+              onImproveEvolution: improveEvolutionFlow,
+              onRollbackEvolutionPolicy: rollbackEvolutionPolicy,
+              onClearHistory: clearEvolutionHistory,
+              onPropose: proposeEvolution,
+              onReview: reviewProfile,
+              onBenchmark: benchmarkProfile,
+              onActivate: activateProfile,
+              onRollback: rollbackProfile,
+              onDelete: deleteProfile,
+              onPromote: promoteProfile,
+              onLocalize: localizeProfile,
+              onExplainProfile: explainProfile,
+              onOpenSettings: () => {
+                setSettingsOpen(false)
+                setView('models')
+              },
+              onBenchmarkGlobal: benchmarkGlobalProfile,
+              onReviewGlobal: reviewGlobalProfile,
+              onActivateGlobal: activateGlobalProfile,
+              onRollbackGlobal: rollbackGlobalProfile,
+              onDeleteGlobal: deleteGlobalProfile,
+              onOpenSelfSource: openSelfSource,
+              onChatSelfSource: chatSelfSource,
+              onLoadPersonal: loadPersonal,
+              onSavePersonalVersion: savePersonalVersion,
+              onRestorePersonalVersion: restorePersonalVersion,
+              onSubmitPersonalVersion: submitPersonalVersion,
+              onRevealPersonalContribution: revealPersonalContribution,
+              onAskBuild: askPilotToBuild,
+              onPreparePersonalUpgrade: preparePersonalUpgrade,
+              onApplyPersonalUpgrade: applyPersonalUpgrade,
+              onValidatePersonalUpgrade: validatePersonalUpgrade,
+              onRollbackPersonalUpgrade: rollbackPersonalUpgrade,
+              onAskResolveUpgrade: askResolveUpgrade,
+              onAskFixUpgrade: askFixUpgrade,
+              onError: showError,
+            })
+          }
+          onOpenReview={() => {
+            setSettingsOpen(false)
+            openReview()
+          }}
+          reviewSessions={reviewSessionEntries}
+          onOpenReviewSession={(sessionId) => {
+            setSettingsOpen(false)
+            openSessionById(sessionId)
+          }}
         />
       ) : null}
 

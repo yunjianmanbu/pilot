@@ -113,7 +113,12 @@ export function registerSessionIpc(ctx: IpcContext): void {
   ctx.handle('pilot:knowledge-pairs', (sessionId: string, query?: string, limit?: number) => {
     const session = ctx.store.session(sessionId)
     if (!session) throw new Error('Session not found')
-    return knowledgePairsFor(session.messages, typeof query === 'string' ? query : '', limit)
+    // Desktop and the local browser console both read this over IPC/loopback:
+    // no relay frame budget, so return the replies whole instead of the 3.2k
+    // clipped copy the phone page gets.
+    return knowledgePairsFor(session.messages, typeof query === 'string' ? query : '', limit, {
+      clip: false,
+    })
   })
 
   ctx.handle('pilot:session-links', (sessionId: string) => {
@@ -308,8 +313,6 @@ export function registerSessionIpc(ctx: IpcContext): void {
     const settings = ctx.store.settingsView()
     return {
       theme: settings.theme,
-      contrast: settings.contrast,
-      saturation: settings.saturation,
       fontSize: settings.fontSize,
       locale: ctx.store.uiLocale(),
       version: app.getVersion(),

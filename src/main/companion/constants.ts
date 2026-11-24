@@ -5,6 +5,7 @@
  * protocol flow. Values here bound the HTTP panel, the WebSocket protocol and
  * the encrypted relay frames, so a phone and the desktop always agree.
  */
+import { BRIDGE_MAX_FRAME_BYTES } from '../../shared/bridge'
 import { MAX_UPLOAD_CHUNK_BYTES } from '../workspace'
 
 export const PROTOCOL_VERSION = 2
@@ -32,7 +33,11 @@ export const SILENCE_MS = 75_000
 // socket is really gone. One missed pong used to kill healthy phone links.
 export const HEARTBEAT_MISS_LIMIT = 3
 export const CHALLENGE_TTL_MS = 15_000
-export const MAX_PAYLOAD = 1024 * 1024
+/**
+ * 一帧最多多少字节。浏览器里的桌面界面走 `/bridge`，上传附件时整批字节都
+ * 在一帧里，所以这个数同时也是浏览器侧的单帧预算（`shared/bridge.ts`）。
+ */
+export const MAX_PAYLOAD = BRIDGE_MAX_FRAME_BYTES
 export const MAX_MESSAGE_CHARS = 32_000
 /**
  * A full report can contain 60 modules × 8 rules, and the encrypted relay

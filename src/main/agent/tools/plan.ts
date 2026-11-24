@@ -72,7 +72,7 @@ export const planTools: AgentToolDefinition[] = [
 {
     name: SCHEDULE_TASK,
     description:
-      "Create, list, pause/resume, edit or delete this session's scheduled tasks (定时任务). A scheduled task fires later (or repeatedly) and sends its content as a normal user message to this session, so the run inherits this workspace, model and approval policy. Use it whenever the user says in conversation that something should happen at a later time or on a repeat (「20 分钟后…」「每天 9 点…」「每隔两小时…」) instead of telling them to open the schedule dialog. All times are the user's local time. kind=once uses delayMinutes (1-10080), kind=interval uses intervalMinutes (1-10080), kind=daily uses timeOfDay \"HH:mm\". Run action=list first to find the short id of a task you want to update or remove.",
+      "Create, list, pause/resume, edit or delete this session's scheduled tasks (定时任务). A scheduled task fires later (or repeatedly) and sends its content as a normal user message to this session, so the run inherits this workspace, model and approval policy. Use it whenever the user says in conversation that something should happen at a later time or on a repeat (「20 分钟后…」「每天 9 点…」「每隔两小时…」) instead of telling them to open the schedule dialog. All times are the user's local time. kind=once uses delayMinutes (1-10080), kind=interval uses intervalMinutes (1-10080), kind=daily uses timeOfDay \"HH:mm\" plus an optional startDate \"YYYY-MM-DD\": pass startDate whenever the user says 「从明天开始」「从下周一起」（or gives a date), otherwise a daily task whose time already passed today would fire today. Run action=list first to find the short id of a task you want to update or remove.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -107,6 +107,11 @@ export const planTools: AgentToolDefinition[] = [
         timeOfDay: {
           type: 'string',
           description: 'kind=daily: local wall-clock time as "HH:mm".',
+        },
+        startDate: {
+          type: 'string',
+          description:
+            'kind=daily: local "YYYY-MM-DD" of the first day; the task never fires before it. Omit to start today. Use it for 「从明天开始每天 20:00」.',
         },
         enabled: {
           type: 'boolean',
@@ -240,6 +245,8 @@ export async function runPlanTool(
             const timeOfDay = typeof args['timeOfDay'] === 'string' ? args['timeOfDay'].trim() : ''
             if (!timeOfDay) throw new Error('timeOfDay ("HH:mm") is required for a daily schedule')
             input.timeOfDay = timeOfDay
+            const startDate = typeof args['startDate'] === 'string' ? args['startDate'].trim() : ''
+            if (startDate) input.startDate = startDate
           }
           const result = await host.scheduleTasks({ action: 'add', input })
           return {
@@ -292,6 +299,10 @@ export async function runPlanTool(
         }
         if (typeof args['timeOfDay'] === 'string' && args['timeOfDay'].trim()) {
           patch.timeOfDay = args['timeOfDay'].trim()
+        }
+        if (typeof args['startDate'] === 'string') {
+          // 空串是明确「从今天起」，不能当成「没传」而被忽略。
+          patch.startDate = args['startDate'].trim()
         }
         if (typeof args['enabled'] === 'boolean') patch.enabled = args['enabled']
         if (Object.keys(patch).length === 0) {

@@ -3,6 +3,7 @@ import { access, readFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 import type { AgentToolDefinition } from '../../shared/types'
 import { resolveExisting } from '../workspace'
+import { killWindowsTree } from '../workspace/process-tree'
 import { isVerificationCommand } from './checks'
 import { truncateMiddle } from './context'
 
@@ -539,7 +540,8 @@ interface SpawnResult {
 function killTree(pid: number | undefined): void {
   if (!pid) return
   if (process.platform === 'win32') {
-    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+    // 不带 `/T /F`：校验命令里也可能拉起 Office，见 workspace/process-tree.ts。
+    killWindowsTree(pid)
     return
   }
   try {

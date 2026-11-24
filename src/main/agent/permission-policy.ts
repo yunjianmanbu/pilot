@@ -7,6 +7,7 @@ import type {
   ToolCall,
 } from '../../shared/types'
 import type { PersistedSettings } from '../store-schema'
+import { autonomyPolicy } from '../../shared/autonomy'
 import type { ClassifierInput, ClassifierResult } from './classifier'
 import type { ToolPolicyResult } from './loop'
 import { evaluatePermission } from './permissions'
@@ -75,6 +76,14 @@ export async function resolveToolPolicy(input: ToolPolicyInput): Promise<ToolPol
     onPauseAllAuto,
   } = input
   const approvalMode = input.approvalMode()
+  // 完全自主档：设置开着、当前是全部自动、且 token/步数上限达标时才生效。
+  // 没生效时 autonomy.active 为 false，下面每个放开点都退回原行为。
+  const autonomy = autonomyPolicy({
+    fullAutonomy: settings.fullAutonomy,
+    approvalMode,
+    maxTokens: settings.maxTokens,
+    maxSteps: settings.maxSteps,
+  })
   if (review) {
     if (!isReviewToolName(call.name) || (tool.risk !== 'read' && tool.risk !== 'control')) {
       return {
@@ -99,16 +108,21 @@ export async function resolveToolPolicy(input: ToolPolicyInput): Promise<ToolPol
       approvalMode,
       systemAccess,
       call.arguments ?? {},
+      autonomy.active,
     )
     if (decision) return decision
   }
+  // 完全自主档下，自视/自检需要的数据不再逐轮申请：给本次运行一份覆盖两个 scope、
+  // 跨工作区的授权，仍然是只读、仍随本次运行结束失效，但不再弹卡片。
   let grantSatisfied = false
   if (call.name === READ_EXECUTION_RECORDS || call.name === READ_SYSTEM_STRATEGY) {
-    const covered = grantCovers(
-      systemAccess,
-      [call.name === READ_EXECUTION_RECORDS ? 'execution_records' : 'system_strategy'],
-      call.arguments['workspace'] === 'all',
-    )
+    const covered =
+      autonomy.autoSystemAccess ||
+      grantCovers(
+        systemAccess,
+        [call.name === READ_EXECUTION_RECORDS ? 'execution_records' : 'system_strategy'],
+        call.arguments['workspace'] === 'all',
+      )
     if (!covered) {
       return {
         decision: 'deny',
@@ -130,6 +144,7 @@ export async function resolveToolPolicy(input: ToolPolicyInput): Promise<ToolPol
     sandboxed: sandboxEnabled && tool.name === RUN_SHELL,
     sandboxAutoAllow: settings.sandboxAutoAllow,
     allowUnattendedBuild: settings.allowUnattendedBuild,
+    fullAutonomy: autonomy.active,
     // 只有用户在设置里开启了 shell 隔离，学习探索才接管 shell 的外发限制。
     learningMode: learningEnabled,
     learningIsolateShell: settings.learningShellIsolation === true,

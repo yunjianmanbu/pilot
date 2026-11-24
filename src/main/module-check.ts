@@ -7,6 +7,7 @@ import {
   DEFAULT_MODULE_CHECK_SETTINGS,
   MODULE_CHECK_HISTORY_LIMIT,
   MODULE_PROPOSAL_LIMIT,
+  OVERSIZED_MEDIUM,
   buildProposal,
   buildReport,
   evaluateModule,
@@ -14,6 +15,7 @@ import {
   isSourceFile,
   isTestFile,
   sanitizeModuleCheckState,
+  type LargeFileFact,
   type ModuleCheckReport,
   type ModuleCheckSettings,
   type ModuleCheckState,
@@ -24,6 +26,13 @@ import {
   type ModuleRisk,
   type ModuleTarget,
 } from '../shared/module-check'
+import {
+  SPLIT_DECISIONS,
+  normalizeSplitPath,
+  splitDecisionIndex,
+  splitScanIndex,
+  type SplitDecision,
+} from '../shared/split-decisions'
 
 /**
  * 模块自检服务：扫描 → 规则 → 报告 → 用户确认 → 编码会话。
@@ -362,6 +371,15 @@ export class ModuleCheckService {
       let scannedFiles = 0
       let scannedLines = 0
       const budget = { text: MAX_TOTAL_TEXT_BYTES }
+      // 拆分决策与行数事实走同一条坐标系（相对自检源码根），所以报告里能直接
+      // 回答「这个大文件是不是已经决策过」。
+      const decisions: readonly SplitDecision[] = SPLIT_DECISIONS
+      const decisionIndex = splitDecisionIndex(decisions)
+      // 判据码是量出来的事实（由 split-candidates.mjs 算出、记在 split-decisions.ts），
+      // 与行数一起进报告：内视、反思就不用再拿行数猜“该不该拆”。
+      const scanIndex = splitScanIndex()
+      const scannedPaths = new Set<string>()
+      const largeFiles: LargeFileFact[] = []
       for (const target of requested) {
         const files = await this.walk(join(workspace, target.path), target.path, {
           readText: true,
@@ -371,7 +389,19 @@ export class ModuleCheckService {
         scannedFiles += files.length
         scannedLines += lines
         scannedTargets.push({ ...target, files: files.length, lines })
-        risks.push(...evaluateModule({ id: target.id, name: target.name, files }))
+        for (const file of files) {
+          const path = normalizeSplitPath(file.path)
+          scannedPaths.add(path)
+          if (file.lines <= OVERSIZED_MEDIUM || isGeneratedPath(path)) continue
+          const scan = scanIndex.get(path)
+          largeFiles.push({
+            path,
+            lines: file.lines,
+            decided: decisionIndex.has(path),
+            ...(scan ? { verdict: scan.verdict } : {}),
+          })
+        }
+        risks.push(...evaluateModule({ id: target.id, name: target.name, files, decisions }))
       }
 
       const report = buildReport({
@@ -384,6 +414,9 @@ export class ModuleCheckService {
         risks,
         scannedFiles,
         scannedLines,
+        // 只带本次真的扫到的决策：目标被删掉或改了名时，报告里不该还挂着它。
+        decisions: decisions.filter((decision) => scannedPaths.has(normalizeSplitPath(decision.path))),
+        largeFiles: largeFiles.sort((left, right) => right.lines - left.lines).slice(0, 50),
       })
 
       this.state.lastReport = report
@@ -410,6 +443,8 @@ export class ModuleCheckService {
       this.deps.emit({
         type: 'notice',
         level: high > 0 ? 'warn' : 'info',
+        topic: 'module-check',
+        notifyEvent: 'module-check.completed',
         message:
           high > 0
             ? `模块自检完成：${report.risks.length} 个风险点，其中 ${high} 个高优先级，得分 ${report.score}/100`
@@ -479,6 +514,9 @@ export class ModuleCheckService {
       this.deps.emit({
         type: 'notice',
         level: 'info',
+        topic: 'module-check',
+        // 提案只是就地提示，不是一轮扫描的结论，不发邮件。
+        notifyEvent: null,
         message: `已生成改造提案（${proposal.riskIds.length} 项），未修改任何文件；勾选「自改」后才会真正执行。`,
       })
       return { prompt: proposal.prompt, queued: false, selfModify: false, proposalId: proposal.id }
@@ -546,6 +584,8 @@ export class ModuleCheckService {
       this.deps.emit({
         type: 'notice',
         level: 'warn',
+        topic: 'module-check',
+        notifyEvent: 'module-check.completed',
         message: `自改已结束，但自动重跑自检失败：${message}`,
       })
       return null
@@ -620,6 +660,8 @@ export class ModuleCheckService {
     this.deps.emit({
       type: 'notice',
       level: 'info',
+      topic: 'module-check',
+      notifyEvent: 'module-check.completed',
       message:
         risks.length > 0
           ? `自改已结束，已重跑自检并刷新提案：还剩 ${report.risks.length} 个风险点（得分 ${report.score}/100）。`
@@ -662,6 +704,8 @@ export class ModuleCheckService {
           this.deps.emit({
             type: 'notice',
             level: 'warn',
+            topic: 'module-check',
+            notifyEvent: 'module-check.completed',
             message: `定期自检失败：${error instanceof Error ? error.message : String(error)}`,
           })
         })

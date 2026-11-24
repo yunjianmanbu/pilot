@@ -95,6 +95,11 @@ export function indexEntryFor(session: Session, counts: SessionCounts): SessionI
   }
   if (session.pausedAt) entry.pausedAt = session.pausedAt
   if (session.pauseInstruction) entry.pauseInstruction = session.pauseInstruction
+  // Kept in the index so the recovery bar can name the cause after a restart
+  // without reading the run records of every workspace.
+  if (session.lastRunStatus) entry.lastRunStatus = session.lastRunStatus
+  if (session.lastRunError) entry.lastRunError = session.lastRunError
+  if (session.lastRunSteps) entry.lastRunSteps = session.lastRunSteps
   if (session.runInstruction) entry.runInstruction = session.runInstruction
   if (session.runStartedAt) entry.runStartedAt = session.runStartedAt
   // Carried in the index so a lazily loaded session knows what was already
@@ -140,6 +145,9 @@ export function sessionFromSearchRecords(session: Session, records: SearchRecord
     pausedAt: session.pausedAt,
     pauseInstruction: session.pauseInstruction,
     canContinue: session.canContinue,
+    ...(session.lastRunStatus ? { lastRunStatus: session.lastRunStatus } : {}),
+    ...(session.lastRunError ? { lastRunError: session.lastRunError } : {}),
+    ...(session.lastRunSteps ? { lastRunSteps: session.lastRunSteps } : {}),
     messageCount: records.length,
     instructionCount: records.filter((record) => record.role === 'user').length,
     queueCount: session.queueCount,

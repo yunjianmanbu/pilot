@@ -301,7 +301,10 @@ describe('buildSystemPrompt completion contract', () => {
     expect(text).toContain('Verification (the commands actually run and their outcome)')
     expect(text).toContain('How to use')
     expect(text).toContain('Unverified or risks')
-    expect(text).toContain('No preamble, progress narration')
+    expect(text).toContain('No preamble, tool/plan recap or safety lecture')
+    // A long operation that has not failed still owes the user progress.
+    expect(text).toContain('still owes the user a sign of life')
+    expect(text).toContain('do not sit silent through the whole stretch')
   })
 
   it('keeps safety rules as invariants instead of a long rule list', () => {

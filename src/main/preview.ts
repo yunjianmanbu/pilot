@@ -13,7 +13,14 @@ import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { Readable } from 'node:stream'
 import { BrowserWindow, session, shell, protocol } from 'electron'
-import { contentTypeFor, MEDIA_SCHEME, linkLabel, parseByteRange, parseOpenLink } from '../shared/media'
+import {
+  contentTypeFor,
+  MEDIA_SCHEME,
+  linkLabel,
+  mediaUrlFromHttpPath,
+  parseByteRange,
+  parseOpenLink,
+} from '../shared/media'
 import { windowIconOption } from './app-icon'
 import { resolveMediaTarget, mediaPathFromUrl } from './workspace'
 
@@ -59,12 +66,31 @@ export function registerMediaScheme(): void {
   ])
 }
 
+/**
+ * Which workspace path a media request asks for.
+ *
+ * The desktop window asks with `pilot-media://local/...`; `pilot serve` has no
+ * custom scheme, so its browser side asks with `/media/...` and the same
+ * security check applies after one conversion. Without this the browser would
+ * 404 on every image and preview while the desktop kept working.
+ */
+function requestMediaPath(request: Request): string | null {
+  const direct = mediaPathFromUrl(request.url)
+  if (direct) return direct
+  try {
+    const converted = mediaUrlFromHttpPath(new URL(request.url).pathname)
+    return converted ? mediaPathFromUrl(converted) : null
+  } catch {
+    return null
+  }
+}
+
 /** Answer one `pilot-media://` request; anything outside the workspace is a 404. */
 export async function serveMediaRequest(
   request: Request,
   activeRoot: () => string | null,
 ): Promise<Response> {
-  const relativePath = mediaPathFromUrl(request.url)
+  const relativePath = requestMediaPath(request)
   const root = activeRoot()
   if (!relativePath || !root) return new Response('Not found', { status: 404 })
   const target = await resolveMediaTarget(root, relativePath)

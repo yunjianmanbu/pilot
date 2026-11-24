@@ -1,10 +1,63 @@
 // 文件和目录工具：读取、搜索、写入、补丁。
 // 工具定义与执行放在一起：改一个工具只动这一个文件。
 import type { AgentToolDefinition, ToolResult } from '../../../shared/types'
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { applyPatch, getFileInfo, listDirectoryTree, projectMap, readFileSlice, searchFiles, writeTextFile } from '../../workspace'
 import { LIST_DIRECTORY, PROJECT_MAP, READ_FILE, GET_FILE_INFO, SEARCH_FILES, WRITE_FILE, APPLY_PATCH } from './spec'
 import type { ToolHost } from './spec'
 import { rootFor } from './host'
+
+/**
+ * 读类工具的目标根与相对路径。
+ *
+ * 完全自主档下接受工作区外的绝对路径：把 root 收窄到该路径的父目录、把路径传成
+ * 文件名，这样读取/截断/截断提示全部复用工作区内已验证的那套逻辑，同时不给
+ * 写入工具开口子（写入仍只用 host.root）。隐私路径在权限层就被拒了。
+ */
+async function readTarget(
+  host: ToolHost,
+  args: Record<string, unknown>,
+): Promise<{ root: string; path: string | undefined }> {
+  const raw = typeof args['path'] === 'string' ? args['path'] : ''
+  if (host.fullAutonomy === true && raw !== '' && isAbsolute(raw)) {
+    return { root: dirname(raw), path: basename(raw) }
+  }
+  return {
+    root: await rootFor(host, args),
+    path: typeof args['path'] === 'string' ? args['path'] : undefined,
+  }
+}
+
+/**
+ * 写类工具的目标根与相对路径。
+ *
+ * 完全自主档放开「改自身源码」，但不放开「随便写电脑」：绝对路径必须落在
+ * 工作区或传入的 `selfSourceRoot` 里，其余一律报错。隐私路径在权限层已经被拒，
+ * 这里只是最后的路径边界，两层都不过就已经不会执行到此。
+ */
+async function writeTarget(
+  host: ToolHost,
+  args: Record<string, unknown>,
+): Promise<{ root: string; path: string }> {
+  const raw = typeof args['path'] === 'string' ? args['path'].trim() : ''
+  if (host.fullAutonomy !== true || raw === '' || !isAbsolute(raw)) {
+    return { root: host.root, path: raw }
+  }
+  const target = resolve(raw)
+  const allowed = [host.root, host.selfSourceRoot]
+    .filter((value): value is string => typeof value === 'string' && value !== '')
+    .map((value) => resolve(value))
+  const inside = allowed.some((root) => {
+    const rel = relative(root, target)
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  })
+  if (!inside) {
+    throw new Error(
+      `完全自主档只允许写入工作区或 Pilot 自身源码目录；${raw} 不在允许范围。`,
+    )
+  }
+  return { root: dirname(target), path: basename(target) }
+}
 
 export const fileTools: AgentToolDefinition[] = [
 {
@@ -153,9 +206,10 @@ export async function runFileTool(
 ): Promise<ToolResult | null> {
   if (name === LIST_DIRECTORY) {
   {
+        const target = await readTarget(host, args)
         const output = await listDirectoryTree(
-          await rootFor(host, args),
-          typeof args['path'] === 'string' ? args['path'] : '.',
+          target.root,
+          target.path ?? '.',
           typeof args['depth'] === 'number' ? args['depth'] : undefined,
         )
         return { ok: true, output, metadata: { truncated: output.includes('…') } }
@@ -163,8 +217,9 @@ export async function runFileTool(
   }
   if (name === PROJECT_MAP) {
   {
-        const { output, metadata } = await projectMap(await rootFor(host, args), {
-          ...(typeof args['path'] === 'string' ? { path: args['path'] } : {}),
+        const target = await readTarget(host, args)
+        const { output, metadata } = await projectMap(target.root, {
+          ...(target.path !== undefined ? { path: target.path } : {}),
           ...(typeof args['maxFiles'] === 'number' ? { maxFiles: args['maxFiles'] } : {}),
           ...(typeof args['depth'] === 'number' ? { depth: args['depth'] } : {}),
         })
@@ -175,9 +230,10 @@ export async function runFileTool(
   {
         const path = typeof args['path'] === 'string' ? args['path'] : ''
         if (!path) throw new Error('path must be a non-empty string')
+        const target = await readTarget(host, args)
         const { output, metadata } = await readFileSlice(
-          await rootFor(host, args),
-          path,
+          target.root,
+          target.path ?? path,
           args['startLine'],
           args['endLine'],
         )
@@ -188,15 +244,17 @@ export async function runFileTool(
   {
         const path = typeof args['path'] === 'string' ? args['path'] : ''
         if (!path) throw new Error('path must be a non-empty string')
-        return { ok: true, output: await getFileInfo(await rootFor(host, args), path) }
+        const target = await readTarget(host, args)
+        return { ok: true, output: await getFileInfo(target.root, target.path ?? path) }
       }
   }
   if (name === SEARCH_FILES) {
   {
         const query = typeof args['query'] === 'string' ? args['query'] : ''
-        const { output, metadata } = await searchFiles(await rootFor(host, args), {
+        const target = await readTarget(host, args)
+        const { output, metadata } = await searchFiles(target.root, {
           query,
-          ...(typeof args['path'] === 'string' ? { path: args['path'] } : {}),
+          ...(target.path !== undefined ? { path: target.path } : {}),
           ...(typeof args['glob'] === 'string' ? { glob: args['glob'] } : {}),
           ...(typeof args['regex'] === 'boolean' ? { regex: args['regex'] } : {}),
           ...(typeof args['caseSensitive'] === 'boolean'
@@ -210,10 +268,10 @@ export async function runFileTool(
   }
   if (name === WRITE_FILE) {
   {
-        const path = typeof args['path'] === 'string' ? args['path'] : ''
+        const { root, path } = await writeTarget(host, args)
         const content = typeof args['content'] === 'string' ? args['content'] : null
         if (content === null) throw new Error('content must be a string')
-        const result = await writeTextFile(host.root, path, content)
+        const result = await writeTextFile(root, path, content)
         return {
           ok: true,
           output: result.output,
@@ -223,7 +281,8 @@ export async function runFileTool(
   }
   if (name === APPLY_PATCH) {
   {
-        const result = await applyPatch(host.root, args)
+        const target = await writeTarget(host, args)
+        const result = await applyPatch(target.root, { ...args, path: target.path })
         return {
           ok: true,
           output: result.output,

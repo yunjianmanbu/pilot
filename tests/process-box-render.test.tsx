@@ -136,3 +136,24 @@ describe('ProcessBox collapsed rendering', () => {
     expect(html.indexOf('process-time')).toBeLessThan(html.indexOf('tool-args'))
   })
 })
+
+describe('live process box progress', () => {
+  it('counts how long a still-running box has been working', () => {
+    const process = {
+      ...processOf([step('m1', '', '思考一', ['t1'])]),
+      live: true,
+      startedAt: Date.now() - 95_000,
+    }
+    const html = renderToStaticMarkup(<ProcessBox process={process} />)
+    expect(html).toContain('process-elapsed')
+    expect(html).toContain('1m 35s')
+    expect(html).toContain('执行中')
+  })
+
+  it('keeps a finished box free of the live counter', () => {
+    const process = processOf([step('m1', '', '思考一', ['t1'])])
+    const html = renderToStaticMarkup(<ProcessBox process={process} />)
+    expect(html).not.toContain('process-elapsed')
+    expect(html).toContain('执行完成')
+  })
+})

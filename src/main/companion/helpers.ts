@@ -140,6 +140,9 @@ export function publicPhone(phone: StoredPhone, online: boolean): CompanionPhone
     online,
     pairedAt: phone.pairedAt,
     lastSeen: phone.lastSeen,
+    ...(phone.address ? { address: phone.address } : {}),
+    ...(phone.via ? { via: phone.via } : {}),
+    ...(phone.role ? { role: phone.role } : {}),
   }
 }
 

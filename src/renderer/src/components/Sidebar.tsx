@@ -3,7 +3,6 @@ import type {
   MessageSearchHit,
   Plan,
   SessionSummary,
-  SettingsView,
   UpdateState,
   WorkspaceSummary,
 } from '../../../shared/types'
@@ -18,16 +17,16 @@ import {
   PauseIcon,
   PilotLogo,
   PlusIcon,
-  InfoIcon,
   RefreshIcon,
   SearchIcon,
+  SettingsIcon,
   SparkIcon,
+  SunIcon,
   TodoIcon,
   TrashIcon,
   WrenchIcon,
 } from '../icons'
 import { formatElapsedSince, formatRelative, type MainView } from '../ui'
-import { modelResourceName } from '../../../shared/model-label'
 import { SelectMenu } from './SelectMenu'
 import { UpdatePanel } from './UpdatePanel'
 import { t } from '../i18n'
@@ -51,19 +50,16 @@ interface SidebarProps {
   sessions: SessionSummary[]
   activeSession: string | null
   view: MainView
-  settings: SettingsView | null
   feedbackOpen: boolean
   version: string
   update: UpdateState
   updateOpen: boolean
   onPickWorkspace: () => void
   onNewSession: (workspacePath?: string) => void
-  onNewReview: () => void
   onSelectSession: (session: SessionSummary) => void
   onDeleteSession: (session: SessionSummary) => void
   onOpenSearchHit: (hit: MessageSearchHit) => void
   onView: (view: MainView) => void
-  onOpenSettings: () => void
   onOpenFeedback: () => void
   onOpenUpdate: () => void
   onCloseUpdate: () => void
@@ -72,7 +68,6 @@ interface SidebarProps {
   onInstallUpdate: () => void
   onRevealWorkspace: () => void
   onRefreshSessions: () => void
-  draftProfileCount: number
   memoryCount: number
   /** 所有会话里还没发送的待办总数，显示在左下角「待办」按钮上。 */
   todoCount: number
@@ -203,19 +198,16 @@ export function Sidebar({
   sessions,
   activeSession,
   view,
-  settings,
   feedbackOpen,
   version,
   update,
   updateOpen,
   onPickWorkspace,
   onNewSession,
-  onNewReview,
   onSelectSession,
   onDeleteSession,
   onOpenSearchHit,
   onView,
-  onOpenSettings,
   onOpenFeedback,
   onOpenUpdate,
   onCloseUpdate,
@@ -224,7 +216,6 @@ export function Sidebar({
   onInstallUpdate,
   onRevealWorkspace,
   onRefreshSessions,
-  draftProfileCount,
   memoryCount,
   todoCount,
   scheduledCount,
@@ -266,16 +257,6 @@ export function Sidebar({
   }, [query])
 
   const current = workspaces.find((workspace) => workspace.path === activeWorkspace) ?? null
-  /**
-   * 底部状态行显示当前会话模型资源的名字。以前回退到写死的 `deepseek-chat`，
-   * 让未配置的用户以为已经连上了某个真实模型；现在没有真名就只说未选择。
-   */
-  const modelName = useMemo(() => {
-    const resources = settings?.modelResources ?? []
-    const active =
-      resources.find((item) => item.id === settings?.sessionModelId) ?? resources[0]
-    return modelResourceName(active)
-  }, [settings])
   const activeKey = activeWorkspace ? pathKey(activeWorkspace) : ''
   const running = sessions.filter((session) => session.running).length
   const workspaceByKey = useMemo(
@@ -401,15 +382,6 @@ export function Sidebar({
           >
             <PlusIcon width={15} height={15} />
             {t("新建任务")}</button>
-          <button
-            type="button"
-            className="sidebar-icon-btn"
-            title={t("新建复盘评估（只读）")}
-            aria-label={t("新建复盘评估")}
-            onClick={onNewReview}
-          >
-            <SparkIcon width={16} height={16} />
-          </button>
           <button
             type="button"
             className="sidebar-icon-btn"
@@ -630,23 +602,6 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-footer">
-        <button
-          type="button"
-          className="status-line"
-          onClick={onOpenSettings}
-          title={settings?.hasKey ? t("模型服务已连接，点击查看设置") : t("尚未配置 API Key")}
-        >
-          <i className={`dot ${settings?.hasKey ? 'ok' : 'warn'}`} />
-          <span>
-            {modelName || t("未选择模型")}
-            {settings?.hasKey ? t(" · 已连接") : t(" · 未配置 API Key")}
-          </span>
-        </button>
-        <div className="status-line">
-          <i className={`dot ${running > 0 ? 'warn' : 'ok'}`} />
-          <span>{running > 0 ? t("{v1} 个任务执行中", { v1: running }) : t("本地运行 · 无云同步")}</span>
-        </div>
-
         <nav className="footer-nav" aria-label={t("Pilot 资源")}>
           <button
             type="button"
@@ -694,24 +649,6 @@ export function Sidebar({
           </button>
           <button
             type="button"
-            className={`footer-nav-item${view === 'module-check' ? ' is-active' : ''}`}
-            title={t("模块自检")}
-            onClick={() => onView('module-check')}
-          >
-            <ListCheckIcon width={16} height={16} />
-            <span className="footer-nav-label">{t("自检")}</span>
-          </button>
-          <button
-            type="button"
-            className={`footer-nav-item${view === 'self-check' ? ' is-active' : ''}`}
-            title={t("内视 Pilot 自身功能模块")}
-            onClick={() => onView('self-check')}
-          >
-            <InfoIcon width={16} height={16} />
-            <span className="footer-nav-label">{t("内视")}</span>
-          </button>
-          <button
-            type="button"
             className={`footer-nav-item${view === 'plugins' ? ' is-active' : ''}`}
             title={t("插件市场与插件助手")}
             onClick={() => onView('plugins')}
@@ -721,16 +658,21 @@ export function Sidebar({
           </button>
           <button
             type="button"
-            className={`footer-nav-item${view === 'evolution' ? ' is-active' : ''}`}
-            title={t("自我进化")}
-            onClick={() => onView('evolution')}
+            className={`footer-nav-item${view === 'models' ? ' is-active' : ''}`}
+            title={t("模型：会话、复盘与评估引用的全部端点")}
+            onClick={() => onView('models')}
           >
             <SparkIcon width={16} height={16} />
-            <span className="footer-nav-label">
-              {t("进化")}{draftProfileCount > 0 ? (
-                <span className="footer-badge">{draftProfileCount}</span>
-              ) : null}
-            </span>
+            <span className="footer-nav-label">{t("模型")}</span>
+          </button>
+          <button
+            type="button"
+            className={`footer-nav-item${view === 'preferences' ? ' is-active' : ''}`}
+            title={t("偏好：外观与界面语言")}
+            onClick={() => onView('preferences')}
+          >
+            <SunIcon width={16} height={16} />
+            <span className="footer-nav-label">{t("偏好")}</span>
           </button>
           <button
             type="button"

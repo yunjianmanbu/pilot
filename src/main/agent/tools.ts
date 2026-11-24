@@ -1,6 +1,6 @@
 import type { AgentToolDefinition } from '../../shared/types'
 import type { ToolHost } from './tools/spec'
-import { REVIEW_TOOL_ALLOWLIST, RUN_SHELL, RUN_SHELL_DESCRIPTION, LEARNING_RESEARCH, LEARNING_LOG } from './tools/spec'
+import { REVIEW_TOOL_ALLOWLIST, RUN_SHELL, RUN_SHELL_DESCRIPTION, LEARNING_RESEARCH, LEARNING_LOG, READ_FILE, LIST_DIRECTORY, SEARCH_FILES, GET_FILE_INFO, PROJECT_MAP } from './tools/spec'
 import { runFileTool, fileTools } from './tools/files'
 import { runShellTool, shellTools } from './tools/shell'
 import { runScreenTool, screenTools } from './tools/screen'
@@ -57,6 +57,34 @@ export function filterLearningTools(
 ): AgentToolDefinition[] {
   if (enabled) return tools
   return tools.filter((tool) => tool.name !== LEARNING_RESEARCH && tool.name !== LEARNING_LOG)
+}
+
+/** 完全自主档下可以接受工作区外绝对路径的读类工具。 */
+const OPEN_READ_TOOLS = new Set([
+  READ_FILE,
+  LIST_DIRECTORY,
+  SEARCH_FILES,
+  GET_FILE_INFO,
+  PROJECT_MAP,
+])
+
+/**
+ * 完全自主档生效时给读类工具补一句实话：路径可以是工作区外的绝对路径。
+ * 不生效时原描述保持不变，所以普通会话仍按工作区相对路径理解参数。
+ */
+export function withAutonomyAccess(
+  tools: AgentToolDefinition[],
+  fullAutonomy: boolean,
+): AgentToolDefinition[] {
+  if (!fullAutonomy) return tools
+  return tools.map((tool) =>
+    OPEN_READ_TOOLS.has(tool.name)
+      ? {
+          ...tool,
+          description: `${tool.description} FULL-AUTONOMY MODE: path may also be an absolute path outside the workspace; credential, private-key, browser-session and password-store paths stay denied.`,
+        }
+      : tool,
+  )
 }
 
 const TOOL_HANDLERS = [

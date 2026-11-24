@@ -14,6 +14,7 @@ import {
   sessionPageAround,
 } from './session-view'
 import { applyTheme } from './window-tray'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { ipcMain, session, IpcMainInvokeEvent } from 'electron'
 
 /**
@@ -29,28 +30,82 @@ const DOCUMENT_CHANNELS = new Set([
   'pilot:open-link',
 ])
 
+/**
+ * `pilot serve` 的 `/bridge` 调用：没有窗口，靠事件对象上的标记认来源。
+ *
+ * 浏览器无法构造它——只有服务器主进程自己的 `invokeIpc()` 会带上这个字段
+ * （见 `src/server/main.ts` 的 `bridgeEvent`），因此和桌面端的 sender 身份检查
+ * 是同一道门：渲染进程拿不到别的调用入口。
+ */
+function isServerBridgeCall(event: IpcMainInvokeEvent): boolean {
+  return (event as unknown as { pilotBridge?: unknown }).pilotBridge === true
+}
+
 function assertTrustedSender(event: IpcMainInvokeEvent, channel: string): void {
+  if (isServerBridgeCall(event)) return
   if (appState.mainWindow && !appState.mainWindow.isDestroyed() && event.sender === appState.mainWindow.webContents) return
   if (DOCUMENT_CHANNELS.has(channel) && isDocumentWindowContents(event.sender.id)) return
   throw new Error('Rejected IPC call from an unknown page')
+}
+
+type PlainHandler = (...args: unknown[]) => unknown
+
+/**
+ * 桌面进程里的 handler 表：`ipcMain.handle` 注册的处理器没有公开的调用入口，
+ * 而「设置 → 网页服务」开启后，浏览器里的同一套界面必须能调到这三百多个通道。
+ * 注册时留一份，`invokeDesktopBridge` 按通道名取出来执行——与窗口里走的是同一
+ * 份处理器，不是第二套实现。
+ */
+const bridgeHandlers = new Map<string, PlainHandler>()
+
+/**
+ * 这次调用来自哪个界面：`desktop` 是有原生窗口的客户端，`web` 是浏览器。
+ * 只有返回「宿主能力」的通道需要区分（`pilot:bootstrap` 的 host），其余一律
+ * 用同一份数据与同一套权限。
+ */
+const rendererSurface = new AsyncLocalStorage<'desktop' | 'web'>()
+
+/** 当前请求是不是浏览器界面发起的；不在 bridge 作用域里时按桌面窗口处理。 */
+export function currentRendererSurface(): 'desktop' | 'web' {
+  return rendererSurface.getStore() ?? 'desktop'
+}
+
+/** 执行一个已注册的处理器，把主进程的已知错误文案翻译成界面语言。 */
+async function runHandler(handler: PlainHandler, args: unknown[]): Promise<unknown> {
+  try {
+    return await handler(...args)
+  } catch (error) {
+    // Rejections cross straight into a renderer toast, so translate known
+    // main-process copy here. Unknown technical errors pass through.
+    const message = error instanceof Error ? error.message : String(error)
+    const localized = localizeMain(message, appState.store ? appState.store.uiLocale() : 'zh-CN')
+    if (localized !== message) throw new Error(localized)
+    throw error
+  }
+}
+
+/**
+ * 浏览器界面通过 `/bridge` 调进来的 IPC 入口。
+ *
+ * 身份由 companion 的访问级别（本机回环 / 主机用户）先把关，走到这里已经等价于
+ * 坐在本机的人，所以不再重复 sender 检查——桌面端那份检查认的是窗口对象，而
+ * 浏览器根本没有窗口。
+ */
+export function invokeDesktopBridge(channel: string, args: unknown[]): Promise<unknown> {
+  const handler = bridgeHandlers.get(channel)
+  if (!handler) return Promise.reject(new Error(`网页界面没有实现这个功能：${channel}`))
+  return rendererSurface.run('web', () => runHandler(handler, args))
 }
 
 function handle<Args extends unknown[], Result>(
   channel: string,
   handler: (...args: Args) => Promise<Result> | Result,
 ): void {
+  const plain = handler as unknown as PlainHandler
+  bridgeHandlers.set(channel, plain)
   ipcMain.handle(channel, async (event, ...args) => {
     assertTrustedSender(event, channel)
-    try {
-      return await handler(...(args as Args))
-    } catch (error) {
-      // Rejections cross straight into a renderer toast, so translate known
-      // main-process copy here. Unknown technical errors pass through.
-      const message = error instanceof Error ? error.message : String(error)
-      const localized = localizeMain(message, appState.store ? appState.store.uiLocale() : 'zh-CN')
-      if (localized !== message) throw new Error(localized)
-      throw error
-    }
+    return runHandler(plain, args as unknown[])
   })
 }
 
@@ -113,6 +168,12 @@ export function createIpcContext() {
     get companion() {
       return appState.companion
     },
+    get companionMode() {
+      return appState.companionMode
+    },
+    get rendererSurface() {
+      return currentRendererSurface()
+    },
     get contributionEvidence() {
       return contributionEvidence
     },
@@ -154,6 +215,12 @@ export function createIpcContext() {
     },
     get personalService() {
       return personalService
+    },
+    get reflect() {
+      return appState.reflect
+    },
+    get supervisor() {
+      return appState.supervisor
     },
     get resolveReviewRoots() {
       return resolveReviewRoots

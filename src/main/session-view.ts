@@ -7,8 +7,11 @@ import type {
   StoredMessage,
 } from '../shared/types'
 import { workspaceRoot } from './workspace'
+import { sessionPage } from './session-page'
 import { session } from 'electron'
 import { basename, join, resolve } from 'node:path'
+
+export { sessionPage }
 export function pathKey(value: string): string {
   return process.platform === 'win32' ? value.toLowerCase() : value
 }
@@ -94,24 +97,6 @@ export function transcriptText(messages: StoredMessage[]): string {
     }
   }
   return parts.join('\n\n')
-}
-
-export function sessionPage(session: Session, before?: string, limit = 120): SessionPage {
-  let end = session.messages.length
-  if (before) {
-    const index = session.messages.findIndex((message) => message.id === before)
-    if (index >= 0) end = index
-  }
-  const safeLimit = Math.max(1, Math.min(300, Math.round(limit) || 120))
-  const start = Math.max(0, end - safeLimit)
-  return {
-    session: {
-      ...session,
-      messages: session.messages.slice(start, end),
-      messageCount: session.messages.length,
-    },
-    hasMore: start > 0,
-  }
 }
 
 /** Center a page on a search hit so the target message is always present. */

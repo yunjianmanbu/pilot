@@ -195,6 +195,7 @@ export function systemAccessPolicy(
   mode: ApprovalMode,
   grant: SystemAccessGrant | undefined,
   args: Record<string, unknown>,
+  fullAutonomy = false,
 ): { decision: 'auto' | 'ask' | 'deny'; reason: string } | null {
   if (mode !== 'plan' && mode !== 'dontAsk') {
     let request: ReturnType<typeof parseAccessRequest> | null = null
@@ -207,6 +208,13 @@ export function systemAccessPolicy(
       return {
         decision: 'auto',
         reason: '本次运行已获得对应的系统信息授权。',
+      }
+    }
+    // 完全自主档：授权仍会自动过期、仍然只读，只是不再弹卡片。
+    if (fullAutonomy) {
+      return {
+        decision: 'auto',
+        reason: '完全自主档：系统信息授权默认授予本次运行，只读且随运行结束失效。',
       }
     }
     return {

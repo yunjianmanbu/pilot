@@ -11,6 +11,7 @@ import {
 import {
   formatDuration,
   riskLabel,
+  runningToolLabel,
   summarizeTool,
   toolStatusLabel,
   type ToolView,
@@ -33,6 +34,21 @@ function toolIcon(name: string): ReactNode {
     return <LayersIcon width={14} height={14} />
   }
   return <FileIcon width={14} height={14} />
+}
+
+/**
+ * One-second heartbeat, active only while a call is still running: it is what
+ * turns a silent long command into a counter the user can watch.
+ */
+function useTicker(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [active])
+  return now
 }
 
 function DiffView({ text }: { text: string }) {
@@ -67,6 +83,8 @@ export function ToolCard({ tool }: { tool: ToolView }) {
     // initial state alone is not enough to surface a required decision.
     if (tool.status === 'waiting' || tool.status === 'error') setOpen(true)
   }, [tool.status])
+  const now = useTicker(tool.status === 'running')
+  const elapsedLabel = tool.status === 'running' ? runningToolLabel(tool.at, now) : ''
   const diff =
     typeof tool.result?.metadata?.['diff'] === 'string'
       ? tool.result.metadata['diff']
@@ -100,6 +118,10 @@ export function ToolCard({ tool }: { tool: ToolView }) {
         <span className="tool-risk">{riskLabel(tool.risk)}</span>
         {tool.durationMs != null ? (
           <span className="tool-duration">{formatDuration(tool.durationMs)}</span>
+        ) : elapsedLabel ? (
+          <span className="tool-duration is-running" aria-live="polite">
+            {elapsedLabel}
+          </span>
         ) : null}
         <span className={`tool-status status-${tool.status}`}>
           <i className="status-dot" />

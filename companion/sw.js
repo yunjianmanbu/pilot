@@ -45,6 +45,9 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
   if (url.pathname.endsWith('/ws') || url.pathname.endsWith('/healthz')) return
+  // 接入凭据是一次性、有时效的：一旦进缓存，离线时会把过期凭据当成有效凭据
+  // 返回，页面就卡在「申请访问」上。这类请求完全交给网络。
+  if (url.pathname.startsWith('/access')) return
 
   if (request.mode === 'navigate') {
     event.respondWith(networkFirst(request, shellUrl('index.html')))

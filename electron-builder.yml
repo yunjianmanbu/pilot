@@ -23,6 +23,11 @@ extraResources:
   # arrive as system-default tools instead of unapproved code.
   - from: builtin-tools
     to: builtin-tools
+  # Ready-to-use plugins (worklog / healthcheck / snippet). Copied into a
+  # workspace only when the user clicks install on the plugins page, then
+  # signed with the workspace key — nothing is auto-enabled.
+  - from: builtin-plugins
+    to: builtin-plugins
   - from: src
     to: source/src
   - from: tests

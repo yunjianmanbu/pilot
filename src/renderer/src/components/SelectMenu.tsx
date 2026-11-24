@@ -107,7 +107,13 @@ export function SelectMenu({
     // 浮层定位是按触发器位置一次算好的，容器一滚就会错位，直接收起最稳。
     // 普通（绝对定位）下拉会跟着容器一起滚，不需要这个监听；而且在打开瞬间
     // 把选中项 scrollIntoView 也会冒泡成 scroll 事件，监听只在浮动时才有意义。
-    const closeOnMove = () => setOpen(false)
+    // 但列表自身为了把选中项滚进视野而产生的 scroll 必须放过：否则选项多到
+    // 需要滚动时（如邮箱服务商、模型列表），一打开就被自己关掉。
+    const closeOnMove = (event: Event) => {
+      const target = event.target as Node | null
+      if (target && listRef.current?.contains(target)) return
+      setOpen(false)
+    }
     document.addEventListener('pointerdown', onPointerDown)
     document.addEventListener('keydown', onKey)
     if (floating) {

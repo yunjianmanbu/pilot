@@ -144,6 +144,13 @@ export interface LoopOptions {
    * than an honest answer with explicit gaps. 0 disables.
    */
   wrapUpAt?: number
+  /**
+   * Ask once for a budget wrap-up shortly before the step cap: finish the
+   * current verification, then report 已完成 / 未完成 / 下一步. Unlike `wrapUpAt`
+   * (read-only analysis: stop searching and answer), this is for normal work and
+   * turns a hard `max_steps` stop into a planned close. Default off.
+   */
+  budgetWrapUp?: boolean
   /** Run independent read-only calls concurrently, capped at this size (default 4). */
   maxParallelReadTools?: number
   /**

@@ -9,6 +9,7 @@ import { ensureGlobalInstructions, loadProjectInstructions } from '../instructio
 import { fetchBalance } from '../billing'
 import { filterLearningTools, pilotTools, RUN_SHELL } from '../agent/tools'
 import { loadMcpConfig } from '../agent/mcp'
+import { pluginCatalogTools } from '../plugins/shared'
 import { localizeMain } from '../localize'
 import { mkdir } from 'node:fs/promises'
 import { normalizeEnvFields, FeedbackDraft } from '../../shared/feedback'
@@ -18,6 +19,7 @@ import { resourceUsage } from '../resource-usage'
 import { sandboxStatus } from '../sandbox'
 import { sanitizeImages } from '../agent/attachments'
 import { systemInfo, feedbackEnvironment } from '../system-info'
+import { normalizeFindingStatus } from '../../shared/reflect'
 import { testDeepSeekConnection } from '../agent/model'
 import { workspaceRoot } from '../workspace'
 import type {
@@ -27,10 +29,10 @@ import type {
   Session,
   SettingsUpdate,
   ThemeMode,
-  ContrastPreference,
-  SaturationPreference,
 } from '../../shared/types'
 import type { ModuleCheckSettings } from '../../shared/module-check'
+import type { HostKind } from '../../shared/capabilities'
+import type { SupervisorSettings } from '../../shared/supervisor'
 
 export function registerSettingsIpc(ctx: IpcContext): void {
 
@@ -58,14 +60,17 @@ export function registerSettingsIpc(ctx: IpcContext): void {
       activeSession,
       version: app.getVersion(),
       platform: process.platform,
+      // 桌面端带原生窗口（含右上角三按钮）；`pilot serve` 的 `app` 是 shim，
+      // 它自报 `pilotHost: 'server'`，面板据此改用浏览器自己的能力。
+      host: (app as unknown as { pilotHost?: HostKind }).pilotHost ?? 'desktop',
     }
   })
 
 
   ctx.handle('pilot:settings-update', async (input: SettingsUpdate) => {
     const view = await ctx.store.updateSettings(input)
-    if (input.theme || input.contrast) {
-      ctx.applyTheme(view.theme, view.contrast)
+    if (input.theme) {
+      ctx.applyTheme(view.theme)
     }
     // Any key, endpoint or role change can move the primary account, so the
     // cached provider balance must be fetched again.
@@ -86,11 +91,49 @@ export function registerSettingsIpc(ctx: IpcContext): void {
     if (input.relayUrl !== undefined && ctx.companion) {
       await ctx.companion.setRelayUrl(input.relayUrl)
     }
+    // 「设置 → 网页服务」：开关或端口变了就对齐监听（mode control 会把两次
+    // 连着来的保存串行化，端口没变时不重启）。
+    if (input.serverMode !== undefined || input.serverPort !== undefined) {
+      await ctx.companionMode?.syncFromSettings()
+    }
     return view
   })
 
 
   ctx.handle('pilot:model-billing', async (refresh?: boolean) => ctx.billing.report(Boolean(refresh)))
+
+  // 反思：手动跑一次、读历史、清空历史、发测试邮件。
+  ctx.handle('pilot:reflect-now', async () => {
+    const service = ctx.reflect
+    if (!service) throw new Error('Reflection service is not running')
+    return service.run({ trigger: 'manual' })
+  })
+
+  ctx.handle('pilot:reflection-reports', async () => ctx.store.reflectionReports())
+
+  ctx.handle('pilot:reflection-reports-clear', async () => {
+    await ctx.store.clearReflectionReports()
+  })
+
+  // 结论的处理状态：done 表示代码已改过、dismissed 表示不打算做，两者都会进下一轮的
+  // 历史证据，让反思不再重提。
+  ctx.handle(
+    'pilot:reflection-finding-status',
+    async (reportId?: string, findingId?: string, status?: string) => {
+      if (!reportId || !findingId) return null
+      return ctx.store.setReflectionFindingStatus(
+        reportId,
+        findingId,
+        normalizeFindingStatus(status),
+      )
+    },
+  )
+
+  ctx.handle('pilot:reflection-mail-test', async (to?: string) => {
+    const service = ctx.reflect
+    if (!service) return { ok: false, error: 'Reflection service is not running' }
+    return service.sendTestMail((to ?? '').trim())
+  })
 
 
   ctx.handle('pilot:judge-balance', async (input?: JudgeBalanceInput): Promise<ModelBalanceState> => {
@@ -148,26 +191,16 @@ export function registerSettingsIpc(ctx: IpcContext): void {
 
   ctx.handle('pilot:set-theme', async (theme: ThemeMode) => {
     const view = await ctx.store.updateSettings({ theme })
-    ctx.applyTheme(view.theme, view.contrast)
+    ctx.applyTheme(view.theme)
   })
 
 
   // Settings previews an appearance before saving. Painting the window chrome
   // here keeps the title bar from disagreeing with the content while the user
-  // hovers the options; `null` restores the saved values without persisting.
-  ctx.handle(
-    'pilot:preview-theme',
-    (
-      input: {
-        theme: ThemeMode
-        contrast: ContrastPreference
-        saturation: SaturationPreference
-      } | null,
-    ) => {
-      const view = ctx.store.settingsView()
-      ctx.applyTheme(input?.theme ?? view.theme, input?.contrast ?? view.contrast)
-    },
-  )
+  // hovers the options; `null` restores the saved theme without persisting.
+  ctx.handle('pilot:preview-theme', (input: { theme: ThemeMode } | null) => {
+    ctx.applyTheme(input?.theme ?? ctx.store.settingsView().theme)
+  })
 
 
   ctx.handle('pilot:pick-folder', async (title?: string) => {
@@ -245,6 +278,8 @@ export function registerSettingsIpc(ctx: IpcContext): void {
       dynamic: await (await ctx.toolRegistryFor(session.workspacePath)).list().catch(() => []),
       mcpServers: Object.keys(servers),
       mcpEnabled: settings.mcpEnabled === true,
+      // Same host the run uses, so a disabled plugin drops its rows too.
+      plugins: await pluginCatalogTools(session.workspacePath),
       // 「按调用次数排序」用的就是这次会话的记录，不跨会话累加。
       calls: countToolCalls(session.messages),
     })
@@ -274,6 +309,7 @@ export function registerSettingsIpc(ctx: IpcContext): void {
       dynamic: await (await ctx.toolRegistryFor(workspacePath)).list().catch(() => []),
       mcpServers: Object.keys(servers),
       mcpEnabled: settings.mcpEnabled === true,
+      plugins: await pluginCatalogTools(workspacePath),
       calls,
     })
   })
@@ -345,6 +381,25 @@ export function registerSettingsIpc(ctx: IpcContext): void {
       // 默认只生成提案：只有渲染层显式传 true 才会真的改自身源码。
       return ctx.moduleCheck.accept(input.reportId, input.riskIds, { selfModify: input.selfModify === true })
     },
+  )
+
+  // 自主优化闭环。三个通道都只做「读状态 / 跑一轮 / 改设置」，
+  // 真正的改动发生在那一轮创建的普通会话里（走沙箱与审批）。
+  ctx.handle('pilot:supervisor-state', async () => {
+    await ctx.supervisor.load()
+    return ctx.supervisor.snapshot()
+  })
+
+  ctx.handle('pilot:supervisor-run', async () => {
+    await ctx.supervisor.load()
+    const round = await ctx.supervisor.run('manual')
+    // 设置可能因本轮而变（例如预算用完），统一在轮末重排定时器。
+    ctx.supervisor.restart()
+    return round
+  })
+
+  ctx.handle('pilot:supervisor-settings', (input: Partial<SupervisorSettings>) =>
+    ctx.supervisor.updateSettings(input ?? {}),
   )
 
   ctx.handle('pilot:project-instructions', (workspacePath: string) =>

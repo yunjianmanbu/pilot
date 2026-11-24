@@ -9,6 +9,9 @@ import {
   PluginManifestError,
   type PluginManifest,
   type PluginRoute,
+  type PluginSetting,
+  type PluginTool,
+  type PluginTrigger,
 } from './manifest'
 import {
   addTrustedKey,
@@ -31,6 +34,27 @@ const GRANTS_FILE = 'grants.json'
 const SECRET_ENV_PATTERN = /(api[_-]?key|secret|token|password|credential)/i
 
 export type PluginState = 'stopped' | 'ready' | 'error'
+
+/** A tool a manifest exposes to the agent, keyed by the host-visible name. */
+export interface PluginToolDescriptor {
+  pluginId: string
+  /** Manifest tool name (`crm-lookup`). */
+  name: string
+  /** `plugin__<id>__<name>`, unique across every plugin and MCP server. */
+  fullName: string
+  description: string
+  inputSchema: Record<string, unknown>
+  permission: string | null
+  /** How the agent schedules the tool; mirrors the manifest declaration. */
+  risk: 'read' | 'write' | 'exec'
+  pluginName: string
+}
+
+/** Namespaced so a plugin tool can never shadow a builtin or MCP tool. */
+export function pluginToolName(pluginId: string, tool: string): string {
+  const raw = `plugin__${pluginId}__${tool}`
+  return raw.length <= 64 ? raw : `${raw.slice(0, 55)}_${raw.length}`
+}
 
 /** A user-approved capability set for one plugin (`grants.json` entry). */
 export interface PluginGrant {
@@ -112,6 +136,13 @@ export interface PluginHostOptions {
   nodePath?: string
   /** Overrides `.pilot/plugins/security.json` for embedded hosts and tests. */
   signaturePolicy?: SignaturePolicy
+  /**
+   * Receives `host.notify` messages from plugin processes. The desktop and the
+   * companion server wire this to their own notice broadcast.
+   */
+  notify?: (message: string) => void
+  /** Receives `plugin.notify` events a plugin pushes out of its own accord. */
+  onPluginEvent?: (pluginId: string, event: string, payload: unknown) => void
 }
 
 interface PendingCall {
@@ -191,6 +222,10 @@ export class PluginHost {
   private policy: SignaturePolicy = DEFAULT_SIGNATURE_POLICY
   private loaded = false
   private sequence = 0
+  /** One timer set per plugin: rebuilt whenever grants or manifests change. */
+  private schedules = new Map<string, NodeJS.Timeout[]>()
+  /** Pending KV writes per plugin, so two rapid `host.store.set` calls serialize. */
+  private storeWrites = new Map<string, Promise<void>>()
 
   constructor(private readonly options: PluginHostOptions) {}
 
@@ -223,6 +258,12 @@ export class PluginHost {
       )
     }
     this.loaded = true
+    // 共享宿主是常驻的，不主动回收就永远不退出：目录被删、清单变非法或被
+    // 用户停用的插件，重新读盘时把它的进程一并停掉。
+    for (const id of [...this.runtimes.keys()]) {
+      if (!this.manifests.has(id) || !this.grantFor(id).enabled) await this.deactivate(id)
+    }
+    this.restartSchedules()
   }
 
   /** Trust anchors this workspace accepts, plus the active policy. */
@@ -290,6 +331,43 @@ export class PluginHost {
     await mkdir(dir, { recursive: true })
     await writeFile(join(dir, GRANTS_FILE), `${JSON.stringify(this.grants, null, 2)}\n`, 'utf8')
     if (!grant.enabled) await this.deactivate(id)
+    this.restartSchedules()
+  }
+
+  /** Current grant for `id` (enabled flag, permissions and config values). */
+  async grant(id: string): Promise<PluginGrant> {
+    await this.ensureLoaded()
+    return this.grantFor(id)
+  }
+
+  /**
+   * Store user-entered config for a plugin. Values land in `grants.json` beside
+   * the permissions, so re-running `plugin.activate` is enough for the plugin to
+   * see them; a running process is restarted to pick them up.
+   */
+  async setConfig(id: string, config: Record<string, unknown>): Promise<PluginGrant> {
+    await this.ensureLoaded()
+    const manifest = await this.manifest(id)
+    const next: Record<string, unknown> = {}
+    for (const setting of manifest.settings) {
+      const raw = config[setting.key]
+      if (raw === undefined || raw === '' || raw === null) continue
+      if (setting.type === 'boolean') next[setting.key] = raw === true || raw === 'true'
+      else if (setting.type === 'number') {
+        const numeric = Number(raw)
+        if (Number.isFinite(numeric)) next[setting.key] = numeric
+      } else {
+        next[setting.key] = String(raw).slice(0, 4_096)
+      }
+    }
+    const current = this.grantFor(id)
+    await this.setGrant(id, { ...current, config: next })
+    // Restart so the new values reach the plugin process now, not next reboot.
+    if (this.runtimes.get(id)?.ready) {
+      await this.deactivate(id)
+      await this.activate(id)
+    }
+    return this.grantFor(id)
   }
 
   /** The manifest for `id`, or a 404/400 `PluginError`. */
@@ -426,6 +504,9 @@ export class PluginHost {
           roles: manifest.roles,
           routes: manifest.routes,
           permissions: manifest.permissions,
+          tools: manifest.tools,
+          settings: manifest.settings,
+          triggers: manifest.triggers,
         },
         config: grant.config ?? {},
         workspaceRoot: this.root(),
@@ -539,6 +620,12 @@ export class PluginHost {
     }
     if (!parsed || typeof parsed !== 'object') return
     const record = parsed as Record<string, unknown>
+    // A plugin-originated request is answered here; it must be recognised before
+    // the pending lookup because its id comes from the plugin's own counter.
+    if (record.method === 'host.call') {
+      this.handleHostCall(runtime, record)
+      return
+    }
     const id = typeof record.id === 'number' ? record.id : Number(record.id)
     const pending = runtime.pending.get(id)
     if (!pending) return
@@ -617,6 +704,276 @@ export class PluginHost {
       this.timeoutFor(manifest),
     )
     return normalizeResult(result)
+  }
+
+  /**
+   * Every tool an enabled plugin offers. Tools are the only plugin capability
+   * the agent sees, and each one still maps to a declared route, so disabling
+   * the plugin removes the tool and the HTTP surface in one step.
+   */
+  async toolDescriptors(): Promise<PluginToolDescriptor[]> {
+    await this.ensureLoaded()
+    const out: PluginToolDescriptor[] = []
+    for (const manifest of this.manifests.values()) {
+      if (!manifest.tools.length) continue
+      if (!this.grantFor(manifest.id).enabled) continue
+      for (const tool of manifest.tools) {
+        out.push({
+          pluginId: manifest.id,
+          pluginName: manifest.name,
+          name: tool.name,
+          fullName: pluginToolName(manifest.id, tool.name),
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          permission: tool.permission,
+          risk: tool.risk,
+        })
+      }
+    }
+    return out
+  }
+
+  /**
+   * Run one manifest tool. Same transport, limits and rate window as an HTTP
+   * call; the difference is that the caller is the agent, not a browser, so
+   * there is no session to evaluate permissions against and the plugin gets the
+   * tool name instead of a route so it can branch without parsing paths.
+   */
+  async toolCall(id: string, toolName: string, args: Record<string, unknown>): Promise<PluginCallResult> {
+    const manifest = await this.manifest(id)
+    const tool = manifest.tools.find((entry) => entry.name === toolName)
+    if (!tool) throw new PluginError(`plugin ${id} has no tool ${toolName}`, 404)
+    const runtime = await this.ensureReady(id)
+    const windowStart = Date.now() - 60_000
+    runtime.calls = runtime.calls.filter((stamp) => stamp > windowStart)
+    if (runtime.calls.length >= manifest.limits.rateLimitPerMinute) {
+      throw new PluginError(`plugin ${id} exceeded ${manifest.limits.rateLimitPerMinute} calls/min`, 429)
+    }
+    runtime.calls.push(Date.now())
+    runtime.totalCalls += 1
+    const result = await this.invoke(
+      runtime,
+      'plugin.request',
+      {
+        route: { method: tool.method, path: tool.route },
+        method: tool.method,
+        tool: tool.name,
+        session: null,
+        token: null,
+        body: args,
+        query: {},
+      },
+      this.timeoutFor(manifest),
+    )
+    return normalizeResult(result)
+  }
+
+  /**
+   * Push a host event to every running plugin that subscribed to it. Events do
+   * not start a stopped plugin: the trigger is a notification, not a spawn.
+   */
+  async emit(event: PluginTrigger['event'], data: unknown): Promise<void> {
+    await this.ensureLoaded()
+    const at = new Date().toISOString()
+    const deliveries: Promise<unknown>[] = []
+    for (const manifest of this.manifests.values()) {
+      if (!this.grantFor(manifest.id).enabled) continue
+      if (!manifest.triggers.some((trigger) => trigger.event === event)) continue
+      const runtime = this.runtimes.get(manifest.id)
+      if (!runtime?.ready) continue
+      deliveries.push(
+        this.invoke(runtime, 'plugin.event', { event, at, data: data ?? null }, this.timeoutFor(manifest)).catch(
+          (error: unknown) => {
+            runtime.lastError = error instanceof Error ? error.message : String(error)
+          },
+        ),
+      )
+    }
+    await Promise.all(deliveries)
+  }
+
+  /** Ids whose `schedule` triggers currently have a live timer. */
+  scheduledIds(): string[] {
+    return [...this.schedules.keys()].sort()
+  }
+
+  /**
+   * Fire every `schedule` trigger of one plugin right now.
+   *
+   * The timers are only a clock: the work is `fireSchedule`, so a manual run
+   * takes exactly the same path as 18:00 does. Used by the plugins page and by
+   * tests that must not wait half an hour for `everyMinutes`.
+   */
+  async runSchedule(id: string): Promise<number> {
+    const manifest = await this.manifest(id)
+    const scheduled = manifest.triggers.filter((trigger) => trigger.event === 'schedule')
+    for (const trigger of scheduled) await this.fireSchedule(id, trigger, { manual: true })
+    return scheduled.length
+  }
+
+  /** (Re)build the timer set behind `schedule` triggers. Idempotent. */
+  restartSchedules(): void {
+    for (const timers of this.schedules.values()) for (const timer of timers) clearInterval(timer)
+    this.schedules.clear()
+    for (const manifest of this.manifests.values()) {
+      if (!this.grantFor(manifest.id).enabled) continue
+      const scheduled = manifest.triggers.filter((trigger) => trigger.event === 'schedule')
+      if (!scheduled.length) continue
+      const timers: NodeJS.Timeout[] = []
+      for (const trigger of scheduled) {
+        if (trigger.everyMinutes) {
+          const timer = setInterval(
+            () => void this.fireSchedule(manifest.id, trigger, {}),
+            trigger.everyMinutes * 60_000,
+          )
+          timer.unref?.()
+          timers.push(timer)
+          continue
+        }
+        if (!trigger.timeOfDay) continue
+        // A minute-granularity clock is enough and avoids one timer per plugin.
+        let lastFired = ''
+        const timer = setInterval(() => {
+          const now = new Date()
+          const stamp = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`
+          const clock = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+          if (clock !== trigger.timeOfDay || lastFired === stamp) return
+          lastFired = stamp
+          void this.fireSchedule(manifest.id, trigger, { at: clock })
+        }, 30_000)
+        timer.unref?.()
+        timers.push(timer)
+      }
+      if (timers.length) this.schedules.set(manifest.id, timers)
+    }
+  }
+
+  private async fireSchedule(
+    id: string,
+    trigger: PluginTrigger,
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const runtime = await this.ensureReady(id)
+      await this.invoke(
+        runtime,
+        'plugin.event',
+        { event: 'schedule', at: new Date().toISOString(), data },
+        this.timeoutFor(runtime.manifest),
+      )
+    } catch (error) {
+      const runtime = this.runtimes.get(id)
+      if (runtime) runtime.lastError = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  /**
+   * Answer a `host.call` the plugin sent on stdout. Only an explicit allowlist
+   * of capabilities is reachable, and each one is gated by a granted permission
+   * (except the plugin-private store), so a plugin cannot widen its own grants.
+   */
+  private handleHostCall(runtime: PluginRuntime, record: Record<string, unknown>): void {
+    const params = (record.params ?? {}) as Record<string, unknown>
+    const capability = typeof params.capability === 'string' ? params.capability : ''
+    const payload = (params.payload ?? {}) as Record<string, unknown>
+    const reply = (body: Record<string, unknown>): void => {
+      const child = runtime.child
+      if (!child || !child.stdin.writable) return
+      try {
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: record.id ?? null, ...body })}\n`)
+      } catch {
+        // The plugin died while we were answering it.
+      }
+    }
+    const deny = (message: string): void => reply({ error: { code: 403, message } })
+    const grant = this.grantFor(runtime.manifest.id)
+    const allowed = (permission: string): boolean => permissionAllows(grant.permissions, permission)
+
+    if (capability.startsWith('host.store.')) {
+      const action = capability.slice('host.store.'.length)
+      void this.hostStore(runtime.manifest.id, action, payload)
+        .then((result) => reply({ result }))
+        .catch((error: unknown) =>
+          reply({ error: { code: 400, message: error instanceof Error ? error.message : String(error) } }),
+        )
+      return
+    }
+    if (capability === 'host.notify') {
+      if (!allowed('host:notify')) return deny('host.notify needs the host:notify permission')
+      const message = typeof payload.message === 'string' ? payload.message.trim().slice(0, 500) : ''
+      if (!message) return deny('host.notify needs a message')
+      this.options.notify?.(`[${runtime.manifest.name}] ${message}`)
+      reply({ result: { ok: true } })
+      return
+    }
+    if (capability === 'host.emit') {
+      const event = typeof payload.event === 'string' ? payload.event.slice(0, 64) : ''
+      if (!event) return deny('host.emit needs an event name')
+      this.options.onPluginEvent?.(runtime.manifest.id, event, payload.data ?? null)
+      reply({ result: { ok: true } })
+      return
+    }
+    deny(
+      `unsupported capability "${capability}"; this build supports host.store.get, host.store.set, host.store.delete, host.store.keys, host.notify and host.emit`,
+    )
+  }
+
+  /**
+   * Plugin-private key/value store under `<stateRoot>/<id>/kv.json`. Small on
+   * purpose: a plugin that needs more than this should keep its own files.
+   */
+  private async hostStore(
+    pluginId: string,
+    action: string,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> {
+    const dir = join(this.stateRoot(), pluginId)
+    const file = join(dir, 'kv.json')
+    const key = typeof payload.key === 'string' ? payload.key : ''
+    if (action !== 'keys' && (!key || key.length > 128)) {
+      throw new Error('host.store needs a key of 1-128 chars')
+    }
+    const previous = this.storeWrites.get(pluginId) ?? Promise.resolve()
+    let output: unknown = null
+    const next = previous.then(async () => {
+      let data: Record<string, unknown> = {}
+      try {
+        const parsed: unknown = JSON.parse(await readFile(file, 'utf8'))
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          data = parsed as Record<string, unknown>
+        }
+      } catch {
+        data = {}
+      }
+      if (action === 'get') {
+        output = data[key] ?? null
+        return
+      }
+      if (action === 'keys') {
+        output = Object.keys(data).slice(0, 200)
+        return
+      }
+      if (action === 'delete') {
+        delete data[key]
+        output = { ok: true }
+      } else if (action === 'set') {
+        const value = payload.value ?? null
+        const size = JSON.stringify(value)?.length ?? 0
+        if (size > 64 * 1024) throw new Error('host.store value is larger than 64 KB')
+        if (!(key in data) && Object.keys(data).length >= 1_000) {
+          throw new Error('host.store holds at most 1000 keys')
+        }
+        data[key] = value
+        output = { ok: true }
+      } else {
+        throw new Error(`unsupported host.store action "${action}"`)
+      }
+      await mkdir(dir, { recursive: true })
+      await writeFile(file, `${JSON.stringify(data)}\n`, 'utf8')
+    })
+    this.storeWrites.set(pluginId, next.catch(() => undefined))
+    await next
+    return output
   }
 
   /** The enabled plugin that owns session resolution, if any. */

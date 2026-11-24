@@ -36,10 +36,28 @@ function hostLocale(): string {
   const raw = (process.env['LC_ALL'] ?? process.env['LC_MESSAGES'] ?? process.env['LANG'] ?? '').trim()
   const base = raw.split('.')[0] ?? ''
   // POSIX locales are `ll_CC`; resolveLocale expects BCP-47 (`ll-CC`).
-  return base ? base.replace('_', '-') : 'en-US'
+  if (base) return base.replace('_', '-')
+  // Windows defines no POSIX locale variables, so a console started by
+  // double-clicking has none of them: falling straight back to English made
+  // `pilot serve` report "系统语言：en-US" on a Chinese Windows and render the
+  // browser console in English even with the language set to follow the system.
+  // Node ships full ICU on Windows, so its resolved locale is the OS region.
+  try {
+    const icu = new Intl.DateTimeFormat().resolvedOptions().locale.trim()
+    if (icu) return icu
+  } catch {
+    // A runtime built without full ICU has nothing better to offer.
+  }
+  return 'en-US'
 }
 
 export const app = {
+  /**
+   * `pilot serve` 没有窗口。面板要用浏览器原生的能力（全屏、无窗口按钮的
+   * 顶栏留白）之前得先知道这一点 —— 两个宿主报的 `process.platform` 一样，
+   * 只看平台名分不出来。桌面端的 `electron` 上没有这个字段。
+   */
+  pilotHost: 'server' as const,
   getPath(name: string): string {
     if (name === 'userData') return dataDir()
     if (name === 'logs') return join(dataDir(), 'logs')
@@ -63,6 +81,15 @@ export const app = {
   quit(): void {
     process.exit(0)
   },
+}
+
+// Electron 给主进程注入 `process.resourcesPath`；纯 Node 下它是 `undefined`，
+// 而主进程代码（个人分支、自身源码比对、安装包图标）会无条件把它拼进路径，
+// `join(undefined, 'source')` 直接抛 TypeError —— 进化页于是整体打不开。
+// 指向包根目录：那里没有 `source/`，于是自然落到「开发态」分支。
+if (!process.resourcesPath) {
+  ;(process as unknown as { resourcesPath: string }).resourcesPath =
+    String(process.env['PILOT_PACKAGE_ROOT'] ?? process.cwd())
 }
 
 let cachedKey: Buffer | null = null
@@ -129,6 +156,12 @@ export const nativeImage = {
   createFromBuffer(): never {
     return unavailable('屏幕截图')
   },
+  createFromPath(): never {
+    return unavailable('屏幕截图')
+  },
+  createEmpty(): { isEmpty: () => boolean } {
+    return { isEmpty: () => true }
+  },
 }
 
 export const desktopCapturer = {
@@ -147,15 +180,188 @@ export const shell = {
   openExternal(): never {
     return unavailable('打开外部程序')
   },
-}
-
-export const ipcMain = {
-  handle(): void {},
-  on(): void {},
+  async openPath(): Promise<string> {
+    return '服务器模式没有图形界面，无法打开文件夹'
+  },
+  showItemInFolder(): never {
+    return unavailable('定位到文件夹')
+  },
 }
 
 export const dialog = {
   showOpenDialog(): never {
     return unavailable('系统文件选择框')
   },
+  async showOpenDialogOrFiles(): Promise<never> {
+    return unavailable('系统文件选择框')
+  },
+  async showSaveDialog(): Promise<never> {
+    return unavailable('系统保存对话框')
+  },
+  async showMessageBox(): Promise<never> {
+    return unavailable('系统提示框')
+  },
+}
+
+/**
+ * Recorded IPC handlers.
+ *
+ * The desktop `src/main/ipc/*` modules call `ipcMain.handle` when they are
+ * registered; the server keeps those handlers in a table instead of talking to
+ * a renderer process, so the browser console can drive exactly the same code
+ * over `WS /bridge` (see `console.ts`). Nothing here can be reached from the
+ * machine's own renderer, because a server build has no renderer.
+ */
+type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
+
+const ipcHandlers = new Map<string, IpcHandler>()
+
+export const ipcMain = {
+  handle(channel: string, handler: IpcHandler): void {
+    ipcHandlers.set(channel, handler)
+  },
+  removeHandler(channel: string): void {
+    ipcHandlers.delete(channel)
+  },
+  on(): void {},
+}
+
+/** Channels registered by the main-process modules, in registration order. */
+export function ipcChannels(): string[] {
+  return [...ipcHandlers.keys()]
+}
+
+/** Run one recorded handler. Throws a readable error for an unknown channel. */
+export async function invokeIpc(
+  channel: string,
+  event: unknown,
+  args: unknown[],
+): Promise<unknown> {
+  const handler = ipcHandlers.get(channel)
+  if (!handler) throw new Error(`服务器模式没有实现这个功能：${channel}`)
+  return await handler(event, ...args)
+}
+
+/**
+ * Event sink for main-process pushes.
+ *
+ * Desktop code calls `BrowserWindow.getAllWindows()[i].webContents.send(...)`
+ * and `appState.mainWindow.webContents.send(...)`. With a sink installed the
+ * console window below is the only window, so every push lands in one place
+ * and the bridge forwards it to the browser tabs.
+ */
+type EventSink = (channel: string, payload: unknown) => void
+
+let eventSink: EventSink | null = null
+
+export function setWebContentsSink(sink: EventSink | null): void {
+  eventSink = sink
+}
+
+/** Stands in for `webContents` of the fake console window. */
+export const consoleSender = {
+  id: 0,
+  isDestroyed(): boolean {
+    return false
+  },
+  send(channel: string, ...payload: unknown[]): void {
+    eventSink?.(channel, payload[0])
+  },
+  executeJavaScript(): Promise<unknown> {
+    return Promise.resolve(undefined)
+  },
+}
+
+class ConsoleWindow {
+  readonly webContents = consoleSender
+  readonly id = 0
+  isDestroyed(): boolean {
+    return false
+  }
+  isMinimized(): boolean {
+    return false
+  }
+  close(): void {}
+  focus(): void {}
+  show(): void {}
+  restore(): void {}
+}
+
+/** The single window a headless server pretends to have. */
+export const consoleWindow = new ConsoleWindow()
+
+export const BrowserWindow = {
+  getAllWindows: (): ConsoleWindow[] => (eventSink ? [consoleWindow] : []),
+  getFocusedWindow: (): ConsoleWindow | null => null,
+  fromWebContents: (): ConsoleWindow | null => null,
+  fromId: (): ConsoleWindow | null => null,
+}
+
+export const Menu = {
+  buildFromTemplate: (): Record<string, never> => ({}),
+  setApplicationMenu(): void {},
+  getApplicationMenu: (): null => null,
+}
+
+class NoopTray {
+  setToolTip(): void {}
+  setContextMenu(): void {}
+  on(): void {}
+  destroy(): void {}
+  popUpContextMenu(): void {}
+}
+
+export const Tray = NoopTray
+
+export const Notification = {
+  isSupported(): boolean {
+    return false
+  },
+}
+
+export const protocol = {
+  registerSchemesAsPrivileged(): void {},
+  handle(): void {},
+  isProtocolHandled(): boolean {
+    return false
+  },
+}
+
+/** Server side clipboard: the browser tab owns the real clipboard. */
+export const clipboard = {
+  writeText(): void {},
+  readText(): string {
+    return ''
+  },
+  writeImage(): void {},
+}
+
+const noopWebRequest = {
+  on(): void {},
+  onBeforeSendHeaders(): void {},
+}
+
+const noopSession = {
+  webRequest: noopWebRequest,
+  clearCache(): Promise<void> {
+    return Promise.resolve()
+  },
+  setPermissionRequestHandler(): void {},
+}
+
+export const session = {
+  defaultSession: noopSession,
+  fromPartition: (): typeof noopSession => noopSession,
+  fromPath: (): typeof noopSession => noopSession,
+}
+
+export const webUtils = {
+  getPathForFile(): string {
+    return ''
+  },
+}
+
+export const screen = {
+  getPrimaryDisplay: () => ({ workAreaSize: { width: 1280, height: 800 }, scaleFactor: 1 }),
+  getAllDisplays: () => [],
 }

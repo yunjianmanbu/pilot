@@ -146,6 +146,7 @@ function buildPrompt(
   scope: string | undefined,
   checksEnabled: boolean,
   locale?: AppLocale,
+  fullAutonomy = false,
 ): string {
   const label =
     mode === 'general' ? 'Subagent' : mode === 'toolsmith' ? 'Toolsmith' : 'Explore'
@@ -166,6 +167,11 @@ function buildPrompt(
       checksEnabled
         ? '- You may edit files inside the workspace with write_file or apply_patch. You cannot run arbitrary shell commands, install packages, access the network, or change the plan.'
         : '- You may edit files inside the workspace with write_file or apply_patch. You cannot run commands, install packages, access the network, or change the plan.',
+      ...(fullAutonomy
+        ? [
+            '- Full autonomy is on: every read tool also accepts absolute paths outside the workspace, for any non-private location. Writes stay limited to the workspace.',
+          ]
+        : []),
       '- Make only the edits the task requires. After editing, report every changed file and what changed.',
       ...(checksEnabled
         ? [
@@ -192,7 +198,9 @@ function buildPrompt(
     )
   } else {
     common.push(
-      '- You may only inspect the workspace with the read-only tools provided. You cannot edit files, run commands, install anything, or access the network.',
+      fullAutonomy
+        ? '- Full autonomy is on: the read-only tools also accept absolute paths outside the workspace, so pass absolute paths when the answer lives elsewhere. Private paths (credentials, keys, browser profiles, password stores) stay refused. You cannot edit files, run commands, install anything, or access the network.'
+        : '- You may only inspect the workspace with the read-only tools provided. You cannot edit files, run commands, install anything, or access the network.',
       '- Do not modify anything and do not propose shell commands that would change the workspace.',
     )
   }
@@ -212,6 +220,8 @@ export interface SubagentOptions {
   shellEnabled?: boolean
   /** Effective app/UI language for the subagent's thinking text. */
   locale?: AppLocale
+  /** 完全自主档生效时，读类工具接受工作区外的绝对路径（隐私路径仍拒）。 */
+  fullAutonomy?: boolean
   signal?: AbortSignal
 }
 
@@ -251,6 +261,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentRes
   const host: ToolHost = {
     root: options.workspacePath,
     sandbox: null,
+    ...(options.fullAutonomy ? { fullAutonomy: true as const } : {}),
     remember: async () => {
       throw new Error('Subagent cannot write project memory')
     },
@@ -284,6 +295,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentRes
           options.scope,
           checksEnabled,
           options.locale,
+          options.fullAutonomy === true,
         ),
       },
       { role: 'user', content: options.task },
@@ -390,6 +402,8 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentRes
           rules: { allow: [], ask: [], deny: [] },
           sandboxed: false,
           sandboxAutoAllow: false,
+          // 完全自主档：读路径放开到工作区外，隐私硬边界与写边界不变。
+          ...(options.fullAutonomy ? { fullAutonomy: true as const } : {}),
         })
         if (verdict.action !== 'allow') {
           return {

@@ -41,6 +41,8 @@ import {
   type PluginManifest,
 } from './manifest'
 import { findTemplate, PLUGIN_TEMPLATES, type PluginTemplate } from './templates'
+import { pluginToolName } from './runtime'
+import { findBuiltinPlugin, listBuiltinPlugins } from './builtin'
 
 /**
  * Plugin market + plugin assistant.
@@ -65,7 +67,12 @@ const MAX_INSTALL_BYTES = 8 * 1024 * 1024
 const SKIP_COPY = new Set(['.git', 'node_modules', '.keys', '.state'])
 
 export interface PluginGrants {
-  [id: string]: { enabled: boolean; permissions: string[] }
+  [id: string]: {
+    enabled: boolean
+    permissions: string[]
+    /** Values the user entered for the manifest's `settings` entries. */
+    config?: Record<string, unknown>
+  }
 }
 
 export interface CreatePluginOptions extends PluginCreateInput {
@@ -157,6 +164,11 @@ async function readGrants(workspace: string): Promise<PluginGrants> {
         permissions: Array.isArray(entry.permissions)
           ? entry.permissions.filter((item): item is string => typeof item === 'string')
           : [],
+        // 配置与授权同在 grants.json：读的时候必须带上，否则改一次开关
+        // 就会把用户填过的设置一并抹掉。
+        ...(entry.config && typeof entry.config === 'object' && !Array.isArray(entry.config)
+          ? { config: entry.config as Record<string, unknown> }
+          : {}),
       }
     }
     return grants
@@ -204,6 +216,16 @@ async function readManifestFrom(dir: string): Promise<PluginManifest> {
   return parsePluginManifest(parsed)
 }
 
+/** Read one stored config value without letting `undefined` leak into a view. */
+function configValue(
+  config: Record<string, unknown> | undefined,
+  key: string,
+): string | number | boolean | undefined {
+  const raw = config?.[key]
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') return raw
+  return undefined
+}
+
 function templateViews(): PluginTemplateView[] {
   return PLUGIN_TEMPLATES.map((template) => ({
     id: template.id,
@@ -216,7 +238,10 @@ function templateViews(): PluginTemplateView[] {
 }
 
 /** Everything the Plugins panel needs, in one round trip. */
-export async function pluginOverview(workspace: string): Promise<PluginOverview> {
+export async function pluginOverview(
+  workspace: string,
+  options: { builtinRoots?: string[] } = {},
+): Promise<PluginOverview> {
   const root = resolve(workspace)
   const grants = await readGrants(root)
   const store = await readTrustStore(root)
@@ -242,6 +267,28 @@ export async function pluginOverview(workspace: string): Promise<PluginOverview>
       permissions: manifest.permissions,
       roles: manifest.roles,
       routes: manifest.routes,
+      tools: manifest.tools.map((tool) => ({
+        name: pluginToolName(manifest.id, tool.name),
+        description: tool.description,
+        risk: tool.risk,
+        route: tool.route,
+        method: tool.method,
+      })),
+      settings: manifest.settings.map((setting) => ({
+        key: setting.key,
+        label: setting.label,
+        type: setting.type,
+        required: setting.required,
+        placeholder: setting.placeholder,
+        description: setting.description,
+        // A password never travels back to the renderer: its presence is
+        // shown as "已保存" and an empty submit keeps the stored value.
+        value:
+          setting.type === 'password'
+            ? (configValue(grants[manifest.id]?.config, setting.key) === undefined ? null : '')
+            : (configValue(grants[manifest.id]?.config, setting.key) ?? null),
+      })),
+      triggers: manifest.triggers,
       providesSession: manifest.provides === 'session',
       enabled: grants[manifest.id]?.enabled === true,
       granted: grants[manifest.id]?.permissions ?? [],
@@ -270,6 +317,11 @@ export async function pluginOverview(workspace: string): Promise<PluginOverview>
       ...item,
       installed: plugins.some((plugin) => plugin.id === item.id),
     })),
+    // Read lazily and defensively: a broken bundle must not blank the page.
+    builtin: await listBuiltinPlugins({
+      installedIds: plugins.map((plugin) => plugin.id),
+      ...(options.builtinRoots ? { roots: options.builtinRoots } : {}),
+    }).catch(() => []),
     trustedKeys,
     policy,
     templates: templateViews(),
@@ -571,6 +623,62 @@ export async function installMarketPlugin(
   }
 }
 
+/**
+ * Install one plugin that ships with the app (`builtin-plugins/<id>`).
+ *
+ * Same trust model as an import the user picked by hand: the directory is
+ * copied into the workspace, signed with the workspace's own key and that key
+ * is trusted. The difference is only where the bytes came from, so a bundled
+ * plugin cannot arrive pre-approved without the user clicking install.
+ */
+export async function installBuiltinPlugin(
+  workspace: string,
+  id: string,
+  options: { roots?: string[] } = {},
+): Promise<PluginInstallResult> {
+  const root = resolve(workspace)
+  const source = await findBuiltinPlugin(id, options.roots)
+  if (!source) throw new Error(`应用里没有内置插件 ${id}`)
+  const manifest = source.manifest
+
+  const existing = await loadPluginManifests(root)
+  if (existing.some((entry) => entry.id === manifest.id)) {
+    throw new Error(`工作区里已安装 ${manifest.id}`)
+  }
+  if (existing.length >= MAX_PLUGINS) {
+    throw new Error(`一个工作区最多 ${MAX_PLUGINS} 个插件，请先卸载不用的插件`)
+  }
+
+  const { files, bytes } = await measure(source.dir)
+  if (files > MAX_INSTALL_FILES) throw new Error(`插件文件过多（${files} > ${MAX_INSTALL_FILES}）`)
+  if (bytes > MAX_INSTALL_BYTES) throw new Error('插件体积超过 8 MB，请先清理构建产物')
+
+  const dest = pluginDirFor(root, manifest.id)
+  if (existsSync(dest)) await rm(dest, { recursive: true, force: true })
+  await mkdir(dest, { recursive: true })
+  await cp(source.dir, dest, {
+    recursive: true,
+    filter: (path) => {
+      const name = path.split(/[\\/]/).pop() ?? ''
+      return !SKIP_COPY.has(name)
+    },
+  })
+
+  const signed = await signInstalledPlugin(root, manifest.id)
+  return {
+    id: manifest.id,
+    dir: dest,
+    signature: toSignatureView(signed.signature),
+    trustedKey: {
+      keyId: signed.key.keyId,
+      label: signed.key.label,
+      addedAt: signed.key.addedAt,
+      publicKey: signed.key.publicKey,
+      pluginIds: [manifest.id],
+    },
+  }
+}
+
 /** Sign an installed plugin with this workspace's own key and trust that key. */
 export async function signInstalledPlugin(
   workspace: string,
@@ -630,7 +738,52 @@ export async function setPluginEnabled(
     }
   }
   const grants = await readGrants(workspace)
-  grants[id] = { enabled, permissions: enabled ? manifest.permissions.slice() : [] }
+  grants[id] = { ...grants[id], enabled, permissions: enabled ? manifest.permissions.slice() : [] }
+  await writeGrants(workspace, grants)
+}
+
+/**
+ * Save the values a user typed for the manifest's `settings` entries. Kept in
+ * `grants.json` next to the grant, so one file is the whole plugin state.
+ *
+ * An empty string means "keep what is stored" for password fields (the
+ * renderer never receives the secret back) and "clear" for everything else.
+ */
+export async function setPluginConfig(
+  workspace: string,
+  id: string,
+  config: Record<string, unknown>,
+): Promise<void> {
+  const dir = pluginDirFor(workspace, id)
+  if (!existsSync(dir)) throw new Error(`没有已安装的插件 ${id}`)
+  const manifest = await readManifestFrom(dir)
+  const grants = await readGrants(workspace)
+  const previous = grants[id]?.config ?? {}
+  const next: Record<string, unknown> = {}
+  for (const setting of manifest.settings) {
+    const raw = config[setting.key]
+    if (setting.type === 'boolean') {
+      next[setting.key] = raw === true || raw === 'true'
+      continue
+    }
+    const text = raw === undefined || raw === null ? '' : String(raw).slice(0, 4_096)
+    if (!text) {
+      const kept = previous[setting.key]
+      if (setting.type === 'password' && kept !== undefined) next[setting.key] = kept
+      continue
+    }
+    if (setting.type === 'number') {
+      const numeric = Number(text)
+      if (Number.isFinite(numeric)) next[setting.key] = numeric
+      continue
+    }
+    next[setting.key] = text
+  }
+  grants[id] = {
+    enabled: grants[id]?.enabled === true,
+    permissions: grants[id]?.permissions ?? [],
+    config: next,
+  }
   await writeGrants(workspace, grants)
 }
 

@@ -258,6 +258,23 @@ export const PopoutIcon = (props: IconProps) => (
   </Base>
 )
 
+/**
+ * 顶栏「全屏」：四个角朝外。用角而不是整个方框，是为了和旁边的细线图标
+ * （设置、更新）重量相当，不要在 15px 上糊成一坨。
+ */
+export const ExpandIcon = (props: IconProps) => (
+  <Base {...props}>
+    <path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5" />
+  </Base>
+)
+
+/** 全屏中的反向状态：四个角朝内，表示「退出全屏」。 */
+export const CollapseIcon = (props: IconProps) => (
+  <Base {...props}>
+    <path d="M4 9h5V4M20 9h-5V4M20 15h-5v5M4 15h5v5" />
+  </Base>
+)
+
 export const ClockIcon = (props: IconProps) => (
   <Base {...props}>
     <circle cx="12" cy="12" r="9" />
@@ -312,6 +329,14 @@ export const PhoneIcon = (props: IconProps) => (
     <rect x="7" y="2.5" width="10" height="19" rx="2.6" />
     <path d="M10.5 5.5h3" />
     <circle cx="12" cy="18" r="0.9" fill="currentColor" stroke="none" />
+  </Base>
+)
+
+export const GlobeIcon = (props: IconProps) => (
+  <Base {...props}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18" />
+    <path d="M12 3c2.6 2.4 4 5.6 4 9s-1.4 6.6-4 9c-2.6-2.4-4-5.6-4-9s1.4-6.6 4-9Z" />
   </Base>
 )
 

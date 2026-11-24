@@ -2,6 +2,7 @@
 // 由 server.ts 的 handleRequest switch 按域拆出；协议文案与错误提示保持原样。
 import { isTodoPriority } from '../../../shared/todos'
 import { requireString } from '../helpers'
+import type { AccessLevel } from '../access-level'
 import type { CompanionServer } from '../server'
 import type { StoredPhone } from '../types'
 
@@ -10,6 +11,7 @@ export async function handleWorkRequest(
   method: string,
   params: Record<string, unknown>,
   phone: StoredPhone,
+  _access: AccessLevel = 'paired',
 ): Promise<unknown> {
   switch (method) {
     case 'schedules.list': {

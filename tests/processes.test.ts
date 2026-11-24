@@ -125,7 +125,10 @@ describe('ProcessManager', () => {
           "console.log('FLAG=' + (process.env.PILOT_TEST_FLAG ?? 'missing')); console.log('KEY=' + (process.env.PILOT_API_KEY ?? 'missing')); setInterval(() => {}, 1000)",
         ],
         env: { PILOT_TEST_FLAG: 'on', PILOT_API_KEY: 'explicit-leak' },
-        readyPattern: 'FLAG=on',
+        // Wait for the second line, not the first: `readyPattern` matches the
+        // output collected so far, so matching FLAG=on returned before KEY= was
+        // printed and the assertion below raced under a full parallel suite.
+        readyPattern: 'KEY=\\S+',
         waitMs: 4_000,
       })
       expect(started.ok).toBe(true)

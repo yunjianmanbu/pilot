@@ -18,7 +18,15 @@ import type {
   UpdateState,
   WorkspaceSummary,
 } from '../shared/types'
-import type { ModuleCheckState } from '../shared/module-check'
+import { OVERSIZED_MEDIUM, type ModuleCheckState } from '../shared/module-check'
+import {
+  SPLIT_DECISIONS,
+  normalizeSplitPath,
+  splitDecisionIndex,
+  splitDecisionKindLabel,
+  splitScanCounts,
+  splitScanIndex,
+} from '../shared/split-decisions'
 import { ignoredAutoAllowRules } from './agent/permissions'
 
 /**
@@ -430,11 +438,30 @@ const PROBES: Probe[] = [
       if (!state) {
         return { status: 'off', detail: '体检服务未启用', facts: [] }
       }
-      const risks = state.lastReport?.risks.length ?? 0
+      const report = state.lastReport
+      const risks = report?.risks.length ?? 0
       const pending = state.proposals.filter((item) => !item.refreshedAt).length
+      const large = report?.largeFiles ?? []
+      // `decided` 是后加的字段：旧报告里缺它就会读成 false。用决策表兑底，
+      // 免得已决策的文件在内视里又被列成“待决策”。
+      const scannedDecisions = report?.decisions ?? []
+      const decisions = scannedDecisions.length > 0 ? scannedDecisions : SPLIT_DECISIONS
+      const decisionIndex = splitDecisionIndex(decisions)
+      const isDecided = (path: string, flag: boolean | undefined): boolean =>
+        flag === true || decisionIndex.has(normalizeSplitPath(path))
+      const undecided = large.filter((file) => !isDecided(file.path, file.decided))
+      // 判据码是量出来的事实：报告里带了就直接用，没带（旧报告）就查实测表。
+      const scanIndex = splitScanIndex()
+      const verdictOf = (path: string): string | undefined =>
+        large.find((file) => file.path === path && file.verdict)?.verdict ?? scanIndex.get(path)?.verdict
+      const measured = undecided.filter((file) => verdictOf(file.path))
+      const unmeasured = undecided.filter((file) => !verdictOf(file.path))
+      const distribution = splitScanCounts()
+        .map((entry) => `${entry.code}=${entry.count}`)
+        .join(' ')
       return {
-        status: !state.lastReport ? 'off' : risks > 0 ? 'warn' : 'ok',
-        detail: state.lastReport
+        status: !report ? 'off' : risks > 0 ? 'warn' : 'ok',
+        detail: report
           ? `${risks} 条风险（${state.lastRunAt ?? '—'}）`
           : '还没有跑过工作区体检',
         facts: [
@@ -442,6 +469,42 @@ const PROBES: Probe[] = [
           `历史报告 ${state.history.length} 份`,
           // 内视只读：这里只说提案有几份，不会因此改任何文件。
           `改造提案 ${state.proposals.length} 份${pending > 0 ? `（${pending} 份待审阅）` : ''}`,
+          // 行数只用于发现“值得量化一次”的目标，不是拆分结论；内视把两者分开写。
+          // 全部已决策时不再写“0 个待决策（0 个…）”，那串零只会让读者以为没查过。
+          `超过 ${OVERSIZED_MEDIUM} 行的文件 ${large.length} 个：${
+            undecided.length > 0
+              ? `${undecided.length} 个待决策（${measured.length} 个已有判据、${unmeasured.length} 个还没量过），`
+              : ''
+          }${large.length - undecided.length} 个已有拆分决策`,
+          // 判据口径写一行，读者才知道为什么这里不再直接建议拆。
+          '行数只用来发现需要量化的目标；拆不拆看判据码与 split-decisions.ts 里已记录的决策',
+          // 判据分布说明「大多数大文件量出来是什么码」，避免把行数读成结论。
+          ...(distribution ? [`split-candidates.mjs 实测判据分布：${distribution}`] : []),
+          ...(measured.length > 0
+            ? [
+                `只差决策的：${measured
+                  .slice(0, 4)
+                  .map((file) => `${file.path} ${verdictOf(file.path)}`)
+                  .join('；')}`,
+              ]
+            : []),
+          ...(unmeasured.length > 0
+            ? [
+                `还没量过的：${unmeasured
+                  .slice(0, 4)
+                  .map((file) => `${file.path}（${file.lines} 行）`)
+                  .join('；')}，先跑 node pilot/scripts/split-candidates.mjs <文件>`,
+              ]
+            : []),
+          // 决策是仓库级事实：即便这次扫描没命中任何一个，也不该显示成「0 条」。
+          ...(decisions.length > 0
+            ? [
+                `已记录拆分决策 ${decisions.length} 条（${scannedDecisions.length > 0 ? '本次扫描命中' : '仓库记录'}）：${decisions
+                  .slice(0, 4)
+                  .map((decision) => `${decision.path} ${splitDecisionKindLabel(decision.kind)}`)
+                  .join('；')}`,
+              ]
+            : []),
         ],
       }
     },

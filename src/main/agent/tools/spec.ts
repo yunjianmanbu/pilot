@@ -201,7 +201,17 @@ export interface ToolHost {
    */
   referenceRoots?: ReviewRoot[]
   /** Present when run_shell must execute inside the OS sandbox. */
-  sandbox?: { network: boolean } | null
+  sandbox?: { network: boolean; writableRoots?: string[] } | null
+  /**
+   * 完全自主档生效时存在。读类工具因此接受工作区外的绝对路径
+   * （隐私路径仍在权限层被拒）；写入仍限于本工作区。
+   */
+  fullAutonomy?: boolean
+  /**
+   * Pilot 自身源码根（开发时是客户端目录，安装后是 userData/self-src）。
+   * 完全自主档下它是除工作区之外唯一允许写入的根，其他绝对路径一律拒绝。
+   */
+  selfSourceRoot?: string
   /** Windows interpreter for run_shell; `auto` detects Git Bash / WSL / cmd. */
   shellInterpreter?: ShellInterpreter
   /**

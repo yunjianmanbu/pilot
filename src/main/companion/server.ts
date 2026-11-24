@@ -24,8 +24,6 @@ import type {
 import type { HostCapabilities } from '../../shared/capabilities'
 import type { ModuleCheckSummary } from '../../shared/module-check'
 import { normalizeRelayUrl, splitRelayUrl } from '../../shared/relay'
-import { handlePluginHttp } from '../plugins/bridge'
-import { PLUGIN_HTTP_PREFIX } from '../plugins/manifest'
 import { PluginHost } from '../plugins/runtime'
 import { DynamicToolRegistry } from '../agent/toolsmith'
 import type { AgentRunner } from '../agent/runner'
@@ -85,6 +83,15 @@ import {
 } from './helpers'
 import { RelaySocket } from './relay-socket'
 import { routePhoneRequest } from './handlers'
+import { accessLevelOf, roleOfAccess, type AccessLevel } from './access-level'
+import { bridgeIdentity } from './handlers/bridge'
+import {
+  bindScopedOptions,
+  guestScopeOf,
+  withCompanionScope,
+  type CompanionRole,
+  type CompanionScope,
+} from './scope'
 import {
   blankState,
   blankSave,
@@ -148,6 +155,11 @@ import {
   sendEncrypted,
 } from './handlers/handshake'
 import {
+  consumeOffer,
+  offerAlive,
+  takeAccessOffer,
+} from './handlers/access'
+import {
   listSessions,
   getSession,
   phoneSafeMessages,
@@ -172,6 +184,7 @@ import {
   capabilities,
   requireUpdate,
   requireEvolution,
+  requireReflect,
   scheduleInput,
   pruneUploads,
   assertUploadFresh,
@@ -186,6 +199,7 @@ import type {
   CompanionState,
   ConnectionSocket,
   PairingOffer,
+  PageTicket,
   PendingPairing,
   PendingUpload,
   PhoneLearningState,
@@ -206,6 +220,10 @@ export class CompanionServer {
   offerTimer: NodeJS.Timeout | null = null
   saveTimer: NodeJS.Timeout | null = null
   offer: PairingOffer | null = null
+  /** 浏览器页面申请的一次性凭据，按 lookup 存放；二维码仍占 `offer` 单槽。 */
+  readonly accessOffers = new Map<string, PairingOffer>()
+  /** 网页服务的访问凭据申请（`POST /bridge/ticket`），按 ticket id 存放。 */
+  readonly pageTickets = new Map<string, PageTicket>()
   pendingPair: PendingPairing | null = null
   pairApprovalTimer: NodeJS.Timeout | null = null
   connections = new Set<ClientConnection>()
@@ -217,9 +235,44 @@ export class CompanionServer {
   appQrCache: { url: string; qrDataUrl: string } | null = null
   lastError: string | null = null
 
-  constructor(readonly options: CompanionOptions) {
-    this.stateFile = join(options.dataDir, 'companion.json')
+  constructor(readonly rawOptions: CompanionOptions) {
+    this.stateFile = join(rawOptions.dataDir, 'companion.json')
     this.state = this.blankState()
+    // 两套数据面：本机（以及等同本机的 host 用户）用 primary，客户机用户用
+    // guest（宿主装配的第二套 Store + AgentRunner）。绑定后的 `options` 让所有
+    // 现有的 `host.options.store` 读取自动跟随当前请求链，不必改上百处调用点。
+    this.primaryScope = {
+      role: 'host',
+      store: rawOptions.store,
+      runner: rawOptions.runner,
+      billing: rawOptions.billing,
+      ...(rawOptions.checkpoints ? { checkpoints: rawOptions.checkpoints } : {}),
+      ...(rawOptions.changes ? { changes: rawOptions.changes } : {}),
+    }
+    this.guestData = guestScopeOf(rawOptions)
+    this.options = bindScopedOptions(rawOptions, this.primaryScope)
+  }
+
+  /** 绑定作用域后的选项：只有数据面五项会随请求变，其余身份无关。 */
+  readonly options: CompanionOptions
+  /** 本机数据面：本机与 host 身份的远端共用。 */
+  readonly primaryScope: CompanionScope
+  /** 客户机用户的数据面；null 表示宿主还没装配（或装配失败）。 */
+  private guestData: CompanionScope | null
+
+  get guestScope(): CompanionScope | null {
+    return this.guestData
+  }
+
+  /**
+   * 启动后再装配客户机数据面。
+   *
+   * 第二套 Store + AgentRunner 建得慢（要读盘、建沙箱），而它的 publish 又
+   * 要指向这个 companion 实例；先构造再装配避开了循环依赖。没有装配时
+   * 客户机用户的请求一律被拒绝（见 handlers/index.ts），不会静默回退到主机数据。
+   */
+  attachGuest(data: Partial<CompanionScope> | null): void {
+    this.guestData = data ? guestScopeOf({ ...this.rawOptions, guest: data }) : null
   }
 
   /**
@@ -227,6 +280,8 @@ export class CompanionServer {
    * on first use so a workspace-less server does not create stray directories.
    */
   pluginHostInstance: PluginHost | null = null
+  /** 本服务挂在共享宿主上的通知出口，停服时只摘自己这一份。 */
+  pluginHostDetach: (() => void) | null = null
 
   pluginHost(): PluginHost | null {
     return pluginHost(this)
@@ -325,8 +380,8 @@ export class CompanionServer {
     return buildPairingOffer(this, autoApprove)
   }
 
-  resolvePairing(requestId: string, approved: boolean): boolean {
-    return resolvePairing(this, requestId, approved)
+  resolvePairing(requestId: string, approved: boolean, role?: 'host' | 'client'): boolean {
+    return resolvePairing(this, requestId, approved, role)
   }
 
   pendingPairing(): CompanionPairRequest | null {
@@ -335,13 +390,36 @@ export class CompanionServer {
 
   requestPairApproval(
     connection: ClientConnection,
-    input: { phoneId: string; name: string; platform: string },
-  ): Promise<{ approved: boolean; reason?: string }> {
+    input: {
+      phoneId: string
+      name: string
+      platform: string
+      mode?: 'qr' | 'browser'
+      role?: 'host' | 'client'
+    },
+  ): Promise<{ approved: boolean; reason?: string; role?: 'host' | 'client' }> {
     return requestPairApproval(this, connection, input)
   }
 
-  settlePairing(requestId: string, approved: boolean, reason?: string): boolean {
-    return settlePairing(this, requestId, approved, reason)
+  takeAccessOffer(lookup: string): PairingOffer | null {
+    return takeAccessOffer(this, lookup)
+  }
+
+  offerAlive(offer: PairingOffer): boolean {
+    return offerAlive(this, offer)
+  }
+
+  consumeOffer(offer: PairingOffer): void {
+    consumeOffer(this, offer)
+  }
+
+  settlePairing(
+    requestId: string,
+    approved: boolean,
+    reason?: string,
+    role?: 'host' | 'client',
+  ): boolean {
+    return settlePairing(this, requestId, approved, reason, role)
   }
 
   async appQr(): Promise<{ url: string; qrDataUrl: string }> {
@@ -451,25 +529,49 @@ export class CompanionServer {
     })
     this.wss = wss
     this.server.on('upgrade', (request, socket, head) => {
-      let path = '/'
+      let url: URL
       try {
-        path = new URL(request.url ?? '/', 'http://pilot.local').pathname
+        url = new URL(request.url ?? '/', 'http://pilot.local')
       } catch {
         socket.destroy()
         return
       }
-      if (path !== '/ws') {
+      // `/bridge` 是浏览器里的桌面界面：先定级，认不出是谁就直接断开——
+      // 这条通道背后是整份主进程 IPC 表，不能给匿名连接。桌面应用没有注入
+      // IPC 表，因此那里永远不接这条通道。
+      let bridgeLevel: AccessLevel | null = null
+      let bridgePhoneId: string | null = null
+      if (url.pathname === '/bridge') {
+        if (!this.options.ipc) {
+          socket.destroy()
+          return
+        }
+        const identity = bridgeIdentity(this, request, url)
+        if (!identity) {
+          socket.destroy()
+          return
+        }
+        bridgeLevel = identity.level
+        bridgePhoneId = identity.phoneId
+      } else if (url.pathname !== '/ws') {
         socket.destroy()
         return
       }
       wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request)
+        wss.emit('connection', ws, request, bridgeLevel ?? undefined, bridgePhoneId ?? undefined)
       })
     })
-    wss.on('connection', (socket, request) =>
+    wss.on('connection', (
+      socket,
+      request,
+      bridgeLevel?: AccessLevel,
+      bridgePhoneId?: string,
+    ) =>
       this.handleConnection(socket as unknown as ConnectionSocket, {
         via: 'lan',
         address: request.socket.remoteAddress ?? undefined,
+        ...(bridgeLevel ? { bridgeLevel } : {}),
+        ...(bridgePhoneId ? { bridgePhoneId } : {}),
       }),
     )
     this.heartbeat = setInterval(() => this.checkHeartbeat(), HEARTBEAT_MS)
@@ -482,7 +584,9 @@ export class CompanionServer {
   async stop(): Promise<void> {
     this.clearOffer()
     this.stopRelay()
-    await this.pluginHostInstance?.stopAll()
+    // 插件进程是共享的（智能体的工具调用也要用），停服只摘自己的监听。
+    this.pluginHostDetach?.()
+    this.pluginHostDetach = null
     this.pluginHostInstance = null
     const uploads = [...this.pendingUploads.values()]
     this.pendingUploads.clear()
@@ -510,11 +614,15 @@ export class CompanionServer {
     if (server) {
       await new Promise<void>((resolve) => server.close(() => resolve()))
     }
+    // 停服前把挂起的保存落盘：`blankSave()` 是 300ms 防抖，停服时不清掉它，
+    // 它会在调用方（含测试）删完状态目录之后才写 state.json，留下写不进去的
+    // 临时文件；桌面端关掉网页服务后也不该再动磁盘。
+    await this.saveNow()
     this.emitStatus()
   }
 
-  publish(event: RunEvent): void {
-    return publish(this, event)
+  publish(event: RunEvent, role?: CompanionRole): void {
+    return publish(this, event, role)
   }
 
   notify(event: RunEvent): void {
@@ -640,14 +748,42 @@ export class CompanionServer {
     method: string,
     params: Record<string, unknown>,
     phone: StoredPhone,
+    access: AccessLevel = 'paired',
   ): Promise<unknown> {
-    return routePhoneRequest(this, method, params, phone)
+    // 请求链上绑定作用域：handler 里成百处 `host.options.store/runner` 因此
+    // 自动解析到这条请求该用的那一套，离开请求链（定时任务、runner 回调）
+    // 自然回到主机数据面。
+    return withCompanionScope(this.scopeFor(access), () =>
+      routePhoneRequest(this, method, params, phone, access),
+    )
+  }
+
+  /** 这条连接该用哪一套数据面。 */
+  scopeFor(access: AccessLevel): CompanionScope {
+    return roleOfAccess(access) === 'client' && this.guestScope ? this.guestScope : this.primaryScope
+  }
+
+  /** 某条已连接设备所属的作用域角色：事件只投递给同一套数据面。 */
+  scopeRoleOfPhone(phoneId: string): CompanionRole {
+    const phone = this.state.phones[phoneId]
+    if (!phone) return 'host'
+    const connection = this.byPhone.get(phoneId)
+    return roleOfAccess(
+      accessLevelOf({
+        via: connection?.via ?? 'relay',
+        address: connection?.address ?? null,
+        credential: phone.via,
+        role: phone.role,
+      }),
+    )
   }requireUpdate(): NonNullable<CompanionOptions['update']> {
     return requireUpdate(this)
   }capabilities(): HostCapabilities {
     return capabilities(this)
   }requireEvolution(): NonNullable<CompanionOptions['evolution']> {
     return requireEvolution(this)
+  }requireReflect(): NonNullable<CompanionOptions['reflect']> {
+    return requireReflect(this)
   }scheduleInput(
     params: Record<string, unknown>,
     requireContent: boolean,

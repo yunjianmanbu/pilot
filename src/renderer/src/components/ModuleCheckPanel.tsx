@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   MODULE_INTERVAL_CHOICES,
+  type LargeFileFact,
   type ModuleCheckReport,
   type ModuleCheckState,
   type ModuleRisk,
@@ -9,6 +10,7 @@ import {
 import { ListCheckIcon, RefreshIcon } from '../icons'
 import { t } from '../i18n'
 import { SelectMenu } from './SelectMenu'
+import type { SplitDecisionKind, SplitVerdictCode } from '../../../shared/split-decisions'
 
 /**
  * 模块自检页面。
@@ -39,7 +41,7 @@ function severityText(severity: ModuleRisk['severity']): string {
 function ruleText(risk: ModuleRisk): string {
   switch (risk.rule) {
     case 'oversized-file':
-      return t('超大文件')
+      return t('大文件待量化')
     case 'todo-backlog':
       return t('待办积压')
     case 'debug-logging':
@@ -57,6 +59,12 @@ function ruleText(risk: ModuleRisk): string {
     default:
       return risk.rule
   }
+}
+
+function decisionKindText(kind: SplitDecisionKind): string {
+  if (kind === 'split') return t('已拆分')
+  if (kind === 'keep') return t('决定不拆')
+  return t('暂缓')
 }
 
 function intervalLabel(hours: number): string {
@@ -247,6 +255,18 @@ export function ModuleCheckPanel({ onOpenSession, onError }: ModuleCheckPanelPro
     value: String(hours),
     label: intervalLabel(hours),
   }))
+
+  // 代码结构的事实不是结论：这里把「还没量化过的大文件」和「已经记录过的拆分决定」
+  // 原样列出来，用户能一眼看出自检凭的是什么，也能看出哪些文件不该再被提。
+  const largeFiles = report?.largeFiles ?? []
+  const undecidedFiles = largeFiles.filter((file) => !file.decided)
+  // 未决策还要再分两类：已有判据码的（只差一条决策）和还没量过的（连判据都没有）。
+  // 面板上把两者分开，用户就不会把「超过 800 行」直接读成「该拆」。
+  const measuredFiles = undecidedFiles.filter(
+    (file): file is LargeFileFact & { verdict: SplitVerdictCode } => Boolean(file.verdict),
+  )
+  const unmeasuredFiles = undecidedFiles.filter((file) => !file.verdict)
+  const splitDecisions = report?.decisions ?? []
 
   return (
     <div className="page panel-page module-check-page">
@@ -532,6 +552,14 @@ export function ModuleCheckPanel({ onOpenSession, onError }: ModuleCheckPanelPro
                     <strong>{t("建议")}</strong>
                     {risk.recommendation}
                   </p>
+                  {/* 依据必须和结论一起显示：同一句话没有判据码与阈值来源，用户
+                      无法判断它是不是又一次凭行数猜的。 */}
+                  {risk.basis ? (
+                    <p className="module-check-risk-fix">
+                      <strong>{t("依据")}</strong>
+                      {risk.basis}
+                    </p>
+                  ) : null}
                   {risk.evidence.length > 0 ? (
                     <ul className="module-check-evidence">
                       {risk.evidence.map((item) => (
@@ -571,6 +599,65 @@ export function ModuleCheckPanel({ onOpenSession, onError }: ModuleCheckPanelPro
           </div>
         ) : null}
       </section>
+
+      {report && (largeFiles.length > 0 || splitDecisions.length > 0) ? (
+        <section className="module-check-section">
+          <div className="module-check-section-head">
+            <div>
+              <h2>{t("代码结构与拆分决策")}</h2>
+              <p>
+                {t("行数只说明“值得量化一次”，不是拆分建议。已记录决策的文件不会再被提。")}
+              </p>
+            </div>
+          </div>
+          {measuredFiles.length > 0 ? (
+            <div className="module-check-note">
+              {t("已有判据、只差决策：{v1} 个文件。", { v1: measuredFiles.length })}
+            </div>
+          ) : null}
+          {measuredFiles.length > 0 ? (
+            <ul className="module-check-evidence">
+              {measuredFiles.slice(0, 12).map((file) => (
+                <li key={file.path}>
+                  <code>{file.path}</code> · {t("{v1} 行", { v1: file.lines })} · {t("判据 {v1}", { v1: file.verdict })}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {unmeasuredFiles.length > 0 ? (
+            <div className="module-check-note">
+              {t("还没量过：{v1} 个文件。先在 pilot/pilot 里跑 split-candidates.mjs 再决定。", {
+                v1: unmeasuredFiles.length,
+              })}
+            </div>
+          ) : null}
+          {unmeasuredFiles.length > 0 ? (
+            <ul className="module-check-evidence">
+              {unmeasuredFiles.slice(0, 12).map((file) => (
+                <li key={file.path}>
+                  <code>{file.path}</code> · {t("{v1} 行", { v1: file.lines })} · {t("未量化")}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {splitDecisions.length > 0 ? (
+            <div className="module-check-note">
+              {t("已记录拆分决策：{v1} 条", { v1: splitDecisions.length })}
+            </div>
+          ) : null}
+          {splitDecisions.length > 0 ? (
+            <ul className="module-check-evidence">
+              {splitDecisions.slice(0, 12).map((decision) => (
+                <li key={decision.path}>
+                  <code>{decision.path}</code> · {decisionKindText(decision.kind)}
+                  {decision.rule ? ` · ${decision.rule}` : ''}
+                  {decision.reason ? ` · ${decision.reason}` : ''}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
     </div>
   )
 }

@@ -4,6 +4,7 @@ import type {
   StoredMessage,
   ToolCatalogEntry,
   ToolCatalogSource,
+  ToolRisk,
 } from './types'
 
 export interface ToolCatalogInput {
@@ -20,10 +21,25 @@ export interface ToolCatalogInput {
   /** MCP is off by default; when off the servers are listed as disabled. */
   mcpEnabled: boolean
   /**
+   * Tools of the plugins enabled in this workspace. They are named
+   * `plugin__<id>__<tool>`, so they cannot collide with the entries above.
+   */
+  plugins?: ToolCatalogInputPlugin[]
+  /**
    * 工具名 → 当前会话里真正被调用的次数。缺省时全部记 0，
    * 返回值仍然带 calls 字段，面板就能把「还没用过」说清楚。
    */
   calls?: Record<string, number>
+}
+
+/** One manifest tool of an enabled plugin, as the tool panel needs it. */
+export interface ToolCatalogInputPlugin {
+  id: string
+  name: string
+  tool: string
+  fullName: string
+  description: string
+  risk: ToolRisk
 }
 
 /**
@@ -126,6 +142,7 @@ function callsFor(
   calls: Record<string, number>,
 ): number {
   if (entry.source === 'mcp') return calls[`mcp__${entry.server ?? entry.name}`] ?? 0
+  // Plugin entries already carry the runtime name, so they need no prefix rule.
   return calls[entry.name] ?? 0
 }
 
@@ -176,6 +193,20 @@ export function buildToolCatalog(input: ToolCatalogInput): ToolCatalogEntry[] {
       version: tool.version,
       targets: tool.targets,
       inputSchema: tool.inputSchema,
+    })
+  }
+  for (const tool of input.plugins ?? []) {
+    entries.push({
+      name: tool.fullName,
+      // The manifest description is written for the model; the panel prefixes
+      // it with the plugin name so two plugins with a "status" tool differ.
+      description: `[plugin ${tool.id}] ${tool.description}`,
+      descriptionZh: `插件「${tool.name}」：${tool.description}`,
+      risk: tool.risk,
+      source: 'plugin',
+      enabled: true,
+      plugin: tool.id,
+      pluginName: tool.name,
     })
   }
   const calls = input.calls ?? {}

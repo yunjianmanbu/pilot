@@ -1,5 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+// 浏览器里没有 preload：文档窗口同样需要桥（它只用到 file-preview/doc-state）。
+import './browser-bridge'
 import { DocumentWindow } from './DocumentWindow'
 import { t } from './i18n'
 import './styles.css'

@@ -21,6 +21,7 @@ import type {
   ToolResult,
 } from '../../shared/types'
 import { assertInside, workspaceRoot } from '../workspace'
+import { killWindowsTree } from '../workspace/process-tree'
 
 const TOOLS_DIR = join('.pilot', 'tools')
 const GLOBAL_DIR = join('tools', 'global')
@@ -1417,10 +1418,8 @@ function runChild(
 function killTree(pid: number | undefined): void {
   if (!pid) return
   if (process.platform === 'win32') {
-    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
-      stdio: 'ignore',
-      windowsHide: true,
-    })
+    // 不带 `/T /F`：工具自检里也可能拉起 Office，见 workspace/process-tree.ts。
+    killWindowsTree(pid)
     return
   }
   try {

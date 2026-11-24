@@ -1,5 +1,5 @@
 // 日志、审计与内视：崩溃记录、审批审计、基准对比与自检采样。
-import { appState } from './app-state'
+import { appState, writeAppLog } from './app-state'
 import type { ProfileBenchmarkRow, RunEvent } from '../shared/types'
 import { loadMcpConfig } from './agent/mcp'
 import type { BenchmarkRun } from './agent/profile-benchmark'
@@ -7,15 +7,14 @@ import { DynamicToolRegistry } from './agent/toolsmith'
 import { approvalAuditEntry, crashEntry, toolAuditEntry, toolFailureEntry } from './app-audit'
 import type { AppLogEntry } from './app-log'
 import { onRunFinished, onRunSettled } from './checkpoint-maintenance'
+import { sendToRenderers } from './renderer-sink'
 import { pluginOverview } from './plugins/studio'
 import { sandboxStatus } from './sandbox'
 import { runSelfCheck } from './self-check'
 import { systemInfo } from './system-info'
 import { safeUrl } from './window-platform'
 import { resolveExisting } from './workspace'
-import { app, BrowserWindow, dialog } from 'electron'
-
-const EARLY_LOG_LIMIT = 50
+import { app, dialog } from 'electron'
 
 /** 审批事件本身不带风险等级：`tool.call` 时记一笔，审批落定时取出并删除。 */
 const callRisks = new Map<string, 'read' | 'write' | 'exec' | 'control'>()
@@ -24,11 +23,7 @@ const CALL_RISK_LIMIT = 200
 
 /** 写一条应用日志：日志就绪前排队，永不抛错。 */
 export function log(entry: AppLogEntry): void {
-  if (!appState.appLog) {
-    if (appState.earlyLogs.length < EARLY_LOG_LIMIT) appState.earlyLogs.push(entry)
-    return
-  }
-  appState.appLog.write(entry)
+  writeAppLog(entry)
 }
 
 /**
@@ -76,9 +71,7 @@ export function installCrashLogging(): void {
 }
 
 export function broadcast(event: RunEvent): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('pilot:event', event)
-  }
+  sendToRenderers('pilot:event', event)
   auditEvent(event)
   if (event.type === 'run.completed' || event.type === 'run.failed') onRunFinished()
   if (event.type === 'run.completed') onRunSettled(event.sessionId, event.status, event.runId)

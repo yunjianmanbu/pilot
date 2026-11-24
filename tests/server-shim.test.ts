@@ -30,6 +30,43 @@ describe('headless electron shim', () => {
     expect(shim.app.getLocale()).not.toBe('')
   })
 
+  it('falls back to the OS locale when no POSIX variable is set', async () => {
+    const dir = await tempDir()
+    const saved = {
+      LC_ALL: process.env['LC_ALL'],
+      LC_MESSAGES: process.env['LC_MESSAGES'],
+      LANG: process.env['LANG'],
+    }
+    delete process.env['LC_ALL']
+    delete process.env['LC_MESSAGES']
+    delete process.env['LANG']
+    try {
+      const shim = await loadShim(dir)
+      // A console started by double-clicking on Windows has no LANG at all;
+      // the shim must report the OS region, not a hard-coded en-US.
+      const icu = new Intl.DateTimeFormat().resolvedOptions().locale
+      expect(shim.app.getLocale()).toBe(icu)
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  })
+
+  it('prefers a POSIX locale variable over the OS locale', async () => {
+    const dir = await tempDir()
+    const saved = { LC_ALL: process.env['LC_ALL'] }
+    process.env['LC_ALL'] = 'zh_CN.UTF-8'
+    try {
+      const shim = await loadShim(dir)
+      expect(shim.app.getLocale()).toBe('zh-CN')
+    } finally {
+      if (saved.LC_ALL === undefined) delete process.env['LC_ALL']
+      else process.env['LC_ALL'] = saved.LC_ALL
+    }
+  })
+
   it('seals secrets with a key file instead of the OS keychain', async () => {
     const dir = await tempDir()
     const shim = await loadShim(dir)

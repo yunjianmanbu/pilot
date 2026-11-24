@@ -83,6 +83,54 @@ export function excerpt(text: string, limit = 160): string {
   return `${flat.slice(0, limit)}…`
 }
 
+/** Where the drawer remembers「展开到整个界面」between openings. */
+export const RESOURCES_EXPANDED_KEY = 'pilot.resources.expanded'
+
+/** The little bit of `localStorage` this module needs; kept narrow so tests
+ * can hand in a fake instead of a browser. */
+export interface ResourcePrefsStorage {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+}
+
+function defaultStorage(): ResourcePrefsStorage | null {
+  try {
+    return (globalThis as { localStorage?: ResourcePrefsStorage }).localStorage ?? null
+  } catch {
+    // 禁用了本地存储的沙箱会直接抛在属性访问上。
+    return null
+  }
+}
+
+/**
+ * Was the drawer left expanded last time? A missing or unreadable store means
+ *「没记住」, and the panel then falls back to its 920px default.
+ */
+export function readResourcesExpanded(
+  store: ResourcePrefsStorage | null = defaultStorage(),
+): boolean {
+  try {
+    return store?.getItem(RESOURCES_EXPANDED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Persist the width the user picked. A refused write (private mode, quota) only
+ * loses the memory, never the toggle that just happened.
+ */
+export function writeResourcesExpanded(
+  value: boolean,
+  store: ResourcePrefsStorage | null = defaultStorage(),
+): void {
+  try {
+    store?.setItem(RESOURCES_EXPANDED_KEY, value ? '1' : '0')
+  } catch {
+    /* 记不住就算了，面板本身已经切过去了 */
+  }
+}
+
 /**
  * 「会话记忆」选条目的规则住在 shared/memory.ts：手机端的会话资源页要用
  * 同一套规则，而渲染进程的这份模块带着 UI 依赖，手机端拿不到。

@@ -90,6 +90,90 @@ describe('Store scheduled tasks', () => {
     ])
   })
 
+  it('honors a daily start date so a future task does not fire today', async () => {
+    const { store, sessionId } = await setup()
+    // 系统时间固定为 2026-03-01 08:00 UTC；本地时区在两个用例里保持一致，
+    // 因此只用「同一天 vs 次日」这种时区无关的比较。
+    const today = new Date()
+    const localDay = (date: Date): string =>
+      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
+        date.getDate(),
+      ).padStart(2, '0')}`
+    const tomorrowDate = new Date(today)
+    tomorrowDate.setDate(tomorrowDate.getDate() + 1)
+    const tomorrow = localDay(tomorrowDate)
+
+    const fromTomorrow = await store.addScheduledTask(sessionId, {
+      content: '每天 20:00 发布小红书',
+      kind: 'daily',
+      timeOfDay: '20:00',
+      startDate: tomorrow,
+    })
+    expect(fromTomorrow.startDate).toBe(tomorrow)
+    const next = new Date(fromTomorrow.nextRunAt)
+    expect(localDay(next)).toBe(tomorrow)
+    expect(next.getHours()).toBe(20)
+    expect(next.getMinutes()).toBe(0)
+
+    // 起始日就是今天且时刻已过：该推到明天，而不是等到明天的起始日又重新算。
+    const startedToday = await store.addScheduledTask(sessionId, {
+      content: '今天开始每天 00:05',
+      kind: 'daily',
+      timeOfDay: '00:05',
+      startDate: localDay(today),
+    })
+    expect(Date.parse(startedToday.nextRunAt)).toBeGreaterThan(Date.now())
+
+    // 起始日在过去：不拖累排期，按常规下一次触发。
+    const pastStart = await store.addScheduledTask(sessionId, {
+      content: '从过去某天起每天 12:30',
+      kind: 'daily',
+      timeOfDay: '12:30',
+      startDate: '2020-01-01',
+    })
+    expect(Date.parse(pastStart.nextRunAt)).toBeGreaterThan(Date.now())
+  })
+
+  it('rejects a malformed daily start date', async () => {
+    const { store, sessionId } = await setup()
+    await expect(
+      store.addScheduledTask(sessionId, {
+        content: '每天 20:00',
+        kind: 'daily',
+        timeOfDay: '20:00',
+        startDate: '2026/11/25',
+      }),
+    ).rejects.toThrow('起始日期')
+    // 2 月 31 日这种不存在的日期也要拒掉，否则会静默滚到 3 月 3 日。
+    await expect(
+      store.addScheduledTask(sessionId, {
+        content: '每天 20:00',
+        kind: 'daily',
+        timeOfDay: '20:00',
+        startDate: '2026-02-31',
+      }),
+    ).rejects.toThrow('起始日期')
+  })
+
+  it('keeps the start date when only the content is edited', async () => {
+    const { store, sessionId } = await setup()
+    const created = await store.addScheduledTask(sessionId, {
+      content: '每天 20:00 发布小红书',
+      kind: 'daily',
+      timeOfDay: '20:00',
+      startDate: '2026-03-05',
+    })
+    const edited = await store.updateScheduledTask(sessionId, created.id, {
+      content: '每天 20:00 发布小红书（图文）',
+    })
+    expect(edited.startDate).toBe('2026-03-05')
+    // 只改时刻时，起始日仍然生效，否则会把任务拉回今天。
+    const retimed = await store.updateScheduledTask(sessionId, created.id, { timeOfDay: '21:15' })
+    expect(retimed.startDate).toBe('2026-03-05')
+    expect(retimed.timeOfDay).toBe('21:15')
+    expect(new Date(retimed.nextRunAt).getHours()).toBe(21)
+  })
+
   it('rejects invalid content and daily times', async () => {
     const { store, sessionId } = await setup()
 

@@ -58,6 +58,23 @@ interface PairPayload {
 
 const cleanups: Array<() => Promise<void> | void> = []
 
+/**
+ * Windows 上并发跑全量测试时，停服后仍可能有异步写把文件落进 dataDir，
+ * 单次 rm 会以 ENOTEMPTY 失败（node 的 rm 只在给了 maxRetries 时才重试）。
+ * 这里显式重试，避免把清理抖动当成真实回归。
+ */
+async function removeDataDir(dir: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+      return
+    } catch (error) {
+      if (attempt === 4) throw error
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)))
+    }
+  }
+}
+
 afterEach(async () => {
   while (cleanups.length) {
     await cleanups.pop()?.()
@@ -254,7 +271,7 @@ async function createServer(relayUrl: string): Promise<{
   await server.init()
   cleanups.push(async () => {
     await server.stop()
-    await rm(dataDir, { recursive: true, force: true })
+    await removeDataDir(dataDir)
   })
   const status = await server.setEnabled(true)
   return { server, status }

@@ -11,6 +11,11 @@
 export const MAX_UPLOAD_FILES = 3
 /** 一条消息里可以附的图片上限，和 agent/attachments 的 MAX_IMAGES 一致。 */
 export const MAX_UPLOAD_IMAGES = 3
+/**
+ * 单张附图 data URL 的字符上限。中继信封是 512 KB，一条消息要留出余量；
+ * 放在 shared 里是因为浏览器版也要按同一个数压缩（没有主进程的 nativeImage）。
+ */
+export const MAX_IMAGE_DATA_URL_CHARS = 120_000
 /** 拖拽/粘贴上传落在工作区的哪个目录（工作区相对路径）。 */
 export const UPLOAD_DIRECTORY = 'uploads'
 /** 一条消息里可以参照的路径上限。 */

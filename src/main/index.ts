@@ -18,6 +18,7 @@ import { mkdir, stat } from 'node:fs/promises'
 import { hostname, release } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import { appIconPath } from './app-icon'
+import { stopSharedPluginHosts } from './plugins/shared'
 import { appUserModelId, foreignShortcuts, type ShortcutIdentity } from './win-identity'
 import { trayClickAction } from './window-action'
 import type {
@@ -46,12 +47,9 @@ import type {
   SettingsUpdate,
   StoredMessage,
   ThemeMode,
-  ContrastPreference,
-  SaturationPreference,
   TodoPriority,
   UpdateState,
 } from '../shared/types'
-import { applyContrastColor } from '../shared/theme'
 import { normalizeEnvFields, type FeedbackDraft } from '../shared/feedback'
 import type { ModuleCheckSettings } from '../shared/module-check'
 import { AgentRunner } from './agent/runner'
@@ -80,13 +78,18 @@ import {
 } from './plugins/studio'
 import type { BenchmarkRun } from './agent/profile-benchmark'
 import { listSessionChanges, revertSessionFile } from './changes'
-import { changesBridge, checkpointBridge, createEngine } from '../core/engine'
+import { changesBridge, checkpointBridge, createEngine, createGuestEngine } from '../core/engine'
 import { createEvolutionControls } from '../core/evolution'
 import { assertActivatable } from '../core/profile-gate'
 import { DESKTOP_CAPABILITIES } from '../shared/capabilities'
 import { CheckpointService } from './checkpoints'
 import { FeedbackBox } from './feedback'
 import { CompanionServer } from './companion/server'
+import { bridgeEmit } from './companion/handlers/bridge'
+import { createCompanionModeControl } from './companion/mode-control'
+import { createReflectControls } from './companion/handlers/reflect'
+import { invokeDesktopBridge } from './ipc-context'
+import { setRendererSink } from './renderer-sink'
 import { ensureGlobalInstructions, loadProjectInstructions } from './instructions'
 import { sandboxStatus } from './sandbox'
 import { runSelfCheck } from './self-check'
@@ -110,6 +113,10 @@ import { localizeChanges, localizeMain, localizeUpdateState } from './localize'
 import { knowledgePairsFor } from './search'
 import { AgentScheduler } from './scheduler'
 import { ModuleCheckService } from './module-check'
+import { codeFactsFromModuleCheck } from './reflect/evidence'
+import { SupervisorService } from './supervisor'
+import type { SupervisorReflectionSample, SupervisorRunSample } from '../shared/supervisor'
+import { REFLECTION_TOPICS } from '../shared/reflect'
 import { createAppLog, type AppLogEntry } from './app-log'
 import { approvalAuditEntry, crashEntry, runSettledEntry, toolAuditEntry, toolFailureEntry } from './app-audit'
 import { Store } from './store'
@@ -127,19 +134,16 @@ import {
 import { installMediaProtocol, openLink, registerMediaScheme } from './preview'
 import { isDocumentWindowContents, openDocumentWindow } from './document-window'
 import { parseUploadBatch, UPLOAD_DIRECTORY, type UploadBatch } from '../shared/uploads'
-import { registerSessionIpc } from './ipc/session'
-import { registerWorkIpc } from './ipc/work'
-import { registerSettingsIpc } from './ipc/settings'
-import { registerCompanionIpc } from './ipc/companion'
-import { registerPersonalIpc } from './ipc/personal'
+import { registerAllIpc } from './ipc'
 import { safeUrl, windowPalette, healWindowsShortcuts } from './window-platform'
 import { pathKey, resolveReviewRoots, transcriptText, sessionPage, sessionPageAround } from './session-view'
 import { encodeMessageImage, uploadBytes, importUploadBatch } from './media-upload'
 import { appState } from './app-state'
-import { createIpcContext } from './ipc-context'
 import { scheduleCheckpointMaintenance } from './checkpoint-maintenance'
 import { personalService, contributionEvidence, selfSourceOptions, selfSourcePath, startPersonalChat } from './personal-branch'
 import { log, installCrashLogging, broadcast, collectSelfCheck } from './diagnostics'
+import { MailNotifier } from './notify/mail-notify'
+import { instructionOf } from './notify/instruction-title'
 import { focusMainWindow, notifyEvent, broadcastUpdate, createWindow, revealMainWindow, createTray } from './window-tray'
 
 process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
@@ -163,13 +167,43 @@ if (!gotLock) {
 
 installCrashLogging()
 
+/** 自主优化采样：每个工作区取最近多少条运行，合起来再截到上限。 */
+const SUPERVISOR_RUN_SAMPLE_PER_WORKSPACE = 20
+const SUPERVISOR_RUN_SAMPLE_LIMIT = 40
+/** 最近几份反思报告进闭环；保鲜期由 shared 层按 createdAt 判定。 */
+const SUPERVISOR_REFLECTION_REPORT_LIMIT = 5
+
+/**
+ * 自修改/自优化会话的唯一创建入口。
+ *
+ * 自检、自主优化、手机端都调它：与用户手写任务完全同一条路径——正常会话、
+ * 正常沙箱、正常审批、正常检查点。只把「还没配模型」当成可恢复错误（入队），
+ * 其它失败照常上抛，让调用方在面板上看到真实原因。
+ */
+async function startSelfModifySession(
+  workspacePath: string,
+  prompt: string,
+): Promise<{ sessionId: string; queued: boolean }> {
+  const created = await appState.store.createSession(workspacePath)
+  try {
+    await appState.runner.sendMessage(created.id, prompt, 'queue')
+    return { sessionId: created.id, queued: false }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ''
+    if (!/API key/i.test(message)) throw error
+    const current = appState.store.session(created.id)
+    await appState.store.setQueue(created.id, [
+      ...(current?.queue ?? []),
+      { id: `self_${Date.now()}`, content: prompt, createdAt: new Date().toISOString() },
+    ])
+    const queue = appState.store.session(created.id)?.queue ?? []
+    broadcast({ type: 'queue.changed', sessionId: created.id, queue })
+    return { sessionId: created.id, queued: true }
+  }
+}
+
 function registerIpc(): void {
-  const ctx = createIpcContext()
-  registerSessionIpc(ctx)
-  registerWorkIpc(ctx)
-  registerSettingsIpc(ctx)
-  registerCompanionIpc(ctx)
-  registerPersonalIpc(ctx)
+  registerAllIpc()
 }
 
 app.on('second-instance', () => {
@@ -203,6 +237,7 @@ app.whenReady().then(async () => {
     publish: (event) => {
       broadcast(event)
       notifyEvent(event)
+      appState.mailNotifier?.handle(event)
       appState.companion?.publish(event)
     },
     getWindow: () => appState.mainWindow,
@@ -215,6 +250,21 @@ app.whenReady().then(async () => {
   appState.checkpoints = engine.checkpoints
   appState.runner = engine.runner
   appState.scheduler = engine.scheduler
+  appState.reflect = engine.reflect
+  // 邮件通知共用反思那份邮箱配置：收件人、SMTP 登录名与发件人都是同一个地址，
+  // 「发给自己」。勾选哪些事件发信是独立的「通知配置」。
+  appState.mailNotifier = new MailNotifier({
+    settings: () => appState.store.settings(),
+    // 反思服务持有 SMTP 配置的单一实现：主机为空返回 null，登录名取首个地址。
+    smtp: () => appState.reflect?.smtpConfig() ?? null,
+    hasPassword: () => Boolean(appState.store.getSmtpPassword()),
+    sessionTitle: (sessionId) => appState.store.session(sessionId)?.title ?? '',
+    // 标题取用户这一次的指令：会话名说明不了「做完了什么」。
+    instruction: (sessionId, runId) =>
+      instructionOf(appState.store.session(sessionId)?.messages ?? [], runId),
+    english: () => appState.store.uiLocale() === 'en',
+    log: (entry) => log(entry),
+  })
   appState.feedback = new FeedbackBox(app.getPath('userData'))
   void sandboxStatus()
   appState.updater = new UpdaterService({
@@ -235,35 +285,113 @@ app.whenReady().then(async () => {
     emit: (event) => {
       broadcast(event)
       notifyEvent(event)
+      appState.mailNotifier?.handle(event)
       appState.companion?.publish(event)
     },
-    startSession: async (workspacePath, prompt) => {
-      // 与用户手写任务完全同一条路径：正常会话、正常沙箱、正常审批。
-      const created = await appState.store.createSession(workspacePath)
-      try {
-        await appState.runner.sendMessage(created.id, prompt, 'queue')
-        return { sessionId: created.id }
-      } catch (error) {
-        // 只处理“还没配模型”这一类可恢复错误；其它失败（例如会话已失效）照常上抛。
-        const message = error instanceof Error ? error.message : ''
-        if (!/API key/i.test(message)) throw error
-        const current = appState.store.session(created.id)
-        await appState.store.setQueue(created.id, [
-          ...(current?.queue ?? []),
-          { id: `mc_${Date.now()}`, content: prompt, createdAt: new Date().toISOString() },
-        ])
-        const queue = appState.store.session(created.id)?.queue ?? []
-        broadcast({ type: 'queue.changed', sessionId: created.id, queue })
-        return { sessionId: created.id, queued: true }
-      }
-    },
+    startSession: (workspacePath, prompt) => startSelfModifySession(workspacePath, prompt),
   })
   await appState.moduleCheck.load()
   appState.moduleCheck.start()
+  // 反思与自检共用同一份代码事实（报告 + 拆分决策）：行数不再单独成为拆分建议，
+  // 已决策的文件也不会在反思里被重新提一遍。
+  appState.reflect?.useCodeFacts(() =>
+    appState.moduleCheck ? codeFactsFromModuleCheck(appState.moduleCheck.summary()) : null,
+  )
+  // 自主优化闭环：只读采样 + 护栏内开普通会话，与自检/反思共用同一条改动路径。
+  appState.supervisor = new SupervisorService({
+    userDataDir: app.getPath('userData'),
+    // 跨工作区汇总最近运行：只看计数，不带提示词与文件内容。
+    sampleRuns: () => {
+      const samples: SupervisorRunSample[] = []
+      for (const workspace of appState.store.workspaces()) {
+        for (const run of appState.store
+          .runs(workspace.path)
+          .slice(0, SUPERVISOR_RUN_SAMPLE_PER_WORKSPACE)) {
+          samples.push({
+            id: run.id,
+            status: run.status,
+            steps: run.steps,
+            toolCalls: run.toolCalls,
+            toolErrors: run.toolErrors,
+            totalTokens: run.totalTokens,
+            startedAt: run.startedAt,
+          })
+        }
+      }
+      return samples
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+        .slice(0, SUPERVISOR_RUN_SAMPLE_LIMIT)
+    },
+    // 内视：与桌面面板、手机端同一条采样路径。
+    sampleHealth: async () => {
+      const report = await collectSelfCheck()
+      return report.items.map((item) => ({
+        id: item.id,
+        label: item.title,
+        status: item.status,
+        ...(item.detail ? { detail: item.detail } : {}),
+      }))
+    },
+    // 源码风险：直接用最近一份自检报告，不重新扫描（扫描代价高且结果同源）。
+    sampleModuleRisks: () => {
+      const report = appState.moduleCheck.snapshot().lastReport
+      return (report?.risks ?? []).map((risk) => ({
+        id: risk.id,
+        moduleName: risk.moduleName,
+        severity: risk.severity,
+        title: risk.title,
+        recommendation: risk.recommendation,
+        evidence: risk.evidence,
+        // 依据不能丢：自主优化要靠它判断这条建议是不是凭行数猜的。
+        ...(risk.basis ? { basis: risk.basis } : {}),
+        manual: risk.manual,
+      }))
+    },
+    // 反思：把最近几份报告拍平成一串发现。这里不触发新的反思——反思有自己的
+    // 触发策略与模型开销，闭环只消费现成结论。
+    sampleReflections: () => {
+      const samples: SupervisorReflectionSample[] = []
+      for (const report of appState.store
+        .reflectionReports()
+        .slice(0, SUPERVISOR_REFLECTION_REPORT_LIMIT)) {
+        for (const item of report.findings) {
+          samples.push({
+            reportId: report.id,
+            createdAt: report.createdAt,
+            topic: item.topic,
+            topicLabel:
+              REFLECTION_TOPICS.find((entry) => entry.id === item.topic)?.zh ?? item.topic,
+            severity: item.severity,
+            observation: item.observation,
+            suggestion: item.suggestion,
+          })
+        }
+      }
+      return samples
+    },
+    selfSourceRoot: async () => (await prepareSelfSource(selfSourceOptions())).path,
+    startSession: (workspacePath, prompt) => startSelfModifySession(workspacePath, prompt),
+    log: (entry) => log(entry),
+    emit: (event) => {
+      broadcast(event)
+      notifyEvent(event)
+      appState.mailNotifier?.handle(event)
+      appState.companion?.publish(event)
+    },
+  })
+  await appState.supervisor.load()
+  appState.supervisor.start()
   const bundledCompanion = join(app.getAppPath(), 'companion')
   const companionDir = existsSync(bundledCompanion)
     ? bundledCompanion
     : join(process.cwd(), 'companion')
+  // 「设置 → 网页服务」托管的桌面界面：`vite.web.config.mjs` 的产物，与窗口里
+  // 同一份 renderer 源码。没构建过（`pnpm build` 不含这一步）就没有 index.html，
+  // 那时不注入目录，`/` 继续是原来的手机面板。
+  const desktopWebEntry = join(app.getAppPath(), 'out', 'web')
+  const desktopWebDir = existsSync(join(desktopWebEntry, 'index.html'))
+    ? desktopWebEntry
+    : null
   appState.companion = new CompanionServer({
     store: appState.store,
     runner: appState.runner,
@@ -313,6 +441,7 @@ app.whenReady().then(async () => {
       // every evolution frame twice.
       publish: (event) => {
         broadcast(event)
+        appState.mailNotifier?.handle(event)
         appState.companion?.publish(event)
       },
       // Only the desktop install ships the pristine source tree these need.
@@ -330,8 +459,23 @@ app.whenReady().then(async () => {
         },
       },
     }),
+    // 反思：手机端与桌面共用同一份配置与报告库，SMTP 授权码只写不读。
+    // 没配模型密钥时 run 会抛业务错误，请求层只负责把它变成一条通知。
+    reflect: appState.reflect
+      ? createReflectControls(appState.store, appState.reflect)
+      : undefined,
     dataDir: app.getPath('userData'),
     assetsDir: companionDir,
+    // 只有存在 `out/web` 才挂浏览器界面；`pilot serve` 用的是同一套路由。
+    ...(desktopWebDir ? { desktopDir: desktopWebDir } : {}),
+    // 桌面端两个开关共用一个监听：关掉「网页服务」而「手机连接」还开着时端口仍在
+    // 服务，只有这道门能让浏览器真的进不来。`pilot serve` 没有这个开关，故不设。
+    desktopRequiresServerMode: true,
+    // 浏览器里的界面通过 `/bridge` 调与窗口完全相同的那份 IPC 表：
+    // `ipc-context` 在注册时留了 handler 副本，这里只是交出调用入口。
+    ipc: {
+      invoke: (channel, args) => invokeDesktopBridge(channel, args),
+    },
     deviceName: hostname(),
     appVersion: app.getVersion(),
     relayUrl: process.env['PILOT_RELAY_URL'] ?? undefined,
@@ -342,12 +486,55 @@ app.whenReady().then(async () => {
       // A phone that scanned the QR code needs an answer from a person, so
       // surface the window even when it is minimised or hidden in the tray.
       if (event.type === 'companion.pair_request') focusMainWindow()
+      appState.mailNotifier?.handle(event)
       broadcast(event)
     },
   })
   await appState.companion.init()
-  await appState.companion.startIfEnabled()
+  // 「网页服务」与「手机连接」共用一个实例：任一个开关为真就监听，端口按网页
+  // 服务的设置来。真正的 `init()` 在 IPC 注册之后（见 `registerIpc()` 后面），
+  // 否则浏览器标签页可能先于处理器就绪接上来。
+  appState.companionMode = createCompanionModeControl(appState.companion)
+  setRendererSink((channel, payload) => {
+    if (appState.companion) bridgeEmit(appState.companion, channel, payload)
+  })
+  // 客户机用户的数据面：第二套 Store + AgentRunner，写在自己的目录里，只继承本机
+  // 的模型通道。它要读盘、建沙箱，不能挡在窗口之前，所以异步装配；装配完成前
+  // 客户机请求会拿到「还没有独立空间」的明确拒绝，而不是读到本机会话。
+  const clientRoot = join(app.getPath('userData'), 'users', 'client')
+  void createGuestEngine({
+    source: appState.store,
+    dataDir: clientRoot,
+    workspaceDir: join(clientRoot, 'workspace'),
+    // 客户机用户的事件只能送到客户机用户自己的连接：桌面窗口与本机手机
+    // 都不该看到另一个用户的任务内容。
+    publish: (event) => appState.companion?.publish(event, 'client'),
+    packageRoot: app.isPackaged
+      ? join(app.getPath('userData'), 'self-src')
+      : app.getAppPath(),
+  })
+    .then((guest) => {
+      appState.guestEngine = guest
+      appState.companion?.attachGuest({
+        role: 'client',
+        store: guest.store,
+        runner: guest.runner,
+        billing: guest.billing,
+        checkpoints: checkpointBridge(guest),
+        changes: changesBridge(guest),
+      })
+    })
+    .catch((error: unknown) => {
+      log({
+        area: 'companion',
+        event: 'guest-engine-failed',
+        level: 'warn',
+        // 字段名不用 `message`：日志层把这种名字当敏感正文写不进去。
+        detail: { reason: error instanceof Error ? error.message : String(error) },
+      })
+    })
   appState.scheduler.start()
+  appState.reflect?.start()
   // Capture Git Bash's login environment while the window loads so the first
   // shell command does not pay for /etc/profile and ~/.bashrc.
   warmShellProfile()
@@ -357,6 +544,8 @@ app.whenReady().then(async () => {
     .then((service) => service.state())
     .catch(() => undefined)
   registerIpc()
+  // 端口在这里才真正开启：`/bridge` 背后是上面刚注册的那份 IPC 表。
+  await appState.companionMode?.init()
   createTray()
   createWindow()
 
@@ -375,7 +564,15 @@ app.on('before-quit', () => {
   appState.scheduler?.stop()
   appState.checkpoints?.dispose()
   if (appState.runner) void appState.runner.shutdown()
+  if (appState.guestEngine) {
+    appState.guestEngine.checkpoints.dispose()
+    void appState.guestEngine.runner.shutdown()
+    void appState.guestEngine.store.flush()
+    appState.guestEngine = null
+  }
   if (appState.companion) void appState.companion.stop()
+  // 插件子进程自己不会随主进程退出（共享宿主一直持有它们）。
+  void stopSharedPluginHosts()
 })
 
 app.on('will-quit', () => {

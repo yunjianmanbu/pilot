@@ -46,8 +46,6 @@ describe('appearance settings', () => {
   it('defaults to the dark theme', async () => {
     const { store } = await setup()
     expect(store.settingsView().theme).toBe('dark')
-    expect(store.settingsView().contrast).toBe('standard')
-    expect(store.settingsView().saturation).toBe('standard')
   })
 
   it('exposes no accent palette any more', async () => {
@@ -78,33 +76,7 @@ describe('appearance settings', () => {
     expect('accent' in reloaded.settingsView()).toBe(false)
   })
 
-  it('persists contrast and saturation across a restart', async () => {
-    const { store } = await setup()
-    await store.updateSettings({ contrast: 'high', saturation: 'low' })
-    expect(store.settingsView().contrast).toBe('high')
-    expect(store.settingsView().saturation).toBe('low')
-
-    const reloaded = new Store()
-    await reloaded.load()
-    expect(reloaded.settingsView().contrast).toBe('high')
-    expect(reloaded.settingsView().saturation).toBe('low')
-
-    await reloaded.updateSettings({ contrast: 'low', saturation: 'high' })
-    const second = new Store()
-    await second.load()
-    expect(second.settingsView().contrast).toBe('low')
-    expect(second.settingsView().saturation).toBe('high')
-  })
-
-  it('ignores unknown contrast and saturation levels', async () => {
-    const { store } = await setup()
-    await store.updateSettings({ contrast: 'high', saturation: 'low' })
-    await store.updateSettings({ contrast: 'ultra' as never, saturation: 'dim' as never })
-    expect(store.settingsView().contrast).toBe('high')
-    expect(store.settingsView().saturation).toBe('low')
-  })
-
-  it('falls back to standard for hand-edited appearance values', async () => {
+  it('falls back to dark for a hand-edited theme value', async () => {
     const { root } = await setup()
     await writeFile(
       join(root, 'user-data', 'pilot-core.json'),
@@ -114,7 +86,5 @@ describe('appearance settings', () => {
     const reloaded = new Store()
     await reloaded.load()
     expect(reloaded.settingsView().theme).toBe('dark')
-    expect(reloaded.settingsView().contrast).toBe('standard')
-    expect(reloaded.settingsView().saturation).toBe('standard')
   })
 })

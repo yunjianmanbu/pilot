@@ -19,7 +19,7 @@ afterEach(async () => {
   while (cleanups.length) await cleanups.pop()?.()
 })
 
-const SCRIPT = fileURLToPath(new URL('../scripts/pack-server-release.mjs', import.meta.url))
+const SCRIPT = fileURLToPath(new URL('../../scripts/pack-server-release.mjs', import.meta.url))
 
 async function tempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), prefix))
@@ -122,6 +122,27 @@ describe('server release end to end', () => {
     // release dropped.
     expect(index.size).toBe(4)
     expect(index.has('out/server/legacy.js')).toBe(false)
+  })
+
+  it('refuses to pack an install tree that is missing the browser desktop build', async () => {
+    // 浏览器控制台由 `out/web` 提供；漏了它 `pilot serve` 打开就是 404，但服务
+    // 本身能起，所以只能在打包这一步拦住。
+    const source = await tempDir('pilot-source-')
+    await mkdir(join(source, 'bin'), { recursive: true })
+    await mkdir(join(source, 'out', 'server'), { recursive: true })
+    await writeFile(join(source, 'package.json'), JSON.stringify({ name: 'pilot-agent', version: '0.2.0' }))
+    await writeFile(join(source, 'bin', 'pilot.js'), '#!/usr/bin/env node\n')
+    await writeFile(join(source, 'out', 'server', 'main.js'), 'SERVER')
+    const published = await tempDir('pilot-published-')
+    const serving = await serveDirectory(published)
+
+    const packed = spawnSync(
+      process.execPath,
+      [SCRIPT, '--root', source, '--out', published, '--base', serving.url],
+      { encoding: 'utf8' },
+    )
+    expect(packed.status).toBe(1)
+    expect(packed.stderr).toContain('out/web')
   })
 
   it('does nothing when the published version is not newer', async () => {

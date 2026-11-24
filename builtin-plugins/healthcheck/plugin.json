@@ -1,0 +1,88 @@
+{
+  "id": "healthcheck",
+  "name": "接口巡检",
+  "version": 1,
+  "api": 1,
+  "runtime": "node",
+  "entry": "index.mjs",
+  "description": "对配置里的接口地址做可用性巡检：随时可以点名检查一个地址，每 30 分钟自动把配置里的地址全查一遍，失败时发通知。地址、超时和是否提醒都在插件页设置。",
+  "permissions": ["checks:read", "checks:write", "host:notify"],
+  "provides": null,
+  "roles": [],
+  "routes": [
+    {
+      "method": "POST",
+      "path": "check",
+      "auth": "required",
+      "permission": "checks:write",
+      "description": "检查一个地址，或巡检配置里的全部地址"
+    },
+    {
+      "method": "POST",
+      "path": "status",
+      "auth": "required",
+      "permission": "checks:read",
+      "description": "读取每个地址最近一次结果与近 24 小时失败数"
+    },
+    {
+      "method": "GET",
+      "path": "health",
+      "auth": "public",
+      "description": "存活检查"
+    }
+  ],
+  "tools": [
+    {
+      "name": "check",
+      "description": "检查接口是否可用：给 url 就只查这一个，不给就巡检插件设置里配置的全部地址。返回状态码、耗时和失败原因。",
+      "route": "check",
+      "method": "POST",
+      "permission": "checks:write",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "description": "要检查的完整地址，例如 https://example.com/health；留空则巡检设置里的全部地址" }
+        }
+      }
+    },
+    {
+      "name": "status",
+      "description": "查看巡检结果：每个地址最近一次的状态码与耗时、近 24 小时失败次数，用于回答「线上还正常吗」。",
+      "route": "status",
+      "method": "POST",
+      "permission": "checks:read",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "number", "description": "回看条数，默认 20，最多 100" }
+        }
+      }
+    }
+  ],
+  "settings": [
+    {
+      "key": "targets",
+      "label": "巡检地址",
+      "type": "text",
+      "placeholder": "https://example.com/health, https://api.example.com/ping",
+      "description": "多个地址用逗号分隔；定时巡检和 check 工具不给 url 时都用这一份。"
+    },
+    {
+      "key": "timeoutMs",
+      "label": "超时（毫秒）",
+      "type": "number",
+      "placeholder": "5000",
+      "description": "单个地址的最长等待时间，默认 5000。"
+    },
+    {
+      "key": "notifyOnFailure",
+      "label": "失败时通知",
+      "type": "boolean",
+      "description": "关掉后定时巡检仍在跑，只记结果不发通知。"
+    }
+  ],
+  "triggers": [{ "event": "schedule", "everyMinutes": 30 }],
+  "limits": { "timeoutMs": 20000, "rateLimitPerMinute": 60 }
+}

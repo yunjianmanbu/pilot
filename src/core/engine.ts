@@ -13,13 +13,15 @@
  * is genuinely host-specific (the window, the updater, the event fan-out).
  */
 import type { BrowserWindow } from 'electron'
+import { mkdir } from 'node:fs/promises'
 import { AgentRunner } from '../main/agent/runner'
 import { BillingService } from '../main/billing'
 import { listSessionChanges, revertSessionFile } from '../main/changes'
 import { CheckpointService } from '../main/checkpoints'
 import type { CompanionOptions } from '../main/companion/server'
+import { ReflectService } from '../main/reflect/service'
 import { AgentScheduler } from '../main/scheduler'
-import type { Store } from '../main/store'
+import { Store } from '../main/store'
 import type { RunEvent } from '../shared/types'
 
 /** What a host must supply to run the engine. Kept deliberately small. */
@@ -45,6 +47,7 @@ export interface Engine {
   checkpoints: CheckpointService
   runner: AgentRunner
   scheduler: AgentScheduler
+  reflect: ReflectService
 }
 
 /**
@@ -57,16 +60,72 @@ export function createEngine(options: EngineHostOptions): Engine {
   const { store, dataDir, publish } = options
   const billing = new BillingService({ store })
   const checkpoints = new CheckpointService(dataDir, store)
+  // Reflection is created after the runner but has to see its failures. The
+  // wrapper only forwards the event; the service is wired below.
+  let reflect: ReflectService | null = null
+  const publishToReflect = (event: RunEvent): void => {
+    if (event.type === 'run.failed') void reflect?.onRunFailure(event.message)
+    publish(event)
+  }
   const runner = new AgentRunner(
     store,
-    publish,
+    publishToReflect,
     checkpoints,
     dataDir,
     options.getWindow ?? null,
     options.packageRoot ?? '',
   )
   const scheduler = new AgentScheduler(store, runner, publish)
-  return { store, billing, checkpoints, runner, scheduler }
+  // Reflection reads local evidence only and never calls a tool, so it can run
+  // on a timer without asking for approval or touching the workspace.
+  reflect = new ReflectService(store, publish)
+  return { store, billing, checkpoints, runner, scheduler, reflect }
+}
+
+/** 客户机用户专用的第二套数据面。 */
+export interface GuestEngineOptions {
+  /** Host engine: only its model channel (endpoints + keys) is inherited. */
+  source: Store
+  /** Root the guest store, checkpoints and runner all write under. */
+  dataDir: string
+  /** Directory handed to client users as their own workspace (created if absent). */
+  workspaceDir: string
+  /** Fan-out for guest events: they must only reach client-user sockets. */
+  publish: (event: RunEvent) => void
+  packageRoot?: string
+}
+
+/**
+ * Build the client-user engine: same classes, different data.
+ *
+ * A client user must never share the host's store (sessions, memory, settings,
+ * billing) or the host's runner (approvals would surface in the owner's window).
+ * Giving them a store rooted at their own directory and a runner over it is
+ * what makes “independent user” true rather than cosmetic.
+ *
+ * The model channel is the one thing inherited from the host: without an
+ * endpoint and a key the guest store could not run a single turn. Approval
+ * policy, trusted commands and memory are deliberately *not* inherited — those
+ * are host data.
+ *
+ * The guest workspace is created and registered here because client users are
+ * refused the local-only workspace commands (`workspaces.create` / `browse`):
+ * they pick files freely inside this directory, not on the host's disk.
+ */
+export async function createGuestEngine(options: GuestEngineOptions): Promise<Engine> {
+  await mkdir(options.workspaceDir, { recursive: true })
+  const store = new Store(options.dataDir)
+  await store.load()
+  await store.inheritModelChannelFrom(options.source)
+  if (!store.workspaces().some((workspace) => workspace.path === options.workspaceDir)) {
+    await store.addWorkspace(options.workspaceDir, { activate: store.activeWorkspace() === null })
+  }
+  return createEngine({
+    store,
+    dataDir: options.dataDir,
+    publish: options.publish,
+    ...(options.packageRoot ? { packageRoot: options.packageRoot } : {}),
+  })
 }
 
 type EngineSlice = Pick<Engine, 'store' | 'checkpoints'>

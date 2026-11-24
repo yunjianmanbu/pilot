@@ -61,7 +61,7 @@ export type { WorkspaceUploadPlan, FinishedWorkspaceUpload } from './workspace/u
 export { projectMap } from './workspace/project-map'
 export { patchFailureSnippet, applyPatch } from './workspace/patch'
 export { planCommand, runCommand, runShell, runGit, gitStatus, gitDiff, gitLog } from './workspace/commands'
-export type { CommandOutput, PlannedCommand } from './workspace/commands'
+export type { CommandOutput, PlannedCommand, CommandScope } from './workspace/commands'
 
 export async function listDirectory(root: string, path = '.'): Promise<FileNode[]> {
   const target = await resolveExisting(root, path)

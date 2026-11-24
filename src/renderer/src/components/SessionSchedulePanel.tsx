@@ -44,7 +44,10 @@ function formatLocal(iso: string | undefined): string {
 
 function kindHint(task: ScheduledTask): string {
   if (task.kind === 'interval') return t('每 {v1} 分钟', { v1: task.intervalMinutes ?? 0 })
-  if (task.kind === 'daily') return t('每天 {v1}', { v1: task.timeOfDay ?? '' })
+  if (task.kind === 'daily') {
+    const time = t('每天 {v1}', { v1: task.timeOfDay ?? '' })
+    return task.startDate ? t('{v1}（从 {v2} 起）', { v1: time, v2: task.startDate }) : time
+  }
   return t('一次')
 }
 
@@ -87,6 +90,7 @@ export function SessionSchedulePanel({
   const [delayMinutes, setDelayMinutes] = useState('30')
   const [intervalMinutes, setIntervalMinutes] = useState('60')
   const [timeOfDay, setTimeOfDay] = useState('09:00')
+  const [startDate, setStartDate] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -158,12 +162,17 @@ export function SessionSchedulePanel({
       setError(t('时间格式要像 09:30'))
       return null
     }
-    return { content: text, kind, timeOfDay }
+    if (startDate && !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+      setError(t('起始日期格式要像 2026-11-25'))
+      return null
+    }
+    return { content: text, kind, timeOfDay, ...(startDate ? { startDate } : {}) }
   }
 
   const resetForm = () => {
     setFormOpen(false)
     setContent('')
+    setStartDate('')
     setError('')
   }
 
@@ -329,15 +338,30 @@ export function SessionSchedulePanel({
                   <span>{t('分钟一次')}</span>
                 </label>
               ) : (
-                <label className="schedule-param">
-                  <input
-                    className="todo-add-input"
-                    type="time"
-                    value={timeOfDay}
-                    onChange={(event) => setTimeOfDay(event.target.value)}
-                  />
-                  <span>{t('每天')}</span>
-                </label>
+                <>
+                  <label className="schedule-param">
+                    <input
+                      className="todo-add-input"
+                      type="time"
+                      value={timeOfDay}
+                      onChange={(event) => setTimeOfDay(event.target.value)}
+                    />
+                    <span>{t('每天')}</span>
+                  </label>
+                  <label className="schedule-param">
+                    <input
+                      className="todo-add-input"
+                      type="date"
+                      value={startDate}
+                      title={t('留空表示从今天开始每天执行')}
+                      onChange={(event) => {
+                        setStartDate(event.target.value)
+                        setError('')
+                      }}
+                    />
+                    <span>{t('从哪天起')}</span>
+                  </label>
+                </>
               )}
               <button
                 type="button"
@@ -359,7 +383,7 @@ export function SessionSchedulePanel({
         {empty && !formOpen ? (
           <div className="schedule-empty">
             <ClockIcon width={14} height={14} />
-            {t('还没有定时任务：点「新建」或待办上的时钟按钮。')}
+            {t('还没有定时任务：点「新建」、待办上的时钟按钮，或直接在对话里说「20 分钟后…」。')}
           </div>
         ) : null}
 

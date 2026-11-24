@@ -11,12 +11,35 @@ import { randomUUID } from 'node:crypto'
 import { normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
 import { MODEL_TAG_MAX_LENGTH, modelTagLength, normalizeModelTag } from '../shared/model-label'
 import { isLocaleSetting, LocaleSetting } from '../shared/i18n'
-import { isContrastPreference, isFontSizePreference, isSaturationPreference, isThemeMode } from '../shared/theme'
-import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionStage, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResourceInput, PermissionRules, Plan, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileVersion, QualityPublishTarget, QualityState, QuickCommand, ReviewEvidenceRef, ReviewFinding, ReviewReport, ReviewScope, ReviewScores, ReviewSessionScope, RunRecord, SandboxMode, ScheduleKind, ScheduledTask, SelfSourceMode, Session, SessionKind, ShellInterpreter, StoredMessage, TestCaptchaMode, ThemeMode, FontSizePreference, ContrastPreference, SaturationPreference } from '../shared/types'
+import { isFontSizePreference, isThemeMode } from '../shared/theme'
+import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionStage, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResourceInput, PermissionRules, Plan, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileVersion, QualityPublishTarget, QualityState, QuickCommand, ReviewEvidenceRef, ReviewFinding, ReviewReport, ReviewScope, ReviewScores, ReviewSessionScope, RunRecord, SandboxMode, ScheduleKind, ScheduledTask, SelfSourceMode, Session, SessionKind, ShellInterpreter, StoredMessage, TestCaptchaMode, ThemeMode, FontSizePreference } from '../shared/types'
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, SETTING_CONTEXT_MAX, SETTING_CONTEXT_MIN, SETTING_OUTPUT_MAX, SETTING_OUTPUT_MIN } from '../shared/modelLimits'
 import { normalizeRelayUrl } from '../shared/relay'
+import {
+  DEFAULT_NOTIFY_EMAIL_EVENTS,
+  normalizeNotifyEmailEvents,
+  type NotifyEventId,
+} from '../shared/notify-events'
+import { DEFAULT_SERVER_PORT, normalizeServerPort } from '../shared/server-mode'
 import { DEFAULT_EVOLUTION_POLICY, normalizeEvolutionPolicy } from '../shared/evolution'
 import { emptyQualityState, normalizeQualityPublishTarget, sanitizeQualityState } from '../shared/quality'
+import {
+  DEFAULT_REFLECTION_TOPICS,
+  MAX_REFLECTION_REPORTS,
+  REFLECTION_DAILY_DEFAULT,
+  REFLECTION_INTERVAL_DEFAULT_MINUTES,
+  clampReflectionInterval,
+  normalizeReflectionScheduleMode,
+  normalizeReflectionTime,
+  normalizeReflectionTopics,
+  normalizeReflectionTriggers,
+  sanitizeReflectionReport,
+  type ReflectionReport,
+  type ReflectionScheduleMode,
+  type ReflectionTopicId,
+  type ReflectionTriggers,
+} from '../shared/reflect'
+import { clampSmtpPort, normalizeSmtpSecurity } from './reflect/mail'
 import { isMemoryCategory, MEMORY_STORE_LIMIT } from '../shared/memory'
 import { normalizeSelfSourceSettings } from './self-source-git'
 import { sanitizeProfileComparison } from './agent/profile-benchmark'
@@ -106,6 +129,11 @@ export interface PersistedSettings {
   /** 全部自动模式下允许无人值守构建个人实验版。 */
   allowUnattendedBuild: boolean
   /**
+   * 完全自主档：放开网络、自身源码/配置、自身全部功能与资源/日志读取。
+   * 只在全部自动模式且 token/步数上限满足下限时生效；隐私路径始终拒绝。
+   */
+  fullAutonomy: boolean
+  /**
    * 自主探索学习：允许智能体从白名单公开站点只读搜集资料并自选任务。
    * 默认关；开启后仍只允许 GET/HEAD，产物只留在工作区。
    */
@@ -117,6 +145,13 @@ export interface PersistedSettings {
    * 学习模式的白名单只约束 learning_research。
    */
   learningShellIsolation: boolean
+  /**
+   * 服务器模式：让浏览器打开本机端口时得到与桌面客户端一致的网页界面，
+   * 与 `pilot serve` 是同一套服务。默认关；关闭时浏览器拿到的仍是手机面板。
+   */
+  serverMode: boolean
+  /** 服务器模式的监听端口；宿主解析为 1024–65535 之外的取值时回落到默认端口。 */
+  serverPort: number
   /** 进化闭环的基线来源：`builtin` 取官方 git，`custom` 用用户自己的源码目录。 */
   selfSourceMode: SelfSourceMode
   selfSourceGitUrl: string
@@ -136,6 +171,40 @@ export interface PersistedSettings {
   /** Paths a snapshot skips beyond the built-in list (snapshot-only). */
   checkpointIgnore: string[]
   notifyDesktop: boolean
+  /**
+   * 反思：让 Pilot 定期/在失败后对自身常规问题自问。
+   * 触发方式、模型、问题域与邮件收件人都在这里持久化。
+   */
+  reflectEnabled: boolean
+  /** 反思用的模型资源 id；空串表示跟随会话模型。 */
+  reflectModelId: string
+  reflectTriggers: ReflectionTriggers
+  reflectScheduleMode: ReflectionScheduleMode
+  reflectIntervalMinutes: number
+  reflectDailyTime: string
+  reflectTopics: ReflectionTopicId[]
+  /** 上一次成功反思完成的时间（ISO），用于定时判定。 */
+  reflectLastRunAt: string
+  /** 邮件收件开关；等价于邮件通知里勾选了「反思报告」。 */
+  reflectEmailEnabled: boolean
+  /**
+   * 邮件通知总开关：关掉后任何事件都不发信（邮箱连接配置保留）。
+   * 与 `notifyEmailEvents` 一起是「通知配置」，SMTP 主机/端口/授权码是「邮箱配置」。
+   */
+  notifyEmailEnabled: boolean
+  /** 打开邮件通知的事件清单，按推荐优先级排序。 */
+  notifyEmailEvents: NotifyEventId[]
+  /**
+   * 反思邮件唯一的邮箱地址：既是收件人，也是 SMTP 登录名与发件人。
+   * 逗号分隔多个地址时只有第一个参与登录与发信，其余只当收件人。
+   * 空串表示用户还没配置，出厂不预置任何地址。
+   */
+  reflectEmailTo: string
+  reflectSmtpHost: string
+  reflectSmtpPort: number
+  reflectSmtpSecurity: 'tls' | 'starttls' | 'none'
+  reflectSmtpPasswordCipher: string | null
+  reflectSmtpPasswordPlain: boolean
   hooksEnabled: boolean
   mcpEnabled: boolean
   relayUrl: string
@@ -144,8 +213,6 @@ export interface PersistedSettings {
   /** Painted theme; only `dark` and `light` exist, so it is stored as-is. */
   theme: ThemeMode
   fontSize: FontSizePreference
-  contrast: ContrastPreference
-  saturation: SaturationPreference
   locale: LocaleSetting
   apiKeyCipher: string | null
   apiKeyPlain: boolean
@@ -176,6 +243,10 @@ export interface PersistedState {
   quality: QualityState
   sessions: Session[]
   scheduled: ScheduledTask[]
+  /** 反思报告历史（新的在前，上限 MAX_REFLECTION_REPORTS）。 */
+  reflectionReports: ReflectionReport[]
+  /** 上一次排定触发被处理的时间，避免到点后每轮 tick 重复跑。 */
+  reflectLastScheduledAt: string | null
   /** null = built-in quick prompts; an explicit array (including []) is customized. */
   quickCommands: QuickCommand[] | null
   activeWorkspace: string | null
@@ -262,9 +333,12 @@ export function defaults(): PersistedState {
       sandboxNetwork: false,
       sandboxAutoAllow: true,
       allowUnattendedBuild: false,
+      fullAutonomy: false,
       learningMode: false,
       learningHosts: [],
       learningShellIsolation: false,
+      serverMode: false,
+      serverPort: DEFAULT_SERVER_PORT,
       selfSourceMode: 'builtin',
       selfSourceGitUrl: '',
       selfSourceGitRef: 'main',
@@ -278,6 +352,27 @@ export function defaults(): PersistedState {
       checkpointShell: true,
       checkpointIgnore: [],
       notifyDesktop: true,
+      reflectEnabled: false,
+      reflectModelId: '',
+      reflectTriggers: { onError: true, onSchedule: true },
+      reflectScheduleMode: 'daily',
+      reflectIntervalMinutes: REFLECTION_INTERVAL_DEFAULT_MINUTES,
+      reflectDailyTime: REFLECTION_DAILY_DEFAULT,
+      reflectTopics: [...DEFAULT_REFLECTION_TOPICS],
+      reflectLastRunAt: '',
+      reflectEmailEnabled: true,
+      // 新装不自动往邮箱发信：先把总开关关着，用户填完邮箱再自己打开。
+      // 事件清单按推荐优先级预勾选，打开开关就能直接生效。
+      notifyEmailEnabled: false,
+      notifyEmailEvents: [...DEFAULT_NOTIFY_EMAIL_EVENTS],
+      // 出厂不预置任何邮箱地址与服务器：邮箱是用户自己的，产品方不该在默认值里
+      // 留下一个看得见、也可能被误发的地址。端口与加密方式保留通用默认。
+      reflectEmailTo: '',
+      reflectSmtpHost: '',
+      reflectSmtpPort: 465,
+      reflectSmtpSecurity: 'tls',
+      reflectSmtpPasswordCipher: null,
+      reflectSmtpPasswordPlain: false,
       hooksEnabled: false,
       mcpEnabled: false,
       // 官方不提供公共中继；默认只走局域网，用户自行部署后填写地址。
@@ -288,8 +383,6 @@ export function defaults(): PersistedState {
       phoneRoots: [],
       theme: 'dark',
       fontSize: 'standard',
-      contrast: 'standard',
-      saturation: 'standard',
       locale: 'auto',
       apiKeyCipher: primaryResource.keyCipher,
       apiKeyPlain: primaryResource.keyPlain,
@@ -302,6 +395,8 @@ export function defaults(): PersistedState {
     quality: emptyQualityState(),
     sessions: [],
     scheduled: [],
+    reflectionReports: [],
+    reflectLastScheduledAt: null,
     quickCommands: null,
     activeWorkspace: null,
     activeSession: null,
@@ -317,7 +412,42 @@ export function normalizeOptionalText(value: unknown, max = 200): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
 }
 
+/**
+ * 带产品默认值的文本字段：老 store 里还没有这个键（undefined/null）时回落到默认值，
+ * 显式存下来的空串仍按「用户清空」处理，不能被默认值再填回去。
+ */
+function textOrDefault(value: unknown, max: number, fallbackValue: string): string {
+  if (value === undefined || value === null) return fallbackValue
+  return normalizeOptionalText(value, max)
+}
+
+/**
+ * 合并前的邮箱键顺序。老存档可能只有 smtpUser（登录名）有值，而收件地址为空，
+ * 单字段化之后只能取第一个非空值，否则用户升级后要重新填一遍邮箱。
+ */
+function legacyReflectionMailbox(raw: Record<string, unknown>): unknown {
+  for (const key of ['reflectEmailTo', 'reflectSmtpUser', 'reflectEmailFrom']) {
+    const value = raw[key]
+    if (typeof value === 'string' && value.trim() !== '') return value
+  }
+  return undefined
+}
+
 export const MAX_TEST_TARGETS = 20
+
+/**
+ * 旧版出厂预置的反思发信邮箱。它曾经是 defaults() 的一部分，所以会被写进用户的
+ * `pilot-core.json`；光把 defaults 改成空不够，老存档里那一份还得当成「没配置」
+ * 请掉，否则界面上依旧显示产品方的地址、反思邮件也继续发到那里。
+ */
+const LEGACY_PRODUCT_MAILBOX = 'embeddedmeng@163.com'
+/** 与那个邮箱一起预置的 163 主机（当时是 defaults 里的第三项）。 */
+const LEGACY_PRODUCT_SMTP_HOST = 'smtp.163.com'
+
+/** 该邮箱只作为历史预置值存在，用户自己不可能故意填它。 */
+export function isLegacyProductMailbox(value: string): boolean {
+  return value.trim().toLowerCase() === LEGACY_PRODUCT_MAILBOX
+}
 
 /** 动态工具只能访问用户显式登记的 http/https 测试目标。 */
 export function normalizeTestTarget(value: unknown): string | null {
@@ -1118,12 +1248,43 @@ export function cleanTimeOfDay(value: unknown): string | null {
   return typeof value === 'string' && TIME_OF_DAY_PATTERN.test(value) ? value : null
 }
 
-export function nextDailyRun(timeOfDay: string, from: Date): string {
+export function nextDailyRun(timeOfDay: string, from: Date, startDate?: string): string {
   const [hours, minutes] = timeOfDay.split(':').map((part) => Number(part))
   const next = new Date(from)
   next.setHours(hours ?? 0, minutes ?? 0, 0, 0)
   if (next.getTime() <= from.getTime()) next.setDate(next.getDate() + 1)
+  // 起始日还没到时不能提前触发：「从明天开始每天 20:00」在今晚 20:00 之前创建，
+  // 下一次必须是明天，而不是今天。起始日已过（或就是今天且时间点未到）时按常规推算。
+  const first = startDateFirstRun(timeOfDay, startDate)
+  if (first && first.getTime() > next.getTime()) return first.toISOString()
   return next.toISOString()
+}
+
+export const START_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+
+/** 本地日期 "YYYY-MM-DD"；2 月 31 日这类不存在的日期返回 null。 */
+export function cleanStartDate(value: unknown): string | null {
+  if (typeof value !== 'string' || !START_DATE_PATTERN.test(value)) return null
+  const [year, month, day] = value.split('-').map((part) => Number(part))
+  if (!year || !month || !day) return null
+  const date = new Date(year, month - 1, day)
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null
+  }
+  return value
+}
+
+/** 起始日当天的那个时间点（本地时间）；没给起始日或格式不对时返回 null。 */
+function startDateFirstRun(timeOfDay: string, startDate: string | undefined): Date | null {
+  const clean = cleanStartDate(startDate)
+  if (!clean) return null
+  const [year, month, day] = clean.split('-').map((part) => Number(part))
+  const [hours, minutes] = timeOfDay.split(':').map((part) => Number(part))
+  return new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1, hours ?? 0, minutes ?? 0, 0, 0)
 }
 
 export function sanitizeQuickCommand(value: unknown): QuickCommand | null {
@@ -1158,6 +1319,7 @@ export function sanitizeScheduledTask(value: unknown): ScheduledTask | null {
       : undefined
   const timeOfDay = kind === 'daily' ? cleanTimeOfDay(record['timeOfDay']) : null
   if (kind === 'daily' && !timeOfDay) return null
+  const startDate = kind === 'daily' ? cleanStartDate(record['startDate']) : null
   return {
     id: record['id'],
     sessionId: record['sessionId'],
@@ -1165,6 +1327,7 @@ export function sanitizeScheduledTask(value: unknown): ScheduledTask | null {
     kind,
     ...(intervalMinutes !== undefined ? { intervalMinutes } : {}),
     ...(timeOfDay ? { timeOfDay } : {}),
+    ...(startDate ? { startDate } : {}),
     nextRunAt,
     enabled: record['enabled'] !== false,
     createdAt:
@@ -1317,6 +1480,18 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
       : null
   const legacyKeyPlain = settingsRaw['apiKeyPlain'] === true
   const legacyJudges = sanitizeJudgeProviders(settingsRaw['judgeProviders'])
+  // 反思发信：三个老邮箱键先合并成一个，再把旧版出厂预置的那份当成「没配置」。
+  const mergedMailbox = textOrDefault(
+    legacyReflectionMailbox(settingsRaw),
+    200,
+    fallback.settings.reflectEmailTo,
+  )
+  const mergedSmtpHost = textOrDefault(
+    settingsRaw['reflectSmtpHost'],
+    200,
+    fallback.settings.reflectSmtpHost,
+  )
+  const legacyProductMail = isLegacyProductMailbox(mergedMailbox)
   const modelResources = sanitizeModelResources(settingsRaw['modelResources'])
   if (modelResources.length === 0) {
     modelResources.push({
@@ -1425,6 +1600,54 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
         ? settingsRaw['testCaptchaCipher']
         : null,
     testCaptchaPlain: settingsRaw['testCaptchaPlain'] === true,
+    reflectEnabled: settingsRaw['reflectEnabled'] === true,
+    reflectModelId: normalizeOptionalText(settingsRaw['reflectModelId'], 120),
+    reflectTriggers: normalizeReflectionTriggers(settingsRaw['reflectTriggers']),
+    reflectScheduleMode: normalizeReflectionScheduleMode(settingsRaw['reflectScheduleMode']),
+    reflectIntervalMinutes: clampReflectionInterval(settingsRaw['reflectIntervalMinutes']),
+    reflectDailyTime: normalizeReflectionTime(settingsRaw['reflectDailyTime']),
+    reflectTopics: normalizeReflectionTopics(settingsRaw['reflectTopics']),
+    reflectLastRunAt: normalizeOptionalText(settingsRaw['reflectLastRunAt'], 40),
+    // 反思发信字段是「用户自己填」的：出厂既没有邮箱地址也没有 SMTP 主机。
+    // 老存档把邮箱拆在 reflectEmailTo / reflectSmtpUser / reflectEmailFrom 三个键里，
+    // 合并成一个字段时按这个顺序取第一个非空值；否则升级后用户的邮箱会凭空消失。
+    // 旧版写进存档的产品方预置邮箱（连同它的 163 主机）在这里清掉，视为没配置。
+    reflectEmailEnabled:
+      typeof settingsRaw['reflectEmailEnabled'] === 'boolean'
+        ? settingsRaw['reflectEmailEnabled']
+        : fallback.settings.reflectEmailEnabled,
+    // 邮件通知是后来才有的：老存档只有 reflectEmailEnabled，升级时只继承
+    // 「反思报告」这一项，否则用户邮箱会突然被任务完成之类的邮件撬开。
+    notifyEmailEnabled:
+      typeof settingsRaw['notifyEmailEnabled'] === 'boolean'
+        ? settingsRaw['notifyEmailEnabled']
+        : 'reflectEmailEnabled' in settingsRaw
+          ? settingsRaw['reflectEmailEnabled'] === true
+          : fallback.settings.notifyEmailEnabled,
+    notifyEmailEvents:
+      'notifyEmailEvents' in settingsRaw
+        ? normalizeNotifyEmailEvents(settingsRaw['notifyEmailEvents'])
+        : 'reflectEmailEnabled' in settingsRaw
+          ? settingsRaw['reflectEmailEnabled'] === true
+            ? ['reflect.report']
+            : []
+          : fallback.settings.notifyEmailEvents,
+    reflectEmailTo: legacyProductMail ? '' : mergedMailbox,
+    reflectSmtpHost:
+      legacyProductMail && mergedSmtpHost.toLowerCase() === LEGACY_PRODUCT_SMTP_HOST
+        ? ''
+        : mergedSmtpHost,
+    reflectSmtpPort: clampSmtpPort(settingsRaw['reflectSmtpPort'] ?? fallback.settings.reflectSmtpPort),
+    reflectSmtpSecurity:
+      settingsRaw['reflectSmtpSecurity'] === undefined || settingsRaw['reflectSmtpSecurity'] === null
+        ? fallback.settings.reflectSmtpSecurity
+        : normalizeSmtpSecurity(settingsRaw['reflectSmtpSecurity']),
+    reflectSmtpPasswordCipher:
+      typeof settingsRaw['reflectSmtpPasswordCipher'] === 'string' &&
+      settingsRaw['reflectSmtpPasswordCipher']
+        ? settingsRaw['reflectSmtpPasswordCipher']
+        : null,
+    reflectSmtpPasswordPlain: settingsRaw['reflectSmtpPasswordPlain'] === true,
     approvalTimeoutSec: Math.round(
       clampNumber(settingsRaw['approvalTimeoutSec'], fallback.settings.approvalTimeoutSec, 0, 3_600),
     ),
@@ -1458,9 +1681,14 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     sandboxNetwork: settingsRaw['sandboxNetwork'] === true,
     sandboxAutoAllow: settingsRaw['sandboxAutoAllow'] !== false,
     allowUnattendedBuild: settingsRaw['allowUnattendedBuild'] === true,
+    // 缺省即关：这是一个把多条限制一起放开的档位，必须由用户显式打开。
+    fullAutonomy: settingsRaw['fullAutonomy'] === true,
     learningMode: settingsRaw['learningMode'] === true,
     // 缺省即关：联网是任务会话的常规能力，学习模式不接管它。
     learningShellIsolation: settingsRaw['learningShellIsolation'] === true,
+    // 缺省即关：打开它等于把一个可被浏览器驱动的入口挂到端口上。
+    serverMode: settingsRaw['serverMode'] === true,
+    serverPort: normalizeServerPort(settingsRaw['serverPort']),
     learningHosts: Array.isArray(settingsRaw['learningHosts'])
       ? (settingsRaw['learningHosts'] as unknown[])
           .filter((value): value is string => typeof value === 'string')
@@ -1508,12 +1736,6 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     /** Only `dark` and `light` are stored; anything else falls back to `dark`. */
     theme: isThemeMode(settingsRaw['theme']) ? settingsRaw['theme'] : 'dark',
     fontSize: isFontSizePreference(settingsRaw['fontSize']) ? settingsRaw['fontSize'] : 'standard',
-    contrast: isContrastPreference(settingsRaw['contrast'])
-      ? settingsRaw['contrast']
-      : 'standard',
-    saturation: isSaturationPreference(settingsRaw['saturation'])
-      ? settingsRaw['saturation']
-      : 'standard',
     locale: isLocaleSetting(settingsRaw['locale']) ? settingsRaw['locale'] : 'auto',
     apiKeyCipher: sessionResource.keyCipher,
     apiKeyPlain: sessionResource.keyPlain,
@@ -1568,6 +1790,11 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     .map(sanitizeEvolutionCycle)
     .filter((cycle): cycle is EvolutionCycle => Boolean(cycle))
   const quality = sanitizeQualityState(record['quality'])
+  // 反思报告只留最近的若干份：它是“快照”而非账本，旧报告留太多只会胀大状态文件。
+  const reflectionReports = (Array.isArray(record['reflectionReports']) ? record['reflectionReports'] : [])
+    .map(sanitizeReflectionReport)
+    .filter((report): report is ReflectionReport => Boolean(report))
+    .slice(0, MAX_REFLECTION_REPORTS)
   // A missing field means "never customized" (null), while an empty array is
   // an explicit choice to show no quick prompts.
   const quickSeen = new Set<string>()
@@ -1594,6 +1821,11 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     evolutionPolicyVersions,
     evolutionCycles,
     quality,
+    reflectionReports,
+    reflectLastScheduledAt:
+      typeof record['reflectLastScheduledAt'] === 'string' && record['reflectLastScheduledAt']
+        ? record['reflectLastScheduledAt']
+        : null,
     sessions,
     scheduled,
     quickCommands,
@@ -1622,14 +1854,6 @@ export function validTheme(value: unknown): ThemeMode | null {
 
 export function validFontSize(value: unknown): FontSizePreference | null {
   return value === 'standard' || value === 'large' || value === 'xlarge' ? value : null
-}
-
-export function validContrast(value: unknown): ContrastPreference | null {
-  return value === 'low' || value === 'standard' || value === 'high' ? value : null
-}
-
-export function validSaturation(value: unknown): SaturationPreference | null {
-  return value === 'low' || value === 'standard' || value === 'high' ? value : null
 }
 
 export function validShellInterpreter(value: unknown): ShellInterpreter | null {

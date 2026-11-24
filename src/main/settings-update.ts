@@ -11,8 +11,21 @@ import {
 import { isLocaleSetting } from '../shared/i18n'
 import { normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
 import { normalizeRelayUrl } from '../shared/relay'
+import { normalizeServerPort } from '../shared/server-mode'
 import { normalizeQualityPublishTarget } from '../shared/quality'
 import { normalizeSelfSourceSettings } from './self-source-git'
+import {
+  clampReflectionInterval,
+  normalizeReflectionScheduleMode,
+  normalizeReflectionTime,
+  normalizeReflectionTopics,
+  normalizeReflectionTriggers,
+} from '../shared/reflect'
+import { clampSmtpPort, normalizeSmtpSecurity } from './reflect/mail'
+import {
+  normalizeNotifyEmailEvents,
+  withNotifyEvent,
+} from '../shared/notify-events'
 import {
   clampNumber,
   normalizeOptionalText,
@@ -21,9 +34,7 @@ import {
   sanitizeCommandList,
   sanitizePermissionRules,
   validApprovalMode,
-  validContrast,
   validFontSize,
-  validSaturation,
   validShellInterpreter,
   validTheme,
 } from './store-schema'
@@ -37,6 +48,8 @@ import {
 export interface SettingsSecretHooks {
   setTestCaptcha(value: string | null): void
   setApiKey(value: string | null): void
+  /** 反思邮件用的 SMTP 密码，同样只以密文入盘。 */
+  setSmtpPassword(value: string | null): void
 }
 
 /**
@@ -86,6 +99,71 @@ export function applySettingsUpdate(
     }
     if (input.screenshotFeedback !== undefined) {
       settings.screenshotFeedback = input.screenshotFeedback === true
+    }
+    if (input.reflectEnabled !== undefined) settings.reflectEnabled = input.reflectEnabled === true
+    if (input.reflectModelId !== undefined) {
+      settings.reflectModelId = normalizeOptionalText(input.reflectModelId, 120)
+    }
+    if (input.reflectTriggers !== undefined) {
+      settings.reflectTriggers = normalizeReflectionTriggers({
+        ...settings.reflectTriggers,
+        ...input.reflectTriggers,
+      })
+    }
+    if (input.reflectScheduleMode !== undefined) {
+      settings.reflectScheduleMode = normalizeReflectionScheduleMode(input.reflectScheduleMode)
+    }
+    if (input.reflectIntervalMinutes !== undefined) {
+      settings.reflectIntervalMinutes = clampReflectionInterval(input.reflectIntervalMinutes)
+    }
+    if (input.reflectDailyTime !== undefined) {
+      settings.reflectDailyTime = normalizeReflectionTime(input.reflectDailyTime)
+    }
+    if (input.reflectTopics !== undefined) {
+      settings.reflectTopics = normalizeReflectionTopics(input.reflectTopics)
+    }
+    if (input.reflectEmailEnabled !== undefined) {
+      // 旧字段只控制反思报告：写它就等于打开/关闭那个事件，其余事件保持原样。
+      // 手机端「发送反思邮件」只发这个字段，所以它也要能开总开关；否则用户在手机上
+      // 打开开关，电脑端总开关却是关的，信一封都发不出去。
+      settings.notifyEmailEnabled = input.reflectEmailEnabled === true
+      settings.notifyEmailEvents = withNotifyEvent(
+        settings.notifyEmailEvents,
+        'reflect.report',
+        input.reflectEmailEnabled === true,
+      )
+      settings.reflectEmailEnabled = input.reflectEmailEnabled === true
+    }
+    if (input.notifyEmailEnabled !== undefined) {
+      settings.notifyEmailEnabled = input.notifyEmailEnabled === true
+    }
+    if (input.notifyEmailEvents !== undefined) {
+      settings.notifyEmailEvents = normalizeNotifyEmailEvents(input.notifyEmailEvents)
+      settings.reflectEmailEnabled = settings.notifyEmailEvents.includes('reflect.report')
+    }
+    // 只剩一个邮箱字段：它同时是收件人、SMTP 登录名与发件人。
+    // 旧手机端仍会发 smtpUser / emailFrom，当作同一字段的别名收下，避免升级后改不动配置。
+    if (input.reflectEmailTo !== undefined) {
+      settings.reflectEmailTo = normalizeOptionalText(input.reflectEmailTo, 200)
+    } else if (input.reflectSmtpUser !== undefined || input.reflectEmailFrom !== undefined) {
+      settings.reflectEmailTo = normalizeOptionalText(
+        input.reflectSmtpUser ?? input.reflectEmailFrom ?? '',
+        200,
+      )
+    }
+    if (input.reflectSmtpHost !== undefined) {
+      settings.reflectSmtpHost = normalizeOptionalText(input.reflectSmtpHost, 200)
+    }
+    if (input.reflectSmtpPort !== undefined) {
+      settings.reflectSmtpPort = clampSmtpPort(input.reflectSmtpPort)
+    }
+    if (input.reflectSmtpSecurity !== undefined) {
+      settings.reflectSmtpSecurity = normalizeSmtpSecurity(input.reflectSmtpSecurity)
+    }
+    if (input.reflectSmtpPassword !== undefined) {
+      // 与验证码一致：空串表示保持原值，null 才清除。
+      if (input.reflectSmtpPassword === null) hooks.setSmtpPassword(null)
+      else if (input.reflectSmtpPassword !== '') hooks.setSmtpPassword(input.reflectSmtpPassword)
     }
     if (input.testTargets !== undefined) {
       settings.testTargets = normalizeTestTargets(input.testTargets)
@@ -147,6 +225,9 @@ export function applySettingsUpdate(
     if (input.allowUnattendedBuild !== undefined) {
       settings.allowUnattendedBuild = input.allowUnattendedBuild === true
     }
+    if (input.fullAutonomy !== undefined) {
+      settings.fullAutonomy = input.fullAutonomy === true
+    }
     if (input.learningMode !== undefined) {
       settings.learningMode = input.learningMode === true
     }
@@ -159,6 +240,13 @@ export function applySettingsUpdate(
     }
     if (input.learningShellIsolation !== undefined) {
       settings.learningShellIsolation = input.learningShellIsolation === true
+    }
+    if (input.serverMode !== undefined) {
+      settings.serverMode = input.serverMode === true
+    }
+    if (input.serverPort !== undefined) {
+      // 端口越界不报错，收敛回默认值：UI 边打字边提交，报错只会打断输入。
+      settings.serverPort = normalizeServerPort(input.serverPort, settings.serverPort)
     }
     if (
       input.selfSourceMode !== undefined ||
@@ -243,13 +331,6 @@ export function applySettingsUpdate(
     }
     if (input.fontSize !== undefined) {
       settings.fontSize = validFontSize(input.fontSize) ?? settings.fontSize
-    }
-    if (input.contrast !== undefined) {
-      settings.contrast = validContrast(input.contrast) ?? settings.contrast
-    }
-    if (input.saturation !== undefined) {
-      settings.saturation =
-        validSaturation(input.saturation) ?? settings.saturation
     }
     if (input.locale !== undefined) {
       settings.locale = isLocaleSetting(input.locale)

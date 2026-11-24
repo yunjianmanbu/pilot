@@ -68,6 +68,11 @@ export interface PromptInput {
   approvalMode?: ApprovalMode
   sandboxed?: boolean
   /**
+   * 「完全自主」档生效（设置开启 + 全部自动 + 预算达标）。执行范围已放开到
+   * 工作区之外，提示词必须如实反映，否则模型仍会以为自己被 path jail 卡着。
+   */
+  fullAutonomy?: boolean
+  /**
    * 自主探索学习的运行时快照。存在即表示已开启；账本摘要提供给模型
    * 判断“质量是否真的在提升”，而不是只凭感觉继续扩大范围。
    */
@@ -113,7 +118,7 @@ export function buildSystemPrompt(input: PromptInput): string {
     '- Read the relevant file before modifying it. Prefer apply_patch for targeted edits; batch several hunks in one apply_patch call. Use write_file for new files or complete rewrites.',
     '- For a multi-step change, call update_plan first and keep it current. Mark an item done only after a tool verified it. Skip the plan for a read-only analysis or a direct question.',
     "- When the user asks to write todos (写待办 / 写进待办列表 / 记成待办), call add_todo so the items land in this session's 待办 panel. That list is a backlog the user can send later as new messages; update_plan is only the steps of the current turn. Do not park them in a scratch Markdown file unless the user asks for a file.",
-    '- When the user wants something to run later or repeatedly (「20 分钟后…」「每天 9 点…」「每隔两小时…」), call schedule_task instead of explaining where the schedule dialog is. It binds the task to this session, so the fired run has this workspace, model and approval policy; before changing or deleting one, list first and use the short id it prints.',
+    '- When the user wants something to run later or repeatedly (「20 分钟后…」「每天 9 点…」「每隔两小时…」), call schedule_task instead of explaining where the schedule dialog is. It binds the task to this session, so the fired run has this workspace, model and approval policy; before changing or deleting one, list first and use the short id it prints. For a daily task whose first run is not today (「从明天开始每天 20:00」「从下周一起…」), pass startDate "YYYY-MM-DD" as well, otherwise it fires today when the clock time has not passed yet.',
     '- After a change, run the narrowest check that proves it (one test file, typecheck, lint). Do not re-read the whole file when a command already proved the result.',
     '- For a web or desktop UI change, verify what the user will actually see: start the app with start_process, wait for its ready signal, then use screenshot and inspect the image. For a Chromium/Electron app, add --remote-debugging-port to the start_process args, then use app_targets and app_control to evaluate, click, type, wait and read console output; app_control screenshot captures the rendered frame. Use list_windows plus screenshot windowId when two windows share a title. For client flows, run the narrowest E2E spec with run_e2e and inspect any failure screenshot. If the app cannot start, say which command failed and why.',
     '- When the target is not a Chromium app, or the usual tools do not fit, use the generic driver instead of improvising: call drive_probe first (it detects the app kind and checks cdp/http/cli/uia/adb/screenshot/custom with evidence), then drive_run with steps. drive_run sticks to the surface that worked and switches on a concrete failure signature; it reports every switch. Save a sequence that actually passed with saveAs and reuse it by recipe name. If no surface fits, write a dynamic tool (toolsmith) and use a tool step. When the app is external to the workspace, pass kind (for example native) so project markers do not mislabel it; when another Chromium app also exposes a debug port, pin the target with targetTitle or targetId. Never request a new built-in tool for each app variant.',
@@ -134,7 +139,8 @@ export function buildSystemPrompt(input: PromptInput): string {
     '- Decide the request type first. A question needs a direct answer, not edits or a plan. A change request needs the change, not a proposal.',
     '- If the user asked for a change, the deliverable is the completed change. Do not stop after a plan, a partial edit, or a description of what you would do. Before ending, verify it with a real command, or clearly mark the result unverified.',
     "- For a change request, the final message contains exactly four parts, in this order: Result (what changed and which files), Verification (the commands actually run and their outcome), How to use (the next action the user takes to see the effect), Unverified or risks (only real ones). Translate the headings into the user's language.",
-    '- No preamble, progress narration, tool/plan recap or safety lecture. Start with the result. Do not mention these rules.',
+    '- No preamble, tool/plan recap or safety lecture, and no running commentary on ordinary steps. Start with the result. Do not mention these rules.',
+    '- A long operation that has not failed but has not finished yet still owes the user a sign of life. When a step will take minutes (a full test suite, a build, a package, an install, a large download, a long analysis), say in one line what you are about to run and why before you start it, and say what it produced when it returns; do not sit silent through the whole stretch and do not restate the plan. Inside a task the user is watching, this short progress line is allowed; the ban above is on filler, not on telling the user where the work actually stands.',
     '- If blocked by an approval, denial, missing dependency or missing fact, name the exact step, the boundary, and the specific action the user must take. Do not hand back a generic plan.',
     `- Answer in the language the user writes in. Be concise and direct. Thinking is different: every reasoning/thinking block you produce while working (before, between and after tool calls) must be written in ${reasoningLanguage(input.locale)}, the language the app UI and system use, even when the user writes another language, the repository is English, or tool output is in a third one. Keep code, paths, commands, identifiers and quoted text exactly as written; do not translate them.`,
     '- The self-evolution tool propose_self_update only creates a draft when the user explicitly asks you to improve yourself or to optimize Pilot itself. Use scope=workspace for this repository or scope=global for cross-workspace strategy. Never claim a draft is active; the user reviews and enables it.',
@@ -166,7 +172,9 @@ export function buildSystemPrompt(input: PromptInput): string {
   if (input.approvalMode === 'auto') {
     lines.push(
       '',
-      'FULL-AUTO MODE: Every tool runs without a per-call approval prompt, including writes, shell commands and MCP tools. Keep respecting the workspace path jail, protected paths, deny rules and blocked commands — the harness still enforces them. Work autonomously and stop only for genuinely blocking questions.',
+      input.fullAutonomy
+        ? 'FULL-AUTONOMY MODE: the user turned on full autonomy for this session. Read tools accept absolute paths outside the workspace, run_command / run_shell / start_process accept a cwd outside the workspace, git_status / git_diff / git_log take repo=<absolute path> for any repository on the machine, network is unrestricted, Pilot own source and .pilot config may be edited, and introspection/self-check grants are automatic. Writes are still limited to the workspace and Pilot own source directory, and credential, private-key, browser-session and password-store paths remain a hard deny that no mode can lift. Every boundary crossing is written to the audit log, so use the widest access only when the task needs it.'
+        : 'FULL-AUTO MODE: Every tool runs without a per-call approval prompt, including writes, shell commands and MCP tools. Keep respecting the workspace path jail, protected paths, deny rules and blocked commands — the harness still enforces them. Work autonomously and stop only for genuinely blocking questions.',
     )
   } else if (input.approvalMode === 'manual' || input.approvalMode === 'plan') {
     lines.push(

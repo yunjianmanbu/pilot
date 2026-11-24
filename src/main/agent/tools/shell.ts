@@ -128,7 +128,9 @@ export async function runShellTool(
 ): Promise<ToolResult | null> {
   if (name === RUN_COMMAND) {
   {
-        const result = await runCommand(host.root, args, signal)
+        const result = await runCommand(host.root, args, signal, {
+          fullAutonomy: host.fullAutonomy === true,
+        })
         return {
           ok: result.ok,
           output: result.output,
@@ -146,6 +148,7 @@ export async function runShellTool(
           signal,
           host.sandbox ?? null,
           host.shellInterpreter ?? 'auto',
+          { fullAutonomy: host.fullAutonomy === true },
         )
         return {
           ok: result.ok,
@@ -159,7 +162,9 @@ export async function runShellTool(
   if (name === START_PROCESS) {
   {
         if (!host.processes) throw new Error('Long-lived processes are not available in this context')
-        return host.processes.start(host.root, args)
+        return host.processes.start(host.root, args, {
+          fullAutonomy: host.fullAutonomy === true,
+        })
       }
   }
   if (name === READ_PROCESS_OUTPUT) {

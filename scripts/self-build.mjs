@@ -111,7 +111,7 @@ if (!flags.has('--skip-install')) {
   run('安装依赖', 'pnpm', ['install', '--frozen-lockfile'])
 }
 run('测试', 'pnpm', ['test'])
-run('构建', 'pnpm', ['build'])
+run('构建', 'pnpm', ['build:all'])
 run('准备内置源码', 'node', ['scripts/prepare-self-source.mjs'])
 run('打包便携版', 'pnpm', [
   'exec',

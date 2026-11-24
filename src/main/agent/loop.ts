@@ -270,6 +270,7 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
   let lastPlanStep = 1
   let lastPlanReminderStep = 0
   let wrapUpSent = false
+  let closeOutSent = false
   let dirty = false
   let checkRan = false
   let verificationGateUsed = false
@@ -965,6 +966,36 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         })
       }
 
+      // Token budget close-out. Running out of tokens is a budget event like
+      // running out of steps, and the recording showed runs where the token cap
+      // arrived first and cut the answer off mid-sentence. One warning at 85%
+      // lets the final turns say what is done and what is left instead of the
+      // run ending with a bare `AGENT_TOKEN_LIMIT`. Shares `closeOutSent` with
+      // the step reminder below so a run that is short on both pays for one
+      // extra message, not two.
+      const tokenWrapAt = maxTokens > 0 ? maxTokens * 0.85 : 0
+      if (
+        options.budgetWrapUp &&
+        !closeOutSent &&
+        tokenWrapAt > 0 &&
+        usage.totalTokens >= tokenWrapAt
+      ) {
+        closeOutSent = true
+        messages.push({
+          role: 'user',
+          internal: true,
+          content:
+            `[额度预算] 本轮已用 ${usage.totalTokens} / ${maxTokens} token，剩余约 ${maxTokens - usage.totalTokens}。` +
+            '不要再开启新的调查或大改：先把当前这一步的验证跑完，然后给出收尾报告：' +
+            '1) 已完成（含怎么验证的）；2) 未完成与原因；3) 下一步要做的第一条具体动作。',
+        })
+        await emit({
+          type: 'notice',
+          level: 'warn',
+          message: `已用 ${usage.totalTokens}/${maxTokens} token，已提醒模型收尾并列出剩余项。`,
+        })
+      }
+
       await emit({ type: 'step.started', step })
       if (options.pullMessages) {
         try {
@@ -1406,6 +1437,39 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
           type: 'notice',
           level: 'info',
           message: '分析已进行多步，已提醒模型收尾作答。',
+        })
+      }
+
+      // Running out of steps is a budget event, not a crash. One turn before the
+      // cap, ask for a normal-work close-out so the run ends with 已完成/未完成/
+      // 下一步 instead of a bare step-limit error, and the auto-continue that
+      // follows has a concrete first action to resume from. Separate from the
+      // analysis `wrapUpAt` above: that one says "stop searching", this one says
+      // "finish what you are verifying and report".
+      const budgetMargin = options.budgetWrapUp
+        ? Math.max(1, Math.min(10, Math.round(maxSteps * 0.08)))
+        : 0
+      const budgetWrapAt = budgetMargin > 0 ? maxSteps - budgetMargin : 0
+      if (
+        budgetWrapAt >= 3 &&
+        !closeOutSent &&
+        wrapUpAt === 0 &&
+        step >= budgetWrapAt &&
+        step < maxSteps
+      ) {
+        closeOutSent = true
+        messages.push({
+          role: 'user',
+          internal: true,
+          content:
+            `[步数预算] 已用 ${step}/${maxSteps} 步，剩余约 ${maxSteps - step} 步。不要再开启新的调查或大改：` +
+            '先把当前这一步的验证跑完，然后给出收尾报告：1) 已完成（含怎么验证的）；2) 未完成与原因；3) 下一步要做的第一条具体动作。' +
+            '如果确实还需要很多步，就在报告里说清楚还缺什么、建议怎么拆。',
+        })
+        await emit({
+          type: 'notice',
+          level: 'warn',
+          message: `已用 ${step}/${maxSteps} 步，已提醒模型收尾并列出剩余项。`,
         })
       }
 

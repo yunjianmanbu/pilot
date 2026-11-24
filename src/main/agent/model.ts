@@ -1,8 +1,9 @@
-import { isEmptyAssistant } from './message-guard'
+import { isEmptyAssistant, pairToolResults } from './message-guard'
 import { fitMessages, messagesTokens } from './context'
 import type { AgentMessage, AgentToolDefinition, AgentUsage, ToolCall } from '../../shared/types'
 import { effectiveOutputTokens } from '../../shared/modelLimits'
 import { providerLabel } from '../../shared/provider'
+import { FATAL_PROVIDER_STATUS, fatalProviderText } from '../../shared/run-failure'
 import type { ModelClient, ModelRequest, ModelResponse } from './loop'
 
 export interface DeepSeekConfig {
@@ -62,19 +63,13 @@ function toOpenAIContent(message: AgentMessage): string | OpenAIContentPart[] {
  * request (see `isEmptyAssistant`), which poisons every later turn of a session.
  */
 function toOpenAIMessages(messages: AgentMessage[]): OpenAIMessage[] {
-  const callIds = new Set<string>()
-  for (const message of messages) {
-    if (isEmptyAssistant(message)) continue
-    for (const call of message.toolCalls ?? []) callIds.add(call.id)
-  }
+  // Pairing repair happens here, on the one path every request takes, so an
+  // interrupted run or a compacted transcript cannot send an assistant turn
+  // whose tool_calls have no results (see `pairToolResults`).
+  const paired = pairToolResults(messages).messages
   const result: OpenAIMessage[] = []
-  for (const message of messages) {
+  for (const message of paired) {
     if (isEmptyAssistant(message)) continue
-    // A tool result whose call is no longer in the request is an orphan the
-    // provider rejects, so it is dropped together with its assistant turn.
-    if (message.role === 'tool' && message.toolCallId && !callIds.has(message.toolCallId)) {
-      continue
-    }
     result.push(toOpenAIMessage(message))
   }
   return result
@@ -140,6 +135,30 @@ function parseArguments(raw: string): Record<string, unknown> {
   return { _raw: raw }
 }
 
+/**
+ * True when replaying the run cannot possibly succeed: the key is wrong or out
+ * of balance, or the account is not allowed to use that model.
+ *
+ * Auto-continue used to treat these like a dropped connection, so every retry
+ * re-sent the same prompt, failed the same way and burned another run. The
+ * caller uses this to stop after one attempt and tell the user which setting
+ * to change instead.
+ *
+ * The loop turns a `ModelError` into its message string before the runner sees
+ * it, so the status is read back out of the wording as well as the instance.
+ * The wording test lives in `shared/run-failure.ts`: the renderer classifies
+ * the same error for the recovery bar and both must agree.
+ */
+export function isFatalProviderError(error: unknown): boolean {
+  if (error instanceof ModelError) {
+    if (error.status !== null && FATAL_PROVIDER_STATUS.has(error.status)) return true
+    return fatalProviderText(error.message)
+  }
+  if (typeof error === 'string') return fatalProviderText(error)
+  if (error instanceof Error) return fatalProviderText(error.message)
+  return false
+}
+
 function friendlyHttpError(status: number, body: string, provider: string): string {
   let detail = body.trim().slice(0, 500)
   try {
@@ -152,6 +171,9 @@ function friendlyHttpError(status: number, body: string, provider: string): stri
     return `${provider} rejected the API key (401). Check it in Settings. ${detail}`
   }
   if (status === 402) return `${provider} reports insufficient balance (402). ${detail}`
+  if (status === 403) {
+    return `${provider} denied access to this model (403). Check the model name and the account's permissions. ${detail}`
+  }
   if (status === 429) {
     return `${provider} rate limit reached (429). Wait a moment and retry. ${detail}`
   }

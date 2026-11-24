@@ -16,8 +16,10 @@ import {
   describeLink,
   excerpt,
   queryPairs,
+  readResourcesExpanded,
   RESOURCE_TABS,
   sessionMemories,
+  writeResourcesExpanded,
   type ResourceTab,
 } from '../session-resources'
 import {
@@ -25,7 +27,9 @@ import {
   BrainIcon,
   ChevronDownIcon,
   ChevronIcon,
+  CollapseIcon,
   CopyIcon,
+  ExpandIcon,
   FileIcon,
   FilesIcon,
   FolderIcon,
@@ -74,10 +78,11 @@ function tabIcon(tab: ResourceTab, size = 13): ReactNode {
   return <FilesIcon width={size} height={size} />
 }
 
-function toolSourceLabel(tool: ToolCatalogEntry): string {
+export function toolSourceLabel(tool: ToolCatalogEntry): string {
   if (tool.source === 'builtin') return t('内置')
   if (tool.source === 'control') return t('控制')
   if (tool.source === 'mcp') return tool.server ? `MCP · ${tool.server}` : 'MCP'
+  if (tool.source === 'plugin') return tool.pluginName ? `${t('插件')} · ${tool.pluginName}` : t('插件')
   return t('自写')
 }
 
@@ -165,7 +170,8 @@ function FilePreviewPane({
               type="button"
               className="icon-text-button"
               onClick={() => {
-                void window.pilot.revealFile(workspace.path, preview.path)
+                // 服务器模式没有本地文件管理器，浏览器里会被拒绝；这里只是不让它变成未处理的拒绝。
+                void window.pilot.revealFile(workspace.path, preview.path).catch(() => undefined)
               }}
             >
               {t('在文件夹中显示')}
@@ -266,8 +272,14 @@ export function SessionResourcesPanel({
 
   const [previewLoading, setPreviewLoading] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
-  // 抽屉默认宽 920px；全屏时铺满整个界面区域，代码和表格才有足够宽度。
-  const [expanded, setExpanded] = useState(false)
+  // 抽屉默认宽 920px；展开后铺满整个界面宽度，代码和表格才有足够宽度。
+  // 选择记在 localStorage：关掉抽屉再打开时保持用户上次选的那档宽度。
+  const [expanded, setExpanded] = useState(() => readResourcesExpanded())
+  const applyExpanded = useCallback((next: boolean) => {
+    setExpanded(next)
+    writeResourcesExpanded(next)
+  }, [])
+  const toggleExpanded = useCallback(() => applyExpanded(!expanded), [applyExpanded, expanded])
   const filesSeq = useRef(0)
 
   const sessionId = session?.id ?? null
@@ -283,7 +295,9 @@ export function SessionResourcesPanel({
     setArtifacts(null)
     setRefreshKey((value) => value + 1)
   }, [])
-  useEscapeClose(onClose)
+  // 展开态下 Esc 先收回 920px 抽屉，再按一次才关闭面板：全屏宽度时
+  // 一下 Esc 就把整个面板关掉太容易丢上下文。收回同样计入偏好。
+  useEscapeClose(expanded ? () => applyExpanded(false) : onClose)
 
   // Workspace files load only while that tab is open, one directory at a time.
   useEffect(() => {
@@ -1292,14 +1306,22 @@ export function SessionResourcesPanel({
             <h2>{session?.title || workspace?.name || t('未选择会话')}</h2>
           </div>
           <div className="drawer-head-actions">
+            {/* 两态图标：未展开是向外的箭头（铺满整个界面），已展开是向内的
+                箭头（收回侧边）。同一个位置，图标方向随状态翻转，用户不用
+                猜「这个方框图标到底能不能再点一下」。 */}
             <button
               type="button"
               className={`icon-button${expanded ? ' is-selected' : ''}`}
-              title={expanded ? t('还原窗口') : t('展开到整个界面')}
-              aria-label={expanded ? t('还原窗口') : t('展开到整个界面')}
-              onClick={() => setExpanded((value) => !value)}
+              title={expanded ? t('收拢到侧边') : t('展开到整个界面')}
+              aria-label={expanded ? t('收拢到侧边') : t('展开到整个界面')}
+              aria-pressed={expanded}
+              onClick={toggleExpanded}
             >
-              <PopoutIcon width={15} height={15} />
+              {expanded ? (
+                <CollapseIcon width={15} height={15} />
+              ) : (
+                <ExpandIcon width={15} height={15} />
+              )}
             </button>
             <button type="button" className="icon-button" title={t('刷新')} onClick={refresh}>
               <RefreshIcon width={15} height={15} />

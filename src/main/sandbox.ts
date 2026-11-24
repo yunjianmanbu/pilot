@@ -136,7 +136,14 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-function bwrapArgs(workspace: string, cwd: string, command: string, network: boolean): string[] {
+/** 导出仅供测试核对参数：额外可写根必须与工作区并列 `--bind`，不能替代它。 */
+export function bwrapArgs(
+  workspace: string,
+  cwd: string,
+  command: string,
+  network: boolean,
+  writable: string[] = [],
+): string[] {
   return [
     '--ro-bind',
     '/',
@@ -144,6 +151,8 @@ function bwrapArgs(workspace: string, cwd: string, command: string, network: boo
     '--bind',
     workspace,
     workspace,
+    // 完全自主档要能改自身源码（它可能在工作区外），这些根同样可写。
+    ...writable.flatMap((root) => ['--bind', root, root]),
     '--dev',
     '/dev',
     '--proc',
@@ -168,19 +177,34 @@ export async function buildSandboxPlan(input: {
   cwd: string
   command: string
   network: boolean
+  /** 除工作区之外还要可写的根（完全自主档下的自身源码目录）。 */
+  writableRoots?: string[]
 }): Promise<SandboxPlan | null> {
   const status = await sandboxStatus()
   if (!status.available) return null
+  const writable = (input.writableRoots ?? []).filter((root) => root.trim() !== '')
 
   if (status.backend === 'wsl-bwrap') {
+    // Windows 路径要逐个转成 WSL 路径，否则 wslpath 得到的挂载点与这里是两套名字。
+    const extraLines = writable.map(
+      (root, index) => `WROOT${index}="$(wslpath -a ${shellQuote(root)})"`,
+    )
+    const extraArgs = writable.map((_, index) => `"$WROOT${index}"`)
     const script = [
       'set -e',
       `ROOT="$(wslpath -a ${shellQuote(input.workspacePath)})"`,
       `CWD="$(wslpath -a ${shellQuote(input.cwd)})"`,
+      ...extraLines,
       'export PILOT_WORKSPACE="$ROOT"',
-      `exec bwrap ${bwrapArgs('"$ROOT"', '"$CWD"', input.command, input.network)
+      `exec bwrap ${bwrapArgs('"$ROOT"', '"$CWD"', input.command, input.network, extraArgs)
         .map((part) => {
-          if (part === '"$ROOT"' || part === '"$CWD"') return part
+          if (
+            part === '"$ROOT"' ||
+            part === '"$CWD"' ||
+            /^"\$WROOT\d+"$/.test(part)
+          ) {
+            return part
+          }
           return shellQuote(part)
         })
         .join(' ')}`,
@@ -198,7 +222,7 @@ export async function buildSandboxPlan(input: {
     return {
       backend: 'bwrap',
       file: 'bwrap',
-      args: bwrapArgs(input.workspacePath, input.cwd, input.command, input.network),
+      args: bwrapArgs(input.workspacePath, input.cwd, input.command, input.network, writable),
       cwd: input.cwd,
       display: 'bubblewrap',
     }
@@ -210,7 +234,9 @@ export async function buildSandboxPlan(input: {
       '(allow default)',
       ...(input.network ? [] : ['(deny network*)']),
       '(deny file-write*)',
-      `(allow file-write* (subpath ${JSON.stringify(input.workspacePath)}) (subpath "/tmp") (subpath "/private/tmp"))`,
+      `(allow file-write* (subpath ${JSON.stringify(input.workspacePath)}) (subpath "/tmp") (subpath "/private/tmp")${writable
+        .map((root) => ` (subpath ${JSON.stringify(root)})`)
+        .join('')})`,
     ].join('\n')
     return {
       backend: 'seatbelt',

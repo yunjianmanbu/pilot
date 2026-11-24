@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type {
   QueuedTask,
   QuickCommand,
@@ -8,6 +8,8 @@ import type {
   WorkspaceSummary,
 } from '../../../../shared/types'
 import { sortTodos } from '../../../../shared/todos'
+import type { FailureAction } from '../../../../shared/run-failure'
+import { classifyRunFailure, failureAction } from '../../../../shared/run-failure'
 import {
   BrainIcon,
   CheckIcon,
@@ -27,6 +29,7 @@ import {
 import { t } from '../../i18n'
 import { QuickCommandsDialog } from '../QuickCommandsDialog'
 import { TodoPrioritySelect } from '../TodoPrioritySelect'
+import { runElapsedLabel } from '../../ui'
 import { QUICK_PROMPTS } from './composer-state'
 
 export function Welcome({
@@ -353,37 +356,115 @@ export function TodoPanel({
   )
 }
 
+/**
+ * The four `config` sentences, written as literal `t()` keys so the English
+ * dictionary actually applies to them. A table lookup (`t(TABLE[action])`)
+ * cannot be translated: `t()` only sees literal keys, so English users were
+ * shown the Chinese sentence. `tests/run-failure.test.ts` keeps this table
+ * identical to `FAILURE_ACTION_TEXT` in shared/run-failure.
+ */
+const ACTION_TEXT: Record<FailureAction, () => string> = {
+  key: () => t('在设置里换一个有效的 API Key，然后继续。'),
+  balance: () => t('账户余额不足，充值后再继续；重试不会改变结果。'),
+  model: () => t('账号无权使用这个模型，在设置里换模型或申请权限后再继续。'),
+  config: () => t('检查模型名称、API Key 与账户余额，改好后再继续。'),
+}
+
 export function ContinueBar({
   session,
   busy,
   onContinue,
+  onOpenSettings,
 }: {
   session: Session
   busy: boolean
   onContinue: () => void
+  /** A config failure can only be fixed in Settings, so offer that as the primary action. */
+  onOpenSettings?: () => void
 }) {
   const instruction = session.pauseInstruction?.trim() ?? ''
+  // One sentence for every failure made 28% of runs end on a line that named no
+  // cause. The classification comes from shared/run-failure, the same function
+  // the agent loop uses to stop auto-continue on errors a replay cannot fix.
+  const kind = session.paused ? null : classifyRunFailure(session.lastRunStatus, session.lastRunError)
+  // A config failure can be fixed in one place: the key, the balance or the
+  // model name. Telling the user which one turns the bar into an action; the
+  // provider's own wording stays in the tooltip so nothing is hidden.
+  const configAction = kind === 'config' ? failureAction(session.lastRunError) : null
+  // Step count of the run being recovered. The generic line said "continue from
+  // where it stopped" without saying where that was, so a user resuming a
+  // 103-step run had to reread the workspace to find out.
+  const stoppedAt = !session.paused && session.lastRunSteps ? session.lastRunSteps : 0
+  const detail =
+    session.paused && instruction
+      ? t("进度停在：{v1}{v2}", { v1: instruction.slice(0, 80), v2: instruction.length > 80 ? '…' : '' })
+      : session.paused
+        ? t("任务已暂停，可随时从断点继续。")
+        : kind === 'config'
+          ? ACTION_TEXT[configAction ?? 'config']()
+          : kind === 'budget'
+            ? t("已完成的部分已保留在工作区，继续会接着计划往下走。")
+            : kind === 'network'
+              ? t("重试通常即可恢复；继续前 Pilot 会先检查工作区现状。")
+              : t("从上次中断的地方继续，Pilot 会先检查工作区现状，避免重复已完成步骤。")
+  const title = session.paused
+    ? t("任务已暂停")
+    : kind === 'config'
+      ? t("模型或账号配置需要处理")
+      : kind === 'budget'
+        ? t("达到步数上限")
+        : kind === 'network'
+          ? t("网络或服务端中断")
+          : t("上次任务没有正常结束")
+  const action =
+    kind === 'config' ? t("已修复，继续") : kind === 'network' ? t("重试") : t("继续")
+  // A wrong key, an empty balance or a denied model cannot be replayed into
+  // success, so the button that only repeats the request is not the main one.
+  // Settings is where the fix lives; continuing stays available for a user who
+  // already fixed it elsewhere (another profile, the provider's dashboard).
+  const configFix = kind === 'config' && onOpenSettings ? onOpenSettings : null
+  // The provider's own wording is kept one hover away instead of in the body:
+  // it is the evidence, not the instruction. Truncated so a relay that echoes a
+  // whole HTML error page cannot bloat the markup.
+  const rawError = kind === 'config' ? (session.lastRunError ?? '').slice(0, 120) : undefined
+  // Where the run stopped and how much of the plan it finished. Neither needs a
+  // new write: the step count comes from the run record and the plan is already
+  // in the session summary, so resuming no longer requires rereading the
+  // workspace to work out what is left.
+  const planItems = session.plan?.items ?? []
+  const progress = [
+    stoppedAt > 0 ? t("上次运行停在：第 {v1} 步", { v1: stoppedAt }) : '',
+    planItems.length > 0
+      ? t("计划已完成 {v1}/{v2} 项", {
+          v1: planItems.filter((item) => item.status === 'done').length,
+          v2: planItems.length,
+        })
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
   return (
     <div className={`continue-bar${session.paused ? ' is-paused' : ''}`}>
       <span className="continue-icon">
         {session.paused ? <PauseIcon width={14} height={14} /> : <PlayIcon width={13} height={13} />}
       </span>
       <div className="continue-text">
-        <strong>{session.paused ? t("任务已暂停") : t("上次任务没有正常结束")}</strong>
-        <span>
-          {session.paused && instruction
-            ? t("进度停在：{v1}{v2}", { v1: instruction.slice(0, 80), v2: instruction.length > 80 ? '…' : '' })
-            : t("从上次中断的地方继续，Pilot 会先检查工作区现状，避免重复已完成步骤。")}
-        </span>
+        <strong>{title}</strong>
+        <span title={rawError}>{detail}</span>
+        {progress ? <span title={progress}>{progress}</span> : null}
       </div>
       <button
         type="button"
-        className="button primary"
+        className={`button${configFix ? '' : ' primary'}`}
         onClick={onContinue}
         disabled={busy}
       >
         {busy ? <i className="spinner" /> : <PlayIcon width={12} height={12} />}
-        {t("继续")}</button>
+        {action}</button>
+      {configFix ? (
+        <button type="button" className="button primary" onClick={configFix}>
+          {t("打开设置")}</button>
+      ) : null}
     </div>
   )
 }
@@ -495,7 +576,48 @@ export function QueuePanel({
   )
 }
 
-export function ThinkingIndicator({ step }: { step: number }) {
+/**
+ * The run's own elapsed counter, ticking once a second.
+ *
+ * A wait reads the same whether it has lasted two seconds or two minutes; this
+ * is the piece that tells them apart. The interval lives in this component so a
+ * tick repaints one small span instead of the whole transcript.
+ */
+export function LiveElapsed({
+  startedAt,
+  className = 'thinking-elapsed',
+}: {
+  /** Milliseconds since the run started; absent when only the flag is known. */
+  startedAt?: number | undefined
+  className?: string
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [startedAt])
+  const elapsed = runElapsedLabel(startedAt, now)
+  if (!elapsed) return null
+  return (
+    <span className={className} aria-live="off">
+      {elapsed}
+    </span>
+  )
+}
+
+/**
+ * Shown while the run is working but has produced nothing to read yet. The
+ * dots alone look identical whether the model is thinking for two seconds or
+ * for two minutes, so the row also carries the run's elapsed time.
+ */
+export function ThinkingIndicator({
+  step,
+  startedAt,
+}: {
+  step: number
+  startedAt?: number | undefined
+}) {
   return (
     <div className="thinking-row">
       <div className="assistant-avatar live">
@@ -503,6 +625,7 @@ export function ThinkingIndicator({ step }: { step: number }) {
       </div>
       <div className="thinking-text">
         <span>{step > 1 ? t("正在执行第 {v1} 步", { v1: step }) : t("正在理解任务")}</span>
+        <LiveElapsed startedAt={startedAt} />
         <span className="typing-dots">
           <i />
           <i />

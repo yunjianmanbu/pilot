@@ -3,13 +3,14 @@ import type { ToolCatalogEntry, ToolRisk, WorkspaceSummary } from '../../../shar
 import { RefreshIcon, WrenchIcon } from '../icons'
 import { getLocale, t } from '../i18n'
 
-type SourceFilter = 'all' | 'builtin' | 'control' | 'mcp' | 'dynamic'
+type SourceFilter = 'all' | 'builtin' | 'control' | 'mcp' | 'plugin' | 'dynamic'
 
 const FILTERS: Array<{ key: SourceFilter; label: string }> = [
   { key: 'all', label: t('全部') },
   { key: 'builtin', label: t('内置') },
   { key: 'control', label: t('控制') },
   { key: 'mcp', label: 'MCP' },
+  { key: 'plugin', label: t('插件') },
   { key: 'dynamic', label: t('自写') },
 ]
 
@@ -17,6 +18,8 @@ function sourceLabel(tool: ToolCatalogEntry): string {
   if (tool.source === 'builtin') return t('内置')
   if (tool.source === 'control') return t('控制')
   if (tool.source === 'mcp') return tool.server ? `MCP · ${tool.server}` : 'MCP'
+  // 两个插件都有 status 工具时，标签要能区分是谁的，否则两行看起来一样。
+  if (tool.source === 'plugin') return tool.pluginName ? `${t('插件')} · ${tool.pluginName}` : t('插件')
   return t('自写')
 }
 
@@ -33,14 +36,40 @@ function descriptionOf(tool: ToolCatalogEntry): string {
   return tool.descriptionZh || tool.description
 }
 
-/** 未启用的条目（MCP 关闭、自写工具被停用）照样列出，但要说清为什么不能用。 */
+/** 未启用的条目（MCP 关闭、自写工具被停用、插件没启用）照样列出，但要说清为什么不能用。 */
 function availability(tool: ToolCatalogEntry): { label: string; state: 'ok' | 'warn' } | null {
-  if (tool.source !== 'dynamic' && tool.source !== 'mcp') return null
+  if (tool.source !== 'dynamic' && tool.source !== 'mcp' && tool.source !== 'plugin') return null
   if (tool.enabled === false) return { label: t('未启用'), state: 'warn' }
   if (tool.source === 'dynamic' && tool.approved === false) {
     return { label: t('需要重新登记'), state: 'warn' }
   }
   return { label: t('可用'), state: 'ok' }
+}
+
+/**
+ * 一张工具卡片。抽成独立组件是为了让测试能直接静态渲染一行——面板本身要先取清单
+ * 才出内容，而「插件工具行」的文案与来源标签正是用户唯一能看见的证据。
+ */
+export function ToolCard({ tool }: { tool: ToolCatalogEntry }) {
+  const state = availability(tool)
+  return (
+    <article className="tools-card">
+      <div className="tools-card-head">
+        <div>
+          <h3>{tool.name}</h3>
+          <div className="tools-meta">
+            <span className={`tools-chip source-${tool.source}`}>{sourceLabel(tool)}</span>
+            <span className="tools-chip">{riskLabel(tool.risk)}</span>
+            <span className={`tools-chip${(tool.calls ?? 0) > 0 ? ' ok' : ''}`}>
+              {t('调用 {v1} 次', { v1: tool.calls ?? 0 })}
+            </span>
+            {state ? <span className={`tools-chip ${state.state}`}>{state.label}</span> : null}
+          </div>
+        </div>
+      </div>
+      <p className="tools-description">{descriptionOf(tool)}</p>
+    </article>
+  )
 }
 
 /**
@@ -107,7 +136,6 @@ export function SystemToolsPanel({
 
   const visible = useMemo(() => {
     if (filter === 'all') return sorted
-    if (filter === 'dynamic') return sorted.filter((tool) => tool.source === 'dynamic')
     return sorted.filter((tool) => tool.source === filter)
   }, [sorted, filter])
 
@@ -127,7 +155,7 @@ export function SystemToolsPanel({
         <div className="empty-panel">
           <WrenchIcon width={30} height={30} />
           <strong>{t('还没有选择工作区')}</strong>
-          <span>{t('选择一个工作区后，这里会列出内置、控制、MCP 与自写工具。')}</span>
+          <span>{t('选择一个工作区后，这里会列出内置、控制、MCP、插件与自写工具。')}</span>
         </div>
       </div>
     )
@@ -202,29 +230,9 @@ export function SystemToolsPanel({
         </div>
       ) : (
         <div className="tools-list tools-grid">
-          {visible.map((tool) => {
-            const state = availability(tool)
-            return (
-              <article className="tools-card" key={`${tool.source}:${tool.server ?? ''}:${tool.name}`}>
-                <div className="tools-card-head">
-                  <div>
-                    <h3>{tool.name}</h3>
-                    <div className="tools-meta">
-                      <span className={`tools-chip source-${tool.source}`}>{sourceLabel(tool)}</span>
-                      <span className="tools-chip">{riskLabel(tool.risk)}</span>
-                      <span className={`tools-chip${(tool.calls ?? 0) > 0 ? ' ok' : ''}`}>
-                        {t('调用 {v1} 次', { v1: tool.calls ?? 0 })}
-                      </span>
-                      {state ? (
-                        <span className={`tools-chip ${state.state}`}>{state.label}</span>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-                <p className="tools-description">{descriptionOf(tool)}</p>
-              </article>
-            )
-          })}
+          {visible.map((tool) => (
+            <ToolCard key={`${tool.source}:${tool.server ?? ''}:${tool.name}`} tool={tool} />
+          ))}
         </div>
       )}
 

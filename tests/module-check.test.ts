@@ -13,6 +13,7 @@ import {
   type ModuleRisk,
 } from '../src/shared/module-check'
 import { ModuleCheckService } from '../src/main/module-check'
+import { SPLIT_DECISIONS, splitDecisionIndex } from '../src/shared/split-decisions'
 
 let root = ''
 
@@ -33,7 +34,7 @@ function repeat(count: number, line: string): string {
 }
 
 describe('evaluateModule', () => {
-  it('把超过阈值的文件标成超大文件，并给出最大的一处证据', () => {
+  it('把超过阈值的文件标成待量化，而不是直接判该拆', () => {
     const risks = evaluateModule({
       id: 'client',
       name: 'client',
@@ -41,9 +42,84 @@ describe('evaluateModule', () => {
     })
     const oversized = risks.find((risk) => risk.rule === 'oversized-file')
     expect(oversized).toBeDefined()
-    expect(oversized?.severity).toBe('high')
+    // 行数只说明「需要量化一次」：既不是 high，也不允许自改会话自动动手。
+    expect(oversized?.severity).toBe('low')
+    expect(oversized?.manual).toBe(true)
+    expect(oversized?.recommendation).toContain('split-candidates.mjs')
+    expect(oversized?.basis).toContain('DATA')
     expect(oversized?.evidence[0]).toContain('src/big.ts')
     expect(oversized?.evidence[0]).toContain('1700')
+  })
+
+  it('已记录拆分决策的文件不再被建议拆分', () => {
+    const decided = SPLIT_DECISIONS[0]
+    expect(decided).toBeDefined()
+    const files = [fact(decided!.path, 1700)]
+    // 默认决策表就是全量：仓库里记录过的文件一开始就不该被建议。
+    const withTable = evaluateModule({ id: 'm', name: 'm', files })
+    expect(withTable.some((risk) => risk.rule === 'oversized-file')).toBe(false)
+    // 同一份文件在没有决策时确实会被报出来，证明上面的“不报”是决策生效而不是规则失效。
+    const withoutTable = evaluateModule({ id: 'm', name: 'm', files, decisions: [] })
+    expect(withoutTable.some((risk) => risk.rule === 'oversized-file')).toBe(true)
+  })
+
+  it('已决策文件会作为「另有 N 个」出现在未决策文件的提示里', () => {
+    const decidedPath = SPLIT_DECISIONS[0]!.path
+    const risks = evaluateModule({
+      id: 'm',
+      name: 'm',
+      files: [fact(decidedPath, 1800), fact('src/new-big.ts', 1200)],
+      decisions: SPLIT_DECISIONS,
+    })
+    const oversized = risks.find((risk) => risk.rule === 'oversized-file')
+    expect(oversized).toBeDefined()
+    expect(oversized?.count).toBe(1)
+    expect(oversized?.detail).toContain('另有 1 个同类文件已有拆分决策')
+    expect(oversized?.evidence.join(' ')).not.toContain(decidedPath)
+  })
+
+  it('已有判据码但未决策时，建议按判据收尾而不是重新量化', () => {
+    // src/main/agent/loop.ts 在实测判据表里是 METHOD（已有判据，但仓库里已记录 keep）。
+    // 这里用一份没有决策的表，单独看“有判据、无决策”这一类的措辞。
+    const risks = evaluateModule({
+      id: 'm',
+      name: 'm',
+      files: [fact('src/main/agent/loop.ts', 1483)],
+      decisions: [],
+    })
+    const oversized = risks.find((risk) => risk.rule === 'oversized-file')
+    expect(oversized?.detail).toContain('1 个已有判据码')
+    expect(oversized?.detail).toContain('0 个还没量过')
+    expect(oversized?.detail).toContain('METHOD')
+    expect(oversized?.evidence[0]).toContain('判据 METHOD')
+    expect(oversized?.recommendation).toContain('按判据码收尾')
+    expect(oversized?.recommendation).not.toContain('还没量过的先量一次')
+    // 即使有判据码，也不允许自改会话直接动手。
+    expect(oversized?.severity).toBe('low')
+    expect(oversized?.manual).toBe(true)
+  })
+
+  it('没量过的文件要求先跑脚本，不说该拆', () => {
+    const risks = evaluateModule({
+      id: 'm',
+      name: 'm',
+      files: [fact('src/main/brand-new.ts', 1200)],
+      decisions: [],
+    })
+    const oversized = risks.find((risk) => risk.rule === 'oversized-file')
+    expect(oversized?.detail).toContain('1 个还没量过')
+    expect(oversized?.evidence[0]).toContain('未量化')
+    expect(oversized?.recommendation).toContain('split-candidates.mjs')
+    // 建议文本里不得出现“直接拆”的说法：拆不拆必须由判据码 + 人决策。
+    expect(oversized?.recommendation).not.toContain('建议拆分')
+    expect(oversized?.basis).toContain('SPLIT_SCAN')
+  })
+
+  it('决策表里的路径写法与扫描路径写法不同也能匹配', () => {
+    const index = splitDecisionIndex([
+      { path: './src/main/agent/loop.ts', kind: 'keep', reason: 'x', evidence: [] },
+    ])
+    expect(index.has('src/main/agent/loop.ts')).toBe(true)
   })
 
   it('没有超过阈值的文件时不报告超大文件', () => {

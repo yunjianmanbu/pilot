@@ -20,6 +20,7 @@ import { filterLearningTools, pilotTools, RUN_SHELL } from '../../agent/tools'
 import { loadMcpConfig } from '../../agent/mcp'
 import { buildToolCatalog } from '../../../shared/tools-catalog'
 import { collectSessionLinks } from '../../../shared/session-links'
+import { dialoguePage } from '../../session-page'
 import type { AgentRunner } from '../../agent/runner'
 import { buildKnowledgePairs, clipKnowledgePair } from '../../search'
 import { assertInside } from '../../workspace'
@@ -73,25 +74,43 @@ export function getSession(
   const session = host.options.store.session(sessionId)
   if (!session) throw new Error('会话不存在')
   const limit = clampInt(params['limit'], 120, 1, 300)
-  let start = Math.max(0, session.messages.length - limit)
-  let end = session.messages.length
-  let hasNewer = false
   const around = typeof params['around'] === 'string' ? params['around'] : ''
   const before = typeof params['before'] === 'string' ? params['before'] : ''
-  if (around) {
-    // 知识库检索命中较旧的消息时，返回以命中项为中心的窗口。
-    const index = session.messages.findIndex((message) => message.id === around)
-    if (index >= 0) {
-      start = Math.max(0, Math.min(index - Math.floor(limit / 2), session.messages.length - limit))
-      end = Math.min(session.messages.length, start + limit)
-      hasNewer = end < session.messages.length
+  // 手机端「加载更早」按对话正文分页：一页该是 25 条问答，而不是 25 条原始消息。
+  // 原始消息里绝大多数是工具调用与工具结果（实测正文只占 1–17%），按条数切页
+  // 会让一次点击常常翻不回任何正文，用户要连点很多次才看到上一轮问答。
+  const conversation = params['conversation'] === true && !around
+  let slice: StoredMessage[]
+  let hasMore: boolean
+  let hasNewer = false
+  if (conversation) {
+    const page = dialoguePage(session, before || undefined, limit)
+    slice = page.session.messages
+    hasMore = page.hasMore
+    hasNewer = Boolean(before)
+  } else {
+    let start = Math.max(0, session.messages.length - limit)
+    let end = session.messages.length
+    if (around) {
+      // 知识库检索命中较旧的消息时，返回以命中项为中心的窗口。
+      const index = session.messages.findIndex((message) => message.id === around)
+      if (index >= 0) {
+        start = Math.max(
+          0,
+          Math.min(index - Math.floor(limit / 2), session.messages.length - limit),
+        )
+        end = Math.min(session.messages.length, start + limit)
+        hasNewer = end < session.messages.length
+      }
+    } else if (before) {
+      const index = session.messages.findIndex((message) => message.id === before)
+      if (index >= 0) end = index
+      start = Math.max(0, end - limit)
     }
-  } else if (before) {
-    const index = session.messages.findIndex((message) => message.id === before)
-    if (index >= 0) end = index
-    start = Math.max(0, end - limit)
+    slice = session.messages.slice(start, end)
+    hasMore = start > 0
   }
-  const messages = host.phoneSafeMessages(session.messages.slice(start, end))
+  const messages = host.phoneSafeMessages(slice)
   const workspace = host.options.store
     .workspaces()
     .find((entry) => entry.path === session.workspacePath)
@@ -103,7 +122,7 @@ export function getSession(
       messageCount: session.messages.length,
       queueCount: session.queue.length,
     },
-    hasMore: start > 0,
+    hasMore,
     hasNewer,
     pendingApprovals: host.options.runner.pendingApprovalList(session.id),
     activeRun: host.options.runner.activeRun(session.id),

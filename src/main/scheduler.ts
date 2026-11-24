@@ -54,6 +54,7 @@ export class AgentScheduler {
           this.emit({
             type: 'notice',
             level: 'info',
+            topic: 'schedule',
             message: result.queued
               ? english
                 ? `Scheduled task queued: ${preview}`
@@ -70,6 +71,7 @@ export class AgentScheduler {
           this.emit({
             type: 'notice',
             level: 'warn',
+            topic: 'schedule',
             message: english
               ? `Scheduled task failed: ${localizeMain(message, 'en')}`
               : `定时任务执行失败：${message}`,

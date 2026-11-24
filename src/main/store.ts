@@ -9,6 +9,11 @@ import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVers
 import { normalizeTodoPriority } from '../shared/todos'
 import { evolutionPolicyKey } from '../shared/evolution'
 import { sanitizeCandidate, sanitizeQualityState } from '../shared/quality'
+import {
+  MAX_REFLECTION_REPORTS,
+  type ReflectionFindingStatus,
+  type ReflectionReport,
+} from '../shared/reflect'
 import { pruneProfiles } from '../core/profile-archive'
 import { MEMORY_ENTRY_MAX_CHARS, MEMORY_STORE_LIMIT, inferMemoryCategory } from '../shared/memory'
 import { shellInterpreterStatus } from './shell'
@@ -44,6 +49,7 @@ import {
   sanitizeReviewReport,
   sanitizeSession,
   cleanTimeOfDay,
+  cleanStartDate,
   nextDailyRun,
   MAX_JUDGE_PROVIDERS,
   MAX_MODEL_RESOURCES,
@@ -78,6 +84,12 @@ export {
 } from './store-schema'
 
 export class Store {
+  /**
+   * Data directory holding this store's files. Defaults to the Electron
+   * userData directory; guest (client-user) scopes pass their own root so a
+   * remote user never sees the host's sessions, memory or settings.
+   */
+  private readonly root: string | null
   private state: PersistedState = defaults()
   private loaded = false
   private saving: Promise<void> = Promise.resolve()
@@ -96,10 +108,16 @@ export class Store {
     { runId: string; instruction: string; startedAt: string }
   >()
 
+  constructor(root?: string) {
+    const value = (root ?? '').trim()
+    this.root = value ? value : null
+  }
+
   async load(): Promise<void> {
     if (this.loaded) return
     await this.readFromDisk()
     this.loaded = true
+    this.sealPlaintextKeys()
     for (const workspace of this.state.workspaces) {
       for (const profile of workspace.profiles) {
         if (profile.status === 'active') {
@@ -156,8 +174,57 @@ export class Store {
   }
 
   private storage(): SessionStorage {
-    if (!this.storageRef) this.storageRef = new SessionStorage(app.getPath('userData'))
+    if (!this.storageRef) this.storageRef = new SessionStorage(this.root ?? app.getPath('userData'))
     return this.storageRef
+  }
+
+  /** 数据目录（root 或 userData）：反思写证据全文、统计存储体积都要它。 */
+  dataDir(): string {
+    return this.root ?? app.getPath('userData')
+  }
+
+  /**
+   * Re-seal a key that reached memory as plain text.
+   *
+   * `defaults()` seeds a fresh store from `PILOT_API_KEY` as base64 so a
+   * headless deployment can boot without a settings page, and a machine without
+   * an OS keychain persists the same shape. Sealing on load means no later
+   * `save()` — whichever command triggered it — can write that plaintext: the
+   * ciphertext is in memory before the first write of the process.
+   *
+   * Returns whether anything was re-sealed. The file itself is only rewritten
+   * by the next ordinary save, so opening the app still does not touch the disk.
+   */
+  private sealPlaintextKeys(): boolean {
+    if (!safeStorage.isEncryptionAvailable()) return false
+    const settings = this.state.settings
+    let changed = false
+    if (settings.apiKeyCipher && settings.apiKeyPlain) {
+      try {
+        const key = Buffer.from(settings.apiKeyCipher, 'base64').toString('utf8')
+        const holder = { keyCipher: null as string | null, keyPlain: false }
+        this.setKeyOf(holder, key)
+        settings.apiKeyCipher = holder.keyCipher
+        settings.apiKeyPlain = holder.keyPlain
+        changed = true
+      } catch {
+        // Unreadable mirror: leave it for the resource below, or for the user.
+      }
+    }
+    let sealedResource = false
+    for (const resource of settings.modelResources) {
+      if (!resource.keyCipher || !resource.keyPlain) continue
+      const key = this.keyOf(resource)
+      if (!key) continue
+      this.setKeyOf(resource, key)
+      sealedResource = true
+    }
+    // The legacy mirror and the judge providers are derived from the resources.
+    if (sealedResource) {
+      this.syncLegacyModelFields()
+      changed = true
+    }
+    return changed
   }
 
   /**
@@ -417,6 +484,10 @@ export class Store {
       evolutionPolicyVersions: this.state.evolutionPolicyVersions,
       evolutionCycles: this.state.evolutionCycles,
       quality: this.state.quality,
+      // 反思报告是「最近若干份快照」，不写进 core 就等于重启即丢；
+      // reflectLastScheduledAt 同理，丢了会让定时触发每次启动都重跑一次。
+      reflectionReports: this.state.reflectionReports,
+      reflectLastScheduledAt: this.state.reflectLastScheduledAt,
       scheduled: this.state.scheduled,
       quickCommands: this.state.quickCommands,
       activeWorkspace: this.state.activeWorkspace,
@@ -561,6 +632,27 @@ export class Store {
     this.state.settings.apiKeyPlain = holder.keyPlain
   }
 
+  /**
+   * 从另一份 store 只继承「模型通道」：端点、模型名、凭据与角色选择。
+   *
+   * 客户机用户的 store 是全新的，若不继承就根本没有可用端点与密钥，一轮都跑不起来。
+   * 继承的只是「怎么连模型」，不含会话、记忆、审批策略、可信命令——那些是各自的数据。
+   * 客户机也拿不到 `models.update`（本机专属），所以继承了也改不了。
+   */
+  async inheritModelChannelFrom(source: Store): Promise<void> {
+    const from = source.state.settings
+    const to = this.state.settings
+    to.modelResources = from.modelResources.map((resource) => ({ ...resource }))
+    to.sessionModelId = from.sessionModelId
+    to.evaluationModelIds = [...from.evaluationModelIds]
+    to.reviewModelId = from.reviewModelId
+    to.reflectModelId = from.reflectModelId
+    to.reviewModel = from.reviewModel
+    this.normalizeModelSelection()
+    this.syncLegacyModelFields()
+    await this.save()
+  }
+
   /** Mirror the selected session/evaluation resources into legacy fields. */
   private syncLegacyModelFields(): void {
     const settings = this.state.settings
@@ -643,6 +735,13 @@ export class Store {
       ? this.resourceById(this.state.settings.reviewModelId)
       : null
     return review ? this.targetOf(review) : this.sessionModelTarget()
+  }
+
+  /** Reflection resource; falls back to the session resource when unset. */
+  reflectModelTarget(): JudgeTarget | null {
+    const id = this.state.settings.reflectModelId
+    const chosen = id ? this.resourceById(id) : null
+    return chosen ? this.targetOf(chosen) : this.sessionModelTarget()
   }
 
   /** Evaluation resources with keys replaced by hints, safe for the renderer. */
@@ -875,6 +974,36 @@ export class Store {
     }
   }
 
+  /** 反思邮件用的 SMTP 密码，与 API key 一样只以密文入盘。 */
+  getSmtpPassword(): string | null {
+    const { reflectSmtpPasswordCipher, reflectSmtpPasswordPlain } = this.state.settings
+    if (!reflectSmtpPasswordCipher) return null
+    try {
+      const buffer = Buffer.from(reflectSmtpPasswordCipher, 'base64')
+      if (reflectSmtpPasswordPlain) return buffer.toString('utf8')
+      return safeStorage.decryptString(buffer)
+    } catch {
+      return null
+    }
+  }
+
+  setSmtpPassword(value: string | null): void {
+    if (!value) {
+      this.state.settings.reflectSmtpPasswordCipher = null
+      this.state.settings.reflectSmtpPasswordPlain = false
+      return
+    }
+    if (safeStorage.isEncryptionAvailable()) {
+      this.state.settings.reflectSmtpPasswordCipher = safeStorage
+        .encryptString(value)
+        .toString('base64')
+      this.state.settings.reflectSmtpPasswordPlain = false
+    } else {
+      this.state.settings.reflectSmtpPasswordCipher = Buffer.from(value, 'utf8').toString('base64')
+      this.state.settings.reflectSmtpPasswordPlain = true
+    }
+  }
+
   settingsView(): SettingsView {
     const key = this.getApiKey()
     return {
@@ -913,9 +1042,12 @@ export class Store {
       sandboxNetwork: this.state.settings.sandboxNetwork,
       sandboxAutoAllow: this.state.settings.sandboxAutoAllow,
       allowUnattendedBuild: this.state.settings.allowUnattendedBuild,
+      fullAutonomy: this.state.settings.fullAutonomy,
       learningMode: this.state.settings.learningMode,
       learningHosts: [...this.state.settings.learningHosts],
       learningShellIsolation: this.state.settings.learningShellIsolation,
+      serverMode: this.state.settings.serverMode,
+      serverPort: this.state.settings.serverPort,
       selfSourceMode: this.state.settings.selfSourceMode,
       selfSourceGitUrl: this.state.settings.selfSourceGitUrl,
       selfSourceGitRef: this.state.settings.selfSourceGitRef,
@@ -929,14 +1061,28 @@ export class Store {
       checkpointShell: this.state.settings.checkpointShell,
       checkpointIgnore: [...this.state.settings.checkpointIgnore],
       notifyDesktop: this.state.settings.notifyDesktop,
+      reflectEnabled: this.state.settings.reflectEnabled,
+      reflectModelId: this.state.settings.reflectModelId,
+      reflectTriggers: { ...this.state.settings.reflectTriggers },
+      reflectScheduleMode: this.state.settings.reflectScheduleMode,
+      reflectIntervalMinutes: this.state.settings.reflectIntervalMinutes,
+      reflectDailyTime: this.state.settings.reflectDailyTime,
+      reflectTopics: [...this.state.settings.reflectTopics],
+      reflectLastRunAt: this.state.settings.reflectLastRunAt,
+      reflectEmailEnabled: this.state.settings.reflectEmailEnabled,
+      notifyEmailEnabled: this.state.settings.notifyEmailEnabled,
+      notifyEmailEvents: [...this.state.settings.notifyEmailEvents],
+      reflectEmailTo: this.state.settings.reflectEmailTo,
+      reflectSmtpHost: this.state.settings.reflectSmtpHost,
+      reflectSmtpPort: this.state.settings.reflectSmtpPort,
+      reflectSmtpSecurity: this.state.settings.reflectSmtpSecurity,
+      hasSmtpPassword: Boolean(this.getSmtpPassword()),
       hooksEnabled: this.state.settings.hooksEnabled,
       mcpEnabled: this.state.settings.mcpEnabled,
       relayUrl: this.state.settings.relayUrl,
-      globalInstructionsPath: join(app.getPath('userData'), 'PILOT.md'),
+      globalInstructionsPath: join(this.root ?? app.getPath('userData'), 'PILOT.md'),
       theme: this.state.settings.theme,
       fontSize: this.state.settings.fontSize,
-      contrast: this.state.settings.contrast,
-      saturation: this.state.settings.saturation,
       locale: this.state.settings.locale,
       systemLocale: app.getLocale(),
       hasKey: Boolean(key),
@@ -979,6 +1125,7 @@ export class Store {
     applySettingsUpdate(this.state.settings, input, {
       setTestCaptcha: (value) => this.setTestCaptcha(value),
       setApiKey: (value) => this.setApiKey(value),
+      setSmtpPassword: (value) => this.setSmtpPassword(value),
     })
     if (
       input.sessionModelId !== undefined ||
@@ -1160,7 +1307,7 @@ export class Store {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
-  private latestRunStatus(sessionId: string): RunRecord['status'] | null {
+  private latestRun(sessionId: string): RunRecord | null {
     let latest: RunRecord | null = null
     for (const workspace of this.state.workspaces) {
       for (const run of workspace.runs) {
@@ -1168,13 +1315,18 @@ export class Store {
         if (!latest || run.startedAt > latest.startedAt) latest = run
       }
     }
-    return latest?.status ?? null
+    return latest
+  }
+
+  private latestRunStatus(sessionId: string): RunRecord['status'] | null {
+    return this.latestRun(sessionId)?.status ?? null
   }
 
   private summary(session: Session): SessionSummary {
     const running = this.running.has(session.id)
     const info = this.runInfo.get(session.id)
-    const lastStatus = this.latestRunStatus(session.id)
+    const lastRun = this.latestRun(session.id)
+    const lastStatus = lastRun?.status ?? null
     const canContinue =
       !running &&
       (session.paused ||
@@ -1192,6 +1344,12 @@ export class Store {
       ...(session.pausedAt ? { pausedAt: session.pausedAt } : {}),
       ...(session.pauseInstruction ? { pauseInstruction: session.pauseInstruction } : {}),
       canContinue,
+      // Only while the user can act on it: the recovery bar turns this into a
+      // concrete cause, and a stale error next to a completed run would be
+      // misleading. 300 chars is enough for the provider's own wording.
+      ...(canContinue && lastStatus ? { lastRunStatus: lastStatus } : {}),
+      ...(canContinue && lastRun?.error ? { lastRunError: lastRun.error.slice(0, 300) } : {}),
+      ...(canContinue && lastRun && lastRun.steps > 0 ? { lastRunSteps: lastRun.steps } : {}),
       ...this.counts(session),
       ...(info && info.instruction
         ? { runInstruction: info.instruction.slice(0, 180), runStartedAt: info.startedAt }
@@ -1740,13 +1898,31 @@ export class Store {
 
   private scheduleNext(
     kind: ScheduleKind,
-    input: { intervalMinutes?: number; timeOfDay?: string; delayMinutes?: number },
+    input: {
+      intervalMinutes?: number
+      timeOfDay?: string
+      startDate?: string
+      delayMinutes?: number
+    },
     from = new Date(),
-  ): { nextRunAt: string; intervalMinutes?: number; timeOfDay?: string } {
+  ): {
+    nextRunAt: string
+    intervalMinutes?: number
+    timeOfDay?: string
+    startDate?: string
+  } {
     if (kind === 'daily') {
       const timeOfDay = cleanTimeOfDay(input.timeOfDay)
       if (!timeOfDay) throw new Error('请选择每天执行的时间')
-      return { timeOfDay, nextRunAt: nextDailyRun(timeOfDay, from) }
+      const startDate = cleanStartDate(input.startDate)
+      if (input.startDate !== undefined && input.startDate !== '' && !startDate) {
+        throw new Error('起始日期要像 2026-11-25')
+      }
+      return {
+        timeOfDay,
+        ...(startDate ? { startDate } : {}),
+        nextRunAt: nextDailyRun(timeOfDay, from, startDate ?? undefined),
+      }
     }
     const minutes =
       kind === 'interval'
@@ -1778,6 +1954,7 @@ export class Store {
         ? { intervalMinutes: schedule.intervalMinutes }
         : {}),
       ...(schedule.timeOfDay ? { timeOfDay: schedule.timeOfDay } : {}),
+      ...(schedule.startDate ? { startDate: schedule.startDate } : {}),
       nextRunAt: schedule.nextRunAt,
       enabled: true,
       createdAt: now(),
@@ -1810,19 +1987,33 @@ export class Store {
       input.kind !== undefined ||
       input.delayMinutes !== undefined ||
       input.intervalMinutes !== undefined ||
-      input.timeOfDay !== undefined
+      input.timeOfDay !== undefined ||
+      input.startDate !== undefined
     if (scheduleChanged) {
+      // 改动时间时要按目标 kind 重新算；没给的字段从现有任务里继承，否则
+      // 「只把起始日期往后挪一天」会因为缺 timeOfDay 被当成非法输入。
       const schedule = this.scheduleNext(nextKind, {
         ...(input.delayMinutes !== undefined ? { delayMinutes: input.delayMinutes } : {}),
         ...(input.intervalMinutes !== undefined ? { intervalMinutes: input.intervalMinutes } : {}),
-        ...(input.timeOfDay !== undefined ? { timeOfDay: input.timeOfDay } : {}),
+        ...(input.timeOfDay !== undefined
+          ? { timeOfDay: input.timeOfDay }
+          : task.timeOfDay !== undefined
+            ? { timeOfDay: task.timeOfDay }
+            : {}),
+        ...(input.startDate !== undefined
+          ? { startDate: input.startDate }
+          : task.startDate !== undefined
+            ? { startDate: task.startDate }
+            : {}),
       })
       task.kind = nextKind
       task.nextRunAt = schedule.nextRunAt
       delete task.intervalMinutes
       delete task.timeOfDay
+      delete task.startDate
       if (schedule.intervalMinutes !== undefined) task.intervalMinutes = schedule.intervalMinutes
       if (schedule.timeOfDay) task.timeOfDay = schedule.timeOfDay
+      if (schedule.startDate) task.startDate = schedule.startDate
     }
     if (input.enabled !== undefined) {
       if (input.enabled && !task.enabled) {
@@ -1874,6 +2065,7 @@ export class Store {
       task.nextRunAt = schedule.nextRunAt
       if (schedule.intervalMinutes !== undefined) task.intervalMinutes = schedule.intervalMinutes
       if (schedule.timeOfDay) task.timeOfDay = schedule.timeOfDay
+      if (schedule.startDate) task.startDate = schedule.startDate
     }
     await this.save()
     return { ...task }
@@ -1883,6 +2075,60 @@ export class Store {
     const session = this.state.sessions.find((entry) => entry.id === sessionId)
     if (!session) throw new Error('Session not found')
     return session.workspacePath
+  }
+
+  /** 上一次排定触发被处理的时间；定时判定用它避免重复。 */
+  reflectLastScheduledAt(): string | null {
+    return this.state.reflectLastScheduledAt
+  }
+
+  /** 最近的反思报告，新的在前。 */
+  reflectionReports(): ReflectionReport[] {
+    return [...this.state.reflectionReports]
+  }
+
+  /**
+   * 落库一份反思报告。报告是快照，同一 id 再次写入视为更新，避免重试时出现两份。
+   * 同时也记下这次反思的时间，定时/触发判定都以它为锚点。
+   */
+  async addReflectionReport(report: ReflectionReport): Promise<void> {
+    const rest = this.state.reflectionReports.filter((entry) => entry.id !== report.id)
+    this.state.reflectionReports = [report, ...rest].slice(0, MAX_REFLECTION_REPORTS)
+    if (report.createdAt) this.state.settings.reflectLastRunAt = report.createdAt
+    await this.save()
+  }
+
+  async clearReflectionReports(): Promise<void> {
+    this.state.reflectionReports = []
+    await this.save()
+  }
+
+  /**
+   * 标记一条反思结论的处理状态。
+   *
+   * 这是「修过的代码不要再被反思重提」的唯一依据：状态写回报告后，下一轮证据里的
+   * 历史清单会带上 done/dismissed，提示词据此要求模型别再提。只改报告，不碰代码。
+   */
+  async setReflectionFindingStatus(
+    reportId: string,
+    findingId: string,
+    status: ReflectionFindingStatus,
+  ): Promise<ReflectionReport | null> {
+    const report = this.state.reflectionReports.find((entry) => entry.id === reportId)
+    if (!report) return null
+    const finding = report.findings.find((entry) => entry.id === findingId)
+    if (!finding) return null
+    // open 用「删字段」表示，避免旧数据里每条都多一个与默认值同义的字段。
+    if (status === 'open') delete finding.status
+    else finding.status = status
+    await this.save()
+    return report
+  }
+
+  /** 记录「到点已处理」，让下一轮 tick 不会重复触发同一次排定。 */
+  async noteReflectionScheduled(at: string): Promise<void> {
+    this.state.reflectLastScheduledAt = at
+    await this.save()
   }
 
   async addMemory(

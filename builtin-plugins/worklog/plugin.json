@@ -1,0 +1,90 @@
+{
+  "id": "worklog",
+  "name": "工作日志",
+  "version": 1,
+  "api": 1,
+  "runtime": "node",
+  "entry": "index.mjs",
+  "description": "把每轮做完的事记成一条日志，随时回看最近记录；每天 18:00 检查当天是否记过并提醒，开启后可在插件页改标签、条数与提醒开关。",
+  "permissions": ["entries:read", "entries:write", "host:notify"],
+  "provides": null,
+  "roles": [],
+  "routes": [
+    {
+      "method": "POST",
+      "path": "entries",
+      "auth": "required",
+      "permission": "entries:write",
+      "description": "新增一条工作日志"
+    },
+    {
+      "method": "POST",
+      "path": "recent",
+      "auth": "required",
+      "permission": "entries:read",
+      "description": "读取最近的日志"
+    },
+    {
+      "method": "GET",
+      "path": "health",
+      "auth": "public",
+      "description": "存活检查"
+    }
+  ],
+  "tools": [
+    {
+      "name": "log",
+      "description": "记一条工作日志：本轮做了什么、结论是什么、下次从哪继续。写完会返回今天已记的条数。",
+      "route": "entries",
+      "method": "POST",
+      "permission": "entries:write",
+      "risk": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string", "description": "一句话描述做了什么或决定了什么" },
+          "tag": { "type": "string", "description": "可选标签，例如 部署 / 排查 / 设计" }
+        },
+        "required": ["text"]
+      }
+    },
+    {
+      "name": "recent",
+      "description": "按时间倒序读取最近的工作日志，用于回答「昨天做了什么」「上次这个问题怎么解决的」。",
+      "route": "recent",
+      "method": "POST",
+      "permission": "entries:read",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "number", "description": "条数，默认 10，最多 50" }
+        }
+      }
+    }
+  ],
+  "settings": [
+    {
+      "key": "tag",
+      "label": "默认标签",
+      "type": "text",
+      "placeholder": "general",
+      "description": "工具调用时没给标签就用这个；留空表示 general。"
+    },
+    {
+      "key": "digestSize",
+      "label": "提醒时回看条数",
+      "type": "number",
+      "placeholder": "5",
+      "description": "每天定时提醒里最多回看几条，默认 5。"
+    },
+    {
+      "key": "quiet",
+      "label": "关闭每日提醒",
+      "type": "boolean",
+      "description": "打开后定时触发器仍在跑，但不会发通知。"
+    }
+  ],
+  "triggers": [{ "event": "schedule", "timeOfDay": "18:00" }],
+  "limits": { "timeoutMs": 6000, "rateLimitPerMinute": 120 }
+}

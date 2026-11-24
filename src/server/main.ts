@@ -14,42 +14,55 @@
  *   (see `src/server/update.ts`).
  */
 import { existsSync } from 'node:fs'
-import { homedir, hostname } from 'node:os'
+import { hostname } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { stat } from 'node:fs/promises'
-import { createEngine, checkpointBridge, changesBridge } from '../core/engine'
+import { createEngine, createGuestEngine, checkpointBridge, changesBridge } from '../core/engine'
 import { createEvolutionControls } from '../core/evolution'
+import { appState } from '../main/app-state'
+import { bridgeEmit } from '../main/companion/handlers/bridge'
+import { broadcast } from '../main/diagnostics'
 import { CompanionServer } from '../main/companion/server'
+import { FeedbackBox } from '../main/feedback'
+import { registerAllIpc } from '../main/ipc'
 import { ModuleCheckService } from '../main/module-check'
+import { codeFactsFromModuleCheck } from '../main/reflect/evidence'
 import { Store } from '../main/store'
+import type { UpdaterService } from '../main/updater'
+import { consoleSender, invokeIpc, setWebContentsSink } from './electron-shim'
 import { SERVER_CAPABILITIES } from '../shared/capabilities'
 import { helpText, parseArgs, type ServeOptions } from './args'
 import { CONSOLE_HELP, parseConsoleCommand } from './console'
 import { applyModelEnv } from './env'
+import { applyDataDir } from './paths'
+import { runOnce } from './run'
 import { DEFAULT_SERVER_MANIFEST_URL, ServerUpdater, TRUSTED_SERVER_HOSTS } from './update'
 import type { CompanionPairRequest, CompanionStatus, RunEvent } from '../shared/types'
 
 const VERSION = process.env['PILOT_VERSION'] ?? '0.1.0'
 
-/** Same layout the Electron build uses, for a machine with no desktop session. */
-export function defaultDataDir(): string {
-  const home = homedir()
-  if (process.platform === 'win32') {
-    return join((process.env['APPDATA'] ?? '').trim() || home, 'Pilot')
-  }
-  if (process.platform === 'darwin') {
-    return join(home, 'Library', 'Application Support', 'Pilot')
-  }
-  const xdg = (process.env['XDG_DATA_HOME'] ?? '').trim()
-  return join(xdg || join(home, '.local', 'share'), 'pilot')
+/**
+ * 浏览器里的桌面界面产物目录（`npm run build:web` 的输出）。
+ *
+ * 安装包把它放在 `out/web`，与 `out/server` 同级；`PILOT_WEB_DIR` 只用于开发时
+ * 指向别处的构建目录。目录不存在时 `desktop.ts` 会退回手机面板，而不是 500。
+ */
+function webDir(): string {
+  const explicit = (process.env['PILOT_WEB_DIR'] ?? '').trim()
+  if (explicit) return resolve(explicit)
+  return join(installRoot(), 'out', 'web')
 }
 
-/** Resolve the data directory once and publish it to the electron shim. */
-function applyDataDir(override: string): string {
-  const dir = override.trim() || (process.env['PILOT_USER_DATA_DIR'] ?? '').trim() || defaultDataDir()
-  process.env['PILOT_USER_DATA_DIR'] = dir
-  return dir
+/**
+ * 服务器模式下一次 IPC 调用的「事件对象」。
+ *
+ * 桌面端靠 `event.sender === mainWindow.webContents` 认定来源；这里没有窗口，
+ * 改用带标记的假事件，`ipc-context.ts` 的 `assertTrustedSender` 认得它。
+ * 浏览器构造不了这个对象：唯一的入口是 `/bridge` 帧。
+ */
+function bridgeEvent(): unknown {
+  return { pilotBridge: true, sender: consoleSender, senderFrame: null }
 }
 
 /** Install root that the release manifest paths are relative to. */
@@ -120,6 +133,17 @@ async function serve(options: ServeOptions): Promise<void> {
 
   const store = new Store()
   await store.load()
+  // A headless deployment has no desktop settings page, so the model endpoint
+  // and key must be settable from the environment. Values are only written when
+  // the variable is actually present, so a data directory keeps what it has.
+  //
+  // Applied before the first write below: a fresh store seeded by
+  // `defaults()` holds an environment key as base64, and the first `save()`
+  // would persist that unsealed copy. `updateSettings` seals it with
+  // safeStorage first, so the plaintext never reaches the disk.
+  const applied = await applyModelEnv(store)
+  if (applied?.apiKey) log('  已应用环境变量 PILOT_API_KEY（不会回显）。')
+
   for (const path of workspaces) {
     const existing = store.workspaces().some((workspace) => workspace.path === path)
     // The first workspace becomes active; the rest are only registered so the
@@ -134,13 +158,13 @@ async function serve(options: ServeOptions): Promise<void> {
     if (first) store.setActiveWorkspace(first)
   }
 
-  // A headless deployment has no desktop settings page, so the model endpoint
-  // and key must be settable from the environment. Values are only written when
-  // the variable is actually present, so a data directory keeps what it has.
-  const applied = await applyModelEnv(store)
-  if (applied?.apiKey) log('  已应用环境变量 PILOT_API_KEY（不会回显）。')
-
+  // 两路都要走，缺一不可：
+  // - `broadcast` 是桌面端窗口那条路（审计、检查点维护，装上 `setWebContentsSink`
+  //   之后把 `pilot:event` 交给 `/bridge` 广播）；
+  // - `companion.publish` 是手机 PWA 那条路（按作用域加密投递给已配对设备）。
+  // 只走后者时，浏览器里的桌面界面能发消息，却收不到流式输出与审批请求。
   const publish = (event: RunEvent): void => {
+    broadcast(event)
     companion?.publish(event)
   }
 
@@ -148,7 +172,17 @@ async function serve(options: ServeOptions): Promise<void> {
   // is host-specific — the fixed port, the terminal pairing prompt, the file
   // updater and the capability set a headless process can honour.
   const engine = createEngine({ store, dataDir, publish })
-  const { billing, checkpoints, runner, scheduler } = engine
+  const { billing, checkpoints, runner, scheduler, reflect } = engine
+  // 桌面端在 `src/main/index.ts` 里把同一组字段写进 appState；`registerAllIpc()`
+  // 的三百多个通道全部经由 `createIpcContext()` 的 getter 读它，所以服务器模式
+  // 必须在这里对齐，否则浏览器里调到的是一份空依赖。
+  appState.store = store
+  appState.billing = billing
+  appState.checkpoints = checkpoints
+  appState.runner = runner
+  appState.scheduler = scheduler
+  appState.reflect = reflect
+  appState.feedback = new FeedbackBox(dataDir)
   const moduleCheck = new ModuleCheckService({
     userDataDir: dataDir,
     // 无桌面会话的宿主没有额外的内置源码副本：安装目录本身就是它的源码树。
@@ -179,6 +213,9 @@ async function serve(options: ServeOptions): Promise<void> {
     },
   })
   await moduleCheck.load()
+  appState.moduleCheck = moduleCheck
+  // 与桌面端同一套事实源：反思读自检报告与已记录的拆分决策，不靠行数臆测。
+  reflect.useCodeFacts(() => codeFactsFromModuleCheck(moduleCheck.summary()))
 
   const panelUrl = (): string => {
     if (options.publicUrl) return options.publicUrl
@@ -208,6 +245,9 @@ async function serve(options: ServeOptions): Promise<void> {
     extraHosts: extraUpdateHosts(),
     onChange: (state) => companion?.publish({ type: 'update.changed', state }),
   })
+  // `pilot:update-*` 通道在服务器模式下走文件级增量更新（只换内容变了的文件），
+  // 方法面与桌面 UpdaterService 相同，这里只做一次窄化转换。
+  appState.updater = updater as unknown as UpdaterService
 
   companion = new CompanionServer({
     store,
@@ -262,6 +302,12 @@ async function serve(options: ServeOptions): Promise<void> {
     strictPort: true,
     // The browser console mirrors the PC client's look, not the phone PWA's.
     surface: 'desktop',
+    // `/` 与 `/assets/*` 发桌面客户端的 renderer 构建，手机扫码（`#p=`）仍拿 PWA。
+    desktopDir: webDir(),
+    // 浏览器里的桌面界面通过 `/bridge` 调用与窗口里完全相同的那份 IPC 表。
+    ipc: {
+      invoke: (channel, args) => invokeIpc(channel, bridgeEvent(), args),
+    },
     publicBaseUrl: options.publicUrl || undefined,
     onStatus: (status: CompanionStatus) => {
       if (status.error) log(`  [控制台] ${status.error}`)
@@ -279,6 +325,14 @@ async function serve(options: ServeOptions): Promise<void> {
         log(
           `    输入 allow 允许，或 deny 拒绝；${new Date(event.request.expiresAt).toLocaleTimeString('zh-CN')} 前未选择则自动拒绝。`,
         )
+        if (event.request.mode === 'browser') {
+          // Only a browser page can pick an identity: `host` sees this machine's
+          // own data, `client` gets its own. Default is the smaller one.
+          log(
+            `    这是浏览器直连（页面申请身份：${event.request.role === 'host' ? '主机用户' : '客户机用户'}）。`,
+          )
+          log('    allow host 允许为「主机用户」（等同本机），allow client 允许为「客户机用户」（独立数据）。')
+        }
         return
       }
       if (event.type === 'companion.pair_resolved') {
@@ -289,9 +343,34 @@ async function serve(options: ServeOptions): Promise<void> {
   })
 
   await companion.init()
+  appState.companion = companion
+  // 主进程的推送（运行事件、审批、日志）原本发往窗口；服务器模式改走 sink，
+  // 由 `/bridge` 广播给浏览器标签页，通道名与载荷和桌面端完全一致。
+  setWebContentsSink((channel, payload) => bridgeEmit(companion!, channel, payload))
+  // 与桌面端同一份 IPC 注册表：网页版能用的功能就是客户端里能用的那些。
+  registerAllIpc()
+  // 客户机用户的数据面：独立目录、独立 Store + Runner，只借用本机的模型通道。
+  // 建在 start() 之前，所以第一台客户机浏览器接入时已经就绪。
+  const clientRoot = join(dataDir, 'users', 'client')
+  const guest = await createGuestEngine({
+    source: store,
+    dataDir: clientRoot,
+    workspaceDir: join(clientRoot, 'workspace'),
+    // 事件只能送到客户机用户的连接；不传就默认落回主机数据面。
+    publish: (event) => companion?.publish(event, 'client'),
+  })
+  companion.attachGuest({
+    role: 'client',
+    store: guest.store,
+    runner: guest.runner,
+    billing: guest.billing,
+    checkpoints: checkpointBridge(guest),
+    changes: changesBridge(guest),
+  })
   await companion.start()
 
   scheduler.start()
+  reflect.start()
   moduleCheck.start()
 
   const status = companion.status()
@@ -310,11 +389,16 @@ async function serve(options: ServeOptions): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     log(`收到 ${signal}，正在停止…`)
     scheduler.stop()
+    reflect.stop()
     moduleCheck.stop()
     await store.flush().catch(() => undefined)
+    // 客户机数据面也要落盘并停干净：漏掉会让客户机会话停在半写状态。
+    await guest.store.flush().catch(() => undefined)
     await companion?.stop().catch(() => undefined)
     checkpoints.dispose()
+    guest.checkpoints.dispose()
     await runner.shutdown().catch(() => undefined)
+    await guest.runner.shutdown().catch(() => undefined)
     process.exit(0)
   }
   process.on('SIGINT', () => void shutdown('SIGINT'))
@@ -361,7 +445,8 @@ async function serve(options: ServeOptions): Promise<void> {
             return
           }
           const approved = command.kind === 'pair-allow'
-          if (!companion!.resolvePairing(pendingPairRequest.requestId, approved)) {
+          const role = command.kind === 'pair-allow' ? command.role : undefined
+          if (!companion!.resolvePairing(pendingPairRequest.requestId, approved, role)) {
             log('  该配对请求已失效（可能已超时），请让手机重新扫码。')
           }
           pendingPairRequest = null
@@ -435,6 +520,11 @@ async function main(): Promise<void> {
   }
   if (parsed.command === 'update') {
     await runUpdateCommand(parsed.options)
+    return
+  }
+  if (parsed.command === 'run') {
+    // One prompt, one process: the exit code is the result (see `run.ts`).
+    process.exitCode = await runOnce(parsed.run)
     return
   }
   await serve(parsed.options)

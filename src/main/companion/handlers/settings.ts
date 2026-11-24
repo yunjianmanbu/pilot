@@ -1,7 +1,9 @@
 // 设置与桌面能力：设备信息、模块自检、学习、记忆、快捷命令、系统、工具、更新、进化、模型、计费、配对。
 // 由 server.ts 的 handleRequest switch 按域拆出；协议文案与错误提示保持原样。
 import type { MemoryEntry, ModuleCheckSettings, QuickCommand, QuickCommandInput, SystemInfo } from '../../../shared/types'
+import { accessLevelOf, isLocalOnlyMethod } from '../access-level'
 import { normalizeLearningHostsInput } from '../../agent/learning'
+import type { AccessLevel } from '../access-level'
 import { sessionMemories } from '../../../shared/memory'
 import { sandboxStatus } from '../../sandbox'
 import { systemInfo } from '../../system-info'
@@ -14,6 +16,7 @@ export async function handleSettingsRequest(
   method: string,
   params: Record<string, unknown>,
   phone: StoredPhone,
+  access: AccessLevel = 'paired',
 ): Promise<unknown> {
   switch (method) {
     case 'pairing.transfer': {
@@ -26,16 +29,23 @@ export async function handleSettingsRequest(
         mode: pairing.mode,
       }
     }
-    case 'device.info':
+    case 'device.info': {
+      // 客户机用户还没拿到独立数据面时，settings 会解析回这台电脑本人的一份：
+      // 模型与主题不属于它，所以这种情况下不报，而不是先泄露再提示。
+      const settings = access !== 'client' || host.guestScope ? host.options.store.settingsView() : null
       return {
         deviceName: host.options.deviceName,
         platform: process.platform,
         appVersion: host.options.appVersion,
-        model: host.options.store.settingsView().model,
-        theme: host.options.store.settingsView().theme,
+        model: settings?.model ?? '',
+        theme: settings?.theme ?? 'dark',
         phoneName: phone.name,
         capabilities: host.capabilities(),
+        // 同一个页面可能是本机打开的，也可能是别的机器打开的：前端据此
+        // 隐藏升级、进化、反思等本机专属入口，而不是点下去才报错。
+        accessLevel: access,
       }
+    }
     case 'moduleCheck.state': {
       if (!host.options.moduleCheck?.state) {
         throw new Error('当前电脑端版本不支持手机模块自检')

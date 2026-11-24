@@ -3,6 +3,7 @@ import {
   collapseCompletedTurns,
   compactToolResults,
   COMPACTED_MARKER,
+  declarationSkeleton,
   DIGEST_MAX_CHARS,
   estimateTokens,
   fitMessages,
@@ -66,6 +67,22 @@ describe('compactToolResults', () => {
     expect(result.messages[1]?.content).toContain('需要完整内容时请重新读取')
   })
 
+  it('keeps a declaration skeleton so the middle of a file is still nameable', () => {
+    const source = [
+      '/* licence header */',
+      ...Array.from({ length: 40 }, (_, index) => `export function fn${index}(): void { return }`),
+    ].join('\n')
+    const result = compactToolResults([toolMessage(source), toolMessage('y'.repeat(2_000))], {
+      keepRecentToolResults: 1,
+    })
+    const compacted = result.messages[0]?.content ?? ''
+    expect(compacted).toContain('仅保留首尾与声明骨架')
+    // fn20 sits in the elided middle: neither head nor tail reaches it, so it
+    // can only come from the skeleton.
+    expect(compacted).toContain('export function fn20')
+    expect(compacted).toContain('export function fn39')
+  })
+
   it('is idempotent for already compacted output', () => {
     const first = compactToolResults(
       Array.from({ length: 4 }, () => toolMessage('y'.repeat(2_000))),
@@ -73,6 +90,37 @@ describe('compactToolResults', () => {
     )
     const second = compactToolResults(first.messages, { keepRecentToolResults: 1 })
     expect(second.compacted).toBe(0)
+  })
+})
+
+describe('declarationSkeleton', () => {
+  const file = (count: number): string =>
+    Array.from({ length: count }, (_, index) => `export function fn${index}(): void { return }`).join('\n')
+
+  it('lists declarations in file order when they fit the budget', () => {
+    const lines = declarationSkeleton(file(4), 10_000)
+    expect(lines).toHaveLength(4)
+    expect(lines[0]).toContain('fn0')
+    expect(lines[3]).toContain('fn3')
+  })
+
+  it('samples instead of truncating when the budget is tight, keeping both ends', () => {
+    const lines = declarationSkeleton(file(60), 300)
+    expect(lines.length).toBeGreaterThan(2)
+    expect(lines.length).toBeLessThan(60)
+    expect(lines[0]).toContain('fn0')
+    expect(lines[lines.length - 1]).toContain('fn59')
+    expect(lines.join('\n').length).toBeLessThanOrEqual(300)
+  })
+
+  it('returns nothing for content without declarations', () => {
+    expect(declarationSkeleton('<html>\n  <body>hi</body>\n</html>', 5_000)).toEqual([])
+    expect(declarationSkeleton('2026-01-01 INFO started\n2026-01-01 INFO done', 5_000)).toEqual([])
+  })
+
+  it('returns nothing when there is no real structure to summarise', () => {
+    expect(declarationSkeleton('export const a = 1\nexport const b = 2', 5_000)).toEqual([])
+    expect(declarationSkeleton(file(4), 0)).toEqual([])
   })
 })
 

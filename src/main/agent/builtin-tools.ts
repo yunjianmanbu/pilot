@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { electronAppInfo } from '../electron-paths'
 import type { AdoptBundledResult, DynamicToolRegistry } from './toolsmith'
 
 /**
@@ -64,28 +65,15 @@ export function builtinToolsRootCandidates(input: {
 }
 
 /**
- * Resolve the bundle location from the running shell. `electron` is imported
- * lazily so unit tests and the headless server never need it.
+ * Resolve the bundle location from the running shell. `electron-paths` is
+ * imported lazily on purpose: unit tests and the headless server never need it.
  */
 async function detectRoots(): Promise<string[]> {
-  let packaged = false
-  let appPath: string | undefined
-  let resourcesPath: string | undefined
-  try {
-    const electron = (await import('electron')) as unknown as {
-      app?: { isPackaged?: boolean; getAppPath?: () => string }
-    }
-    packaged = Boolean(electron.app?.isPackaged)
-    appPath = electron.app?.getAppPath?.()
-    const withResources = process as unknown as { resourcesPath?: string }
-    resourcesPath = withResources.resourcesPath
-  } catch {
-    // Not an Electron process (server install or test): rely on the env root.
-  }
+  const info = await electronAppInfo()
   return builtinToolsRootCandidates({
-    packaged,
-    ...(appPath ? { appPath } : {}),
-    ...(resourcesPath ? { resourcesPath } : {}),
+    packaged: info.packaged,
+    ...(info.appPath ? { appPath: info.appPath } : {}),
+    ...(info.resourcesPath ? { resourcesPath: info.resourcesPath } : {}),
     ...(process.env['PILOT_PACKAGE_ROOT'] ? { packageRoot: process.env['PILOT_PACKAGE_ROOT'] } : {}),
   })
 }
