@@ -7,6 +7,7 @@ import {
   type ModelResponse,
 } from '../src/main/agent/loop'
 import { isVerificationCommand, looksLikeTestOutput } from '../src/main/agent/checks'
+import { isDeliverableText } from '../src/shared/deliverable'
 
 function tool(name: string, risk: AgentToolDefinition['risk']): AgentToolDefinition {
   return {
@@ -515,6 +516,104 @@ describe('agent loop verification gate', () => {
     expect(result.timings.approvalMs).toBe(0)
     expect(messagesFor(model.requests[2]!)).toContain('验证检查')
     expect(messagesFor(model.requests[2]!)).toContain('pnpm test')
+  })
+
+  it('does not re-ask once the answer is already a delivered report', async () => {
+    // Recorded case (xiaofang-workspace, run 8990a3cd): the run wrote a 4.5KB
+    // report, the gate then asked for a check, and the model answered again with
+    // a 1.8KB verification recap. Both blocks were headed and tabulated, so the
+    // reader saw two conclusions and could not tell which one was the result.
+    // The report is already the deliverable: the gate stops asking, and the
+    // close-out notice still records the change as unverified.
+    const report = [
+      '## 结果',
+      '',
+      '按只读方式完成探查，没有修改任何文件，也没有重启服务。',
+      '',
+      '| 检查项 | 实测值 | 结论 |',
+      '| --- | --- | --- |',
+      '| 盘点总数 | 350 | 一致 |',
+      '| 已实现 | 177 | 一致 |',
+      '| 未实现 | 173 | 一致 |',
+      '',
+      ...Array.from({ length: 8 }, (_, index) => `- 第 ${index + 1} 条补充说明：依据见上表，取数与盘点表逐条对齐，未做任何推断。`),
+      '',
+      '本轮只读取了盘点点表与招标文件，没有创建、修改或删除工作区外的任何文件；',
+      '所有数字均来自 `_extract/pdd_records.json`，可用 `node group.mjs` 重跑复现。',
+      '',
+      '以上均为本轮实测结果，未做任何变更。',
+    ].join('\n')
+    const model = scripted([
+      response('', [call('w1', 'write_file', { path: 'src/a.ts', content: 'x' })]),
+      response(report),
+      response('## 结果\n\n再次校验通过，结论未变。'),
+    ])
+    const notices: Array<{ level: string; message: string }> = []
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: '调研这个项目' }],
+      tools,
+      maxSteps: 6,
+      verificationGate: true,
+      verificationHint: 'pnpm test',
+      policy: () => 'auto',
+      emit: (event) => {
+        if (event.type === 'notice') notices.push({ level: event.level, message: event.message })
+      },
+      executeTool: async () => ({ ok: true, output: 'written' }),
+    })
+
+    expect(result.status).toBe('completed')
+    // Two model calls: the write, then the report. No third call from the gate.
+    expect(isDeliverableText(report)).toBe(true)
+    expect(model.requests).toHaveLength(2)
+    expect(result.checked).toBe(false)
+    // The gap stays visible instead of being asked about a second time.
+    expect(notices.some((notice) => notice.message.includes('未验证'))).toBe(true)
+  })
+
+  it('asks again when the model keeps editing after its report', async () => {
+    // The gate must not be silenced by an earlier report: a change made after it
+    // is still unverified, and that is exactly the case the gate exists for.
+    const report = [
+      '## 结果',
+      '',
+      '第一次收尾，改动已完成但还没有跑检查。',
+      '',
+      '| 检查项 | 状态 |',
+      '| --- | --- |',
+      '| 写入 src/a.ts | 完成 |',
+      '| 跑测试 | 未跑 |',
+      '',
+      ...Array.from({ length: 8 }, (_, index) => `- 补充说明 ${index + 1}：这一条只是把上下文写全。`),
+      '',
+      '接下来还需要再改一处。',
+    ].join('\n')
+    const model = scripted([
+      response('', [call('w1', 'write_file', { path: 'src/a.ts', content: 'x' })]),
+      response(report),
+      response('', [call('w2', 'write_file', { path: 'src/b.ts', content: 'y' })]),
+      response('done without check'),
+      response('done after reminder'),
+    ])
+    const notices: Array<{ level: string; message: string }> = []
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: '改两个文件' }],
+      tools,
+      maxSteps: 8,
+      verificationGate: true,
+      verificationHint: 'pnpm test',
+      policy: () => 'auto',
+      emit: (event) => {
+        if (event.type === 'notice') notices.push({ level: event.level, message: event.message })
+      },
+      executeTool: async () => ({ ok: true, output: 'written' }),
+    })
+
+    expect(result.status).toBe('completed')
+    expect(result.filesChanged).toBe(2)
+    expect(notices.some((notice) => notice.message.includes('改动尚未验证'))).toBe(true)
   })
 
   it('does not ask when a check ran after the edit', async () => {

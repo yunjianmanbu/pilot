@@ -3,6 +3,7 @@
 import type { FeedbackDraft, FeedbackRecord } from './feedback'
 import type { HostKind } from './capabilities'
 import type { AppLocale, LocaleSetting } from './i18n'
+import type { ModelCatalog } from './model-catalog'
 import type { MemoryCategory } from './memory'
 import type { PreviewKind } from './media'
 import type { NotifyEventId } from './notify-events'
@@ -13,6 +14,7 @@ import type {
   ModuleTarget,
 } from './module-check'
 import type { QualityComparison, QualityMetricSet, QualityScore } from './quality'
+import type { SessionReport } from './session-report'
 import type {
   ReflectionReport,
   ReflectionScheduleMode,
@@ -241,6 +243,64 @@ export interface AppLogView {
   event: string
   level: 'info' | 'warn' | 'error'
   detail?: Record<string, unknown>
+}
+
+/** 一条副线任务的当前状态，用于回答「主进程现在在干什么」。 */
+export interface DiagnosticsJobView {
+  name: string
+  state: 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'deferred' | 'skipped'
+  queuedAt: string
+  startedAt?: string
+  finishedAt?: string
+  durationMs?: number
+  /** 因为会话在跑而让路的次数。 */
+  deferrals: number
+  error?: string
+}
+
+/** 一次进行中的运行：会话卡点视图与诊断面板共用。 */
+export interface DiagnosticsRunView {
+  sessionId: string
+  sessionTitle: string
+  runId: string
+  instruction: string
+  startedAt: string
+  elapsedMs: number
+}
+
+/** 按 area/event 聚合的错误计数：面板先说「哪一类问题最多」，再列明细。 */
+export interface DiagnosticsGroupView {
+  area: string
+  event: string
+  level: 'info' | 'warn' | 'error'
+  count: number
+  lastAt: string
+  lastDetail?: Record<string, unknown>
+}
+
+/**
+ * 客户端运行状态的只读快照。一次调用把「主进程健康、副线队列、正在跑的
+ * 运行、日志聚合」四件事一起取回，避免面板开一堆定时器互相抢 IO。
+ */
+export interface DiagnosticsSnapshot {
+  at: string
+  health: {
+    startedAt: string
+    uptimeMs: number
+    lagMs: number
+    worstLagMs: number
+    stallCount: number
+    stalls: Array<{ at: string; lagMs: number }>
+  }
+  /** 副线队列里的任务，正在跑的排在最前。 */
+  jobs: DiagnosticsJobView[]
+  running: DiagnosticsRunView[]
+  /** 最近日志按 area+event+level 聚合，只保留出现过的；计数降序。 */
+  groups: DiagnosticsGroupView[]
+  /** 最近日志明细，新的在前。 */
+  records: AppLogView[]
+  /** 本次统计覆盖的日志条数。 */
+  scanned: number
 }
 
 export type CheckpointTrigger = 'prompt' | 'shell' | 'manual' | 'prerestore'
@@ -676,6 +736,18 @@ export interface Plan {
 
 export type ScheduleKind = 'once' | 'interval' | 'daily'
 
+/**
+ * 一次定时触发的记录，用来在面板里给出「最近几次」的时间线。
+ * 只记结论，不记内容：内容已经是任务本身，重复存只会胀大状态文件。
+ */
+export interface ScheduledRunEntry {
+  /** 触发（或判定失败）的时刻，ISO。 */
+  at: string
+  status: 'queued' | 'failed'
+  /** 失败原因；排队成功时没有这一项。 */
+  detail?: string
+}
+
 /** A task that queues a normal agent run on a schedule. */
 export interface ScheduledTask {
   id: string
@@ -695,6 +767,8 @@ export interface ScheduledTask {
   lastRunAt?: string
   lastStatus?: 'queued' | 'failed'
   lastError?: string
+  /** 最近几次触发，新的在前；只留有限条数，供面板展开看时间线。 */
+  runs?: ScheduledRunEntry[]
 }
 
 export interface ScheduledTaskGroup {
@@ -1093,8 +1167,9 @@ export interface ProfileComparison {
   /** True when every run at the hardest tier passed *and* none was flaky: a
    * tier that only passes on some attempts still separates profiles. */
   suiteSaturated?: boolean
-  /** Profile id the "current" side was measured under, when known. */
-  currentId?: string
+  /** Profile id the "current" side was measured under; null when the workspace
+   * had no active profile at the time, which makes an empty baseline explicit. */
+  currentId?: string | null
   /** Profile id the "candidate" side was measured under. */
   candidateId?: string
   /** Models of the third-party judges that scored the blind pairs. */
@@ -1297,6 +1372,9 @@ export interface EvolutionState {
   policyVersions: EvolutionPolicyVersion[]
   /** Recent cycles for the current workspace, newest first. */
   cycles: EvolutionCycle[]
+  /** Task-library revision the benchmark currently measures against. A stored
+   * comparison from any other revision is stale evidence, not a tie. */
+  benchmarkSuiteVersion: number
 }
 
 export type QualityCandidateStatus =
@@ -1683,7 +1761,7 @@ export interface SettingsView {
   selfSourceCustomPath: string
   /**
    * 产出质量闸门：用配置的评估模型按可调优指标给候选版本打分，
-   * 更优时在铃铛与桌面通知提醒；默认关。
+   * 更优时在顶栏三点菜单的产出质量项亮角标并发桌面通知；默认关。
    */
   qualityGate: boolean
   /** 授权后执行的打包命令；只接受内置白名单值。 */
@@ -1739,7 +1817,7 @@ export interface SettingsView {
   reflectModelId: string
   /** Which trigger(s) may start a reflection. */
   reflectTriggers: ReflectionTriggers
-  /** Timer granularity: every N minutes, or a fixed local time each day. */
+  /** Timer granularity: on app version change, every N minutes, or a fixed local time. */
   reflectScheduleMode: ReflectionScheduleMode
   reflectIntervalMinutes: number
   /** `HH:mm` in the user's local time. */
@@ -1748,6 +1826,8 @@ export interface SettingsView {
   reflectTopics: ReflectionTopicId[]
   /** Last successful reflection, or an empty string. */
   reflectLastRunAt: string
+  /** App version of the last successful reflection; version mode compares against it. */
+  reflectLastVersion: string
   /**
    * 邮件通知总开关。关掉后所有事件都不发信，但邮箱连接配置保留。
    * 与下面的 `notifyEmailEvents` 一起构成「通知配置」；SMTP 主机/端口/授权码
@@ -1834,9 +1914,10 @@ export interface SettingsUpdate {
   notifyEmailEvents?: NotifyEventId[]
   /** 旧字段：只控制反思报告邮件；写入时会同步 `notifyEmailEvents` 里的 `reflect.report`。 */
   reflectEmailEnabled?: boolean
-  /** 唯一邮箱：收件人、SMTP 登录名与发件人。 */
-  reflectEmailTo?: string
-  reflectSmtpHost?: string
+  /** 唯一邮箱：收件人、SMTP 登录名与发件人。空字符串保持原值，null 清除。 */
+  reflectEmailTo?: string | null
+  /** 空字符串保持原值，null 清除。 */
+  reflectSmtpHost?: string | null
   reflectSmtpPort?: number
   reflectSmtpSecurity?: ReflectionSmtpSecurity
   /** @deprecated 已合并进 `reflectEmailTo`；仅用于兼容旧手机端提交。 */
@@ -1879,6 +1960,17 @@ export interface BootstrapData {
    */
   host: HostKind
 }
+export interface ModelDiscoverInput {
+  baseUrl?: string
+  apiKey?: string
+  /** 资源里已经填写的模型名：不在任何清单里也要留在下拉第一位。 */
+  current?: string
+  /** 用这个已保存资源的密钥，渲染进程拿不到明文 key。 */
+  providerId?: string
+  /** 界面的「刷新」：忽略新鲜缓存。 */
+  refresh?: boolean
+}
+
 export interface ConnectionTestResult {
   ok: boolean
   message: string
@@ -2524,6 +2616,11 @@ export interface PilotBridge {
     /** Use the stored key/endpoint of this judge provider. */
     providerId?: string
   }): Promise<ConnectionTestResult>
+  /**
+   * 模型名下拉的数据源：用现有密钥问厂商要一次可用模型清单。
+   * 永不抛错 —— 拉不到时降级成缓存或内置清单，并在 note 里说明原因。
+   */
+  discoverModels(input?: ModelDiscoverInput): Promise<ModelCatalog>
   /** Provider balance for the saved key plus local token usage and cost estimate. */
   modelBilling(refresh?: boolean): Promise<ModelBillingReport>
   /** Provider balance for one self-evolution reviewer. */
@@ -2541,6 +2638,30 @@ export interface PilotBridge {
   ): Promise<ReflectionReport | null>
   /** 用已保存的 SMTP 配置发一封测试邮件。 */
   testReflectionMail(to: string): Promise<{ ok: boolean; error?: string }>
+
+  /** 工作区声明式 hook 规则（`.pilot/hooks/*.md`）与命令钩子数量。 */
+  hookRules(workspacePath: string): Promise<import('./hook-rules').HookRulesReport>
+  /** 开关一条规则：只改 frontmatter 的 enabled，返回刷新后的整份报告。 */
+  setHookRuleEnabled(
+    workspacePath: string,
+    source: string,
+    enabled: boolean,
+  ): Promise<import('./hook-rules').HookRulesReport>
+  deleteHookRule(
+    workspacePath: string,
+    source: string,
+  ): Promise<import('./hook-rules').HookRulesReport>
+  /** 新建规则；名称或正则为空、正则编译不了时返回 null。 */
+  createHookRule(
+    workspacePath: string,
+    input: {
+      name: string
+      event: import('./hook-rules').HookRuleEvent
+      pattern: string
+      action: import('./hook-rules').HookRuleAction
+      message: string
+    },
+  ): Promise<import('./hook-rules').HookRuleView | null>
   setTheme(theme: ThemeMode): Promise<void>
 
   /**
@@ -2594,6 +2715,10 @@ export interface PilotBridge {
     limit?: number,
   ): Promise<SessionPage | null>
   getSessionTranscript(sessionId: string): Promise<string>
+  /** 最新一轮运行的人读报告；这一轮还没有 run 记录时为 null。 */
+  sessionReport(sessionId: string): Promise<SessionReport | null>
+  /** 保存报告为 Markdown，返回写入路径；用户取消时为 null。 */
+  saveSessionReport(sessionId: string): Promise<string | null>
   /** Copy text through the main process (works without renderer permissions). */
   writeClipboard(text: string): Promise<boolean>
   searchMessages(
@@ -2614,6 +2739,8 @@ export interface PilotBridge {
   /** 同一个工具箱，但按工作区汇总所有会话的调用次数（左下角「工具」用）。 */
   toolsCatalogForWorkspace(workspacePath: string): Promise<ToolCatalogEntry[]>
   createSession(workspacePath: string): Promise<Session>
+  /** Record which session the window has open, so a restart restores the same one. */
+  activateSession(sessionId: string): Promise<void>
   /** Create a read-only review session over explicit roots and session scope. */
   createReviewSession(input: ReviewSessionInput): Promise<Session>
   /** Turn a recorded review report into a normal coding/fix session. */
@@ -2653,6 +2780,22 @@ export interface PilotBridge {
   /** 立即跑一轮（手动触发），返回本轮报告。 */
   supervisorRun(): Promise<SupervisorRound>
   supervisorSettings(input: Partial<SupervisorSettings>): Promise<SupervisorState>
+  /**
+   * 超级 Pilot：主引擎坏掉时的独立应急通道。
+   *
+   * 打开的是另一个窗口（同一个 preload），数据面与运行器都是另一套，不受主引擎的
+   * 回退点串行门、副线队列与审批队列影响。它只能修自己，不能改业务数据。
+   */
+  super: {
+    open(): Promise<{ ok: boolean; windowId?: number }>
+    status(): Promise<import('./super').SuperPilotStatusReply>
+    messages(): Promise<import('./super').SuperPilotMessage[]>
+    send(prompt: string): Promise<{ ok: boolean; error?: string }>
+    cancel(): Promise<{ ok: boolean }>
+    reset(): Promise<{ ok: boolean; sessionId: string }>
+    rescue(): Promise<import('./super').SuperPilotRescueResult | { error: string }>
+    onEvent(listener: (event: RunEvent) => void): () => void
+  }
   deleteSession(sessionId: string): Promise<void>
   updateSession(
     sessionId: string,
@@ -2726,6 +2869,11 @@ export interface PilotBridge {
   logDir(): Promise<string>
   /** 在文件管理器里打开日志目录。 */
   openLogs(): Promise<void>
+  /**
+   * 客户端运行状态的只读快照：事件循环健康、副线队列、进行中的运行、日志聚合。
+   * 设置页「运行日志」用它一次拿全，不另开轮询。
+   */
+  diagnosticsSnapshot(limit?: number): Promise<DiagnosticsSnapshot>
   /** 渲染进程未捕获异常转发给主进程写日志。 */
   reportRendererError(input: { summary: string; stack?: string; source?: string }): Promise<void>
   listCheckpoints(sessionId: string): Promise<Checkpoint[]>
@@ -2933,6 +3081,12 @@ export interface PilotBridge {
   listFiles(path: string, directory: string): Promise<FileNode[]>
   previewFile(path: string, file: string): Promise<FilePreview>
   revealFile(path: string, file: string): Promise<void>
+  /**
+   * Open one workspace file with the system application — the fallback when the
+   * in-app document preview cannot draw it (legacy Office formats, encryption,
+   * oversized scans). The path is jail-checked against the workspace first.
+   */
+  openFile(path: string, file: string): Promise<void>
   /**
    * Open one workspace file in a standalone window, so reading a long report
    * never competes with the transcript (or pauses a running task).

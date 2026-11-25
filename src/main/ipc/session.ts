@@ -1,9 +1,11 @@
 // 会话、消息、运行控制、搜索、文件与文档、记忆、知识与检查点。
 // 由 index.ts 的 registerIpc 机械搬出：只把 handle 换成 ctx.handle，其余语句逐字保留。
 import type { IpcContext } from '../ipc-context'
-import { app, BrowserWindow, nativeImage, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeImage, session, shell } from 'electron'
+import { writeFile } from 'node:fs/promises'
 import { collectSessionArtifacts } from '../agent/artifacts'
 import { collectSessionLinks } from '../../shared/session-links'
+import { buildSessionReport } from '../agent/session-report'
 import { dialoguePage, runMessages } from '../session-page'
 import { isDocumentWindowContents, openDocumentWindow } from '../document-window'
 import { join } from 'node:path'
@@ -131,6 +133,56 @@ export function registerSessionIpc(ctx: IpcContext): void {
     const session = ctx.store.session(sessionId)
     if (!session) throw new Error('Session not found')
     return ctx.transcriptText(session.messages)
+  })
+
+  /**
+   * 会话报告：拿最新一轮 run 的统计 + 这一轮的消息，拼成人读的 Markdown。
+   * 没有 run 记录时返回 null，界面显示「这一轮还没有可报告的运行」而不是编一份。
+   */
+  const sessionReportOf = (sessionId: string) => {
+    const target = ctx.store.session(sessionId)
+    if (!target) throw new Error('Session not found')
+    const runs = ctx.store
+      .runs(target.workspacePath)
+      .filter((run) => run.sessionId === sessionId)
+      .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+    const run = runs[runs.length - 1]
+    if (!run) return null
+    // 只取这一轮的消息：更早的轮次会混进别人的写文件记录。
+    const messages = target.messages.filter((message) => message.runId === run.id)
+    return buildSessionReport({
+      run,
+      messages,
+      ...(target.title ? { sessionTitle: target.title } : {}),
+    })
+  }
+
+  ctx.handle('pilot:session-report', (sessionId: string) => sessionReportOf(sessionId))
+
+  /**
+   * 把报告存成 Markdown 文件。默认落在工作区根、文件名取报告标题；
+   * 用户取消或没有可报告的运行都返回 null，界面据此不提示成功。
+   */
+  ctx.handle('pilot:session-report-save', async (sessionId: string) => {
+    const target = ctx.store.session(sessionId)
+    if (!target) throw new Error('Session not found')
+    const report = sessionReportOf(sessionId)
+    if (!report) return null
+    const base = report.title.replace(/[\\/:*?"<>|\r\n]+/g, '-').trim().slice(0, 80) || 'session-report'
+    const picked = await dialog.showSaveDialog({
+      title: 'Save session report',
+      defaultPath: join(target.workspacePath, `${base}.md`),
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    })
+    if (picked.canceled || !picked.filePath) return null
+    await writeFile(picked.filePath, report.markdown, 'utf8')
+    return picked.filePath
+  })
+
+  ctx.handle('pilot:session-activate', async (sessionId: string) => {
+    if (!ctx.store.session(sessionId)) return
+    ctx.store.setActiveSession(sessionId)
+    await ctx.store.save()
   })
 
   ctx.handle('pilot:session-create', async (workspacePath: string) => {
@@ -290,6 +342,18 @@ export function registerSessionIpc(ctx: IpcContext): void {
   ctx.handle('pilot:file-reveal', async (path: string, file: string) => {
     const target = await resolveExisting(path, file)
     shell.showItemInFolder(target)
+  })
+
+  /**
+   * Hand one workspace file to the system application: the escape hatch for a
+   * document the in-app preview cannot draw (.doc, .xls, an encrypted PDF, a
+   * 64 MB scan). The path is resolved inside the open workspace first, so the
+   * OS never receives a path the file browser could not have reached.
+   */
+  ctx.handle('pilot:file-open', async (path: string, file: string) => {
+    const target = await resolveExisting(path, file)
+    const error = await shell.openPath(target)
+    if (error) throw new Error(error)
   })
 
 

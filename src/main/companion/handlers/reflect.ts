@@ -3,6 +3,7 @@
 import {
   MAX_REFLECTION_FINDINGS,
   clampReflectionInterval,
+  normalizeFindingStatus,
   normalizeReflectionScheduleMode,
   normalizeReflectionTime,
   normalizeReflectionTopics,
@@ -95,6 +96,14 @@ export async function handleReflectRequest(
     }
     case 'reflect.reports.clear':
       return host.requireReflect().clearReports()
+    case 'reflect.finding': {
+      // 结论三态：手机看完成结论可以直接标「已处理 / 不打算做」，
+      // 下一次反思就把这条当作已决策的信号，不再重复提。
+      const reportId = requireString(params['reportId'], '反思报告', 120)
+      const findingId = requireString(params['findingId'], '结论', 120)
+      const status = normalizeFindingStatus(params['status'])
+      return { report: await host.requireReflect().setFindingStatus(reportId, findingId, status) }
+    }
     default:
       throw new Error(`手机端不支持该操作：${method}`)
   }
@@ -117,6 +126,11 @@ export function createReflectControls(
       await store.clearReflectionReports()
       return state()
     },
+    async setFindingStatus(reportId, findingId, status) {
+      const report = await store.setReflectionFindingStatus(reportId, findingId, status)
+      if (!report) throw new Error('反思报告或结论不存在')
+      return phoneReflectReport(report)
+    },
   }
 }
 
@@ -134,6 +148,7 @@ export function phoneReflectState(store: Store, running: boolean): PhoneReflectS
       dailyTime: view.reflectDailyTime,
       topics: [...view.reflectTopics],
       lastRunAt: view.reflectLastRunAt,
+      lastVersion: view.reflectLastVersion,
       emailEnabled: view.reflectEmailEnabled,
       emailTo: view.reflectEmailTo,
       smtpHost: view.reflectSmtpHost,
@@ -175,6 +190,12 @@ function phoneReflectReport(report: ReflectionReport): PhoneReflectReport {
     trigger: report.trigger,
     model: report.model,
     topics: [...report.topics],
+    // 证据不足而没问的域：不带下去，手机端只能列了问题域却不知为何没结果。
+    // 旧报告可能没有这个字段，缺省当空数组。
+    skipped: (Array.isArray(report.skipped) ? report.skipped : []).map((entry) => ({
+      topic: entry.topic,
+      missing: [...entry.missing],
+    })),
     summary: report.summary,
     findings: report.findings.slice(0, MAX_REFLECTION_FINDINGS).map((finding) => ({
       id: finding.id,
@@ -240,14 +261,20 @@ function reflectSettingsInput(value: unknown): SettingsUpdate {
       record['notifyEmailEvents'],
     ) as NotifyEventId[]
   }
-  assignText(record, input, 'emailTo', 'reflectEmailTo', 320)
+  // 空字符串 = 保持原值（旧手机端把没同步好的空表单原样提交，那不是用户要清空），
+  // null = 清除；与授权码同一套语义。
+  if (record['emailTo'] === null) input.reflectEmailTo = null
+  else assignText(record, input, 'emailTo', 'reflectEmailTo', 320)
   // 只剩一个邮箱字段。旧版手机端还会提交 smtpUser / emailFrom，只当同一个字段的
   // 兑底值（emailTo 为空或未传时才有意义），否则旧端一次保存会把邮箱清成空。
-  if (!input.reflectEmailTo) {
+  if (input.reflectEmailTo === undefined || input.reflectEmailTo === '') {
     assignText(record, input, 'smtpUser', 'reflectEmailTo', 320)
-    if (!input.reflectEmailTo) assignText(record, input, 'emailFrom', 'reflectEmailTo', 320)
+    if (input.reflectEmailTo === undefined || input.reflectEmailTo === '') {
+      assignText(record, input, 'emailFrom', 'reflectEmailTo', 320)
+    }
   }
-  assignText(record, input, 'smtpHost', 'reflectSmtpHost', 253)
+  if (record['smtpHost'] === null) input.reflectSmtpHost = null
+  else assignText(record, input, 'smtpHost', 'reflectSmtpHost', 253)
   if (record['smtpPort'] !== undefined) {
     input.reflectSmtpPort = clampSmtpPort(record['smtpPort'])
   }

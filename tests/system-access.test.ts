@@ -60,6 +60,7 @@ const policy: EvolutionPolicy = {
 const evolution: EvolutionState = {
   policy,
   policyVersions: [],
+  benchmarkSuiteVersion: 5,
   cycles: [
     {
       id: 'cycle-1',
@@ -151,6 +152,7 @@ const settings: SettingsView = {
     'interaction-experience',
   ],
   reflectLastRunAt: '',
+  reflectLastVersion: '',
   reflectEmailEnabled: false,
   reflectEmailTo: '',
   reflectSmtpHost: '',

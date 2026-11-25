@@ -12,6 +12,7 @@ import { isLocaleSetting } from '../shared/i18n'
 import { normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
 import { normalizeRelayUrl } from '../shared/relay'
 import { normalizeServerPort } from '../shared/server-mode'
+import { normalizeConfiguredSteps } from '../shared/step-budget'
 import { normalizeQualityPublishTarget } from '../shared/quality'
 import { normalizeSelfSourceSettings } from './self-source-git'
 import {
@@ -63,7 +64,10 @@ export function applySettingsUpdate(
   hooks: SettingsSecretHooks,
 ): void {
     if (input.maxSteps !== undefined) {
-      settings.maxSteps = clampNumber(input.maxSteps, 200, 4, 1_000)
+      // 0 = 不限；上限与循环里的硬天花板同源。UI 已拦非法值，这里只是防止旧
+      // 客户端或手改 settings.json 写进一个循环无法兑现的数字（也防止负数被
+      // 夹成 0 后默默变成「不限」）。
+      settings.maxSteps = normalizeConfiguredSteps(input.maxSteps, settings.maxSteps)
     }
     if (input.maxTokens !== undefined) {
       // 0 keeps the budget off; anything else is rounded so the UI cannot send
@@ -112,6 +116,8 @@ export function applySettingsUpdate(
     }
     if (input.reflectScheduleMode !== undefined) {
       settings.reflectScheduleMode = normalizeReflectionScheduleMode(input.reflectScheduleMode)
+      // 亲手选过就钉住：默认值迁移（老存档 daily → version）不能反过来覆盖用户的决定。
+      settings.reflectScheduleModePinned = true
     }
     if (input.reflectIntervalMinutes !== undefined) {
       settings.reflectIntervalMinutes = clampReflectionInterval(input.reflectIntervalMinutes)
@@ -143,16 +149,22 @@ export function applySettingsUpdate(
     }
     // 只剩一个邮箱字段：它同时是收件人、SMTP 登录名与发件人。
     // 旧手机端仍会发 smtpUser / emailFrom，当作同一字段的别名收下，避免升级后改不动配置。
-    if (input.reflectEmailTo !== undefined) {
-      settings.reflectEmailTo = normalizeOptionalText(input.reflectEmailTo, 200)
+    // 空串与授权码同义：保持原值，只有 null 才清除。旧客户端把没同步好的空表单
+    // 原样提交时，不能把用户已经填好的邮箱清掉，否则换一台设备就要重填一次。
+    if (input.reflectEmailTo === null) {
+      settings.reflectEmailTo = ''
+    } else if (input.reflectEmailTo !== undefined) {
+      const mailbox = normalizeOptionalText(input.reflectEmailTo, 200)
+      if (mailbox) settings.reflectEmailTo = mailbox
     } else if (input.reflectSmtpUser !== undefined || input.reflectEmailFrom !== undefined) {
-      settings.reflectEmailTo = normalizeOptionalText(
-        input.reflectSmtpUser ?? input.reflectEmailFrom ?? '',
-        200,
-      )
+      const alias = normalizeOptionalText(input.reflectSmtpUser ?? input.reflectEmailFrom ?? '', 200)
+      if (alias) settings.reflectEmailTo = alias
     }
-    if (input.reflectSmtpHost !== undefined) {
-      settings.reflectSmtpHost = normalizeOptionalText(input.reflectSmtpHost, 200)
+    if (input.reflectSmtpHost === null) {
+      settings.reflectSmtpHost = ''
+    } else if (input.reflectSmtpHost !== undefined) {
+      const host = normalizeOptionalText(input.reflectSmtpHost, 200)
+      if (host) settings.reflectSmtpHost = host
     }
     if (input.reflectSmtpPort !== undefined) {
       settings.reflectSmtpPort = clampSmtpPort(input.reflectSmtpPort)

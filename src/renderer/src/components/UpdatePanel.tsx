@@ -180,7 +180,11 @@ export function UpdatePanel({
         ) : null}
         {update.status === 'idle' ||
         update.status === 'up-to-date' ||
-        update.status === 'error' ? (
+        update.status === 'error' ||
+        // 已经下载了旧版本时也要能再查：上游可能已经发了更新的版本，
+        // 而旧逻辑在 ready 状态下连按钮都不给。
+        update.status === 'ready' ||
+        update.status === 'available' ? (
           <button type="button" className="button ghost" onClick={onCheckUpdate} title={t("重新检查更新")}>
             <RefreshIcon width={15} height={15} />
             {t("检查更新")}</button>

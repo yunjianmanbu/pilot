@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from 're
 import type { FilePreview } from '../../../shared/types'
 import {
   clampZoom,
+  isDocumentKind,
   parseMediaUrl,
   stepZoom,
   zoomLabel,
   zoomShortcut,
 } from '../../../shared/media'
+import { DocumentPreview } from './DocumentPreview'
 import { Markdown } from './Markdown'
 import { PopoutIcon } from '../icons'
 import { t } from '../i18n'
@@ -30,10 +32,17 @@ function documentFolder(preview: FilePreview): string {
 export function FilePreviewBody({
   preview,
   onOpenWindow,
+  onOpenExternal,
 }: {
   preview: FilePreview
   /** Omit inside the standalone window: opening a window from it would nest. */
   onOpenWindow?: () => void
+  /**
+   * Opens this file with the system application. Document previews offer it as
+   * the way out when the bytes cannot be drawn in-app (legacy Office formats,
+   * an encrypted PDF, an oversized scan).
+   */
+  onOpenExternal?: () => void
 }) {
   const url = preview.url ?? ''
   const [zoom, setZoom] = useState(1)
@@ -184,6 +193,10 @@ export function FilePreviewBody({
           <div className="preview-doc">
             <Markdown content={preview.content} baseDir={folder} />
           </div>
+        ) : null}
+
+        {isDocumentKind(preview.kind) ? (
+          <DocumentPreview preview={preview} onOpenFallback={onOpenExternal} />
         ) : null}
 
         {preview.kind === 'text' ? <pre className="preview-code">{preview.content}</pre> : null}

@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState, type ReactElement } from 'react'
+import type { ReactElement } from 'react'
 import type { QualityCandidate, QualityState, QualityPublishTarget } from '../../../shared/types'
-import { bellCount } from '../../../shared/quality'
 import { t } from '../i18n'
-import { BellIcon, CheckIcon, RefreshIcon, XIcon } from '../icons'
+import { CheckIcon, RefreshIcon, XIcon } from '../icons'
 
 const TARGET_LABEL: Record<QualityPublishTarget, string> = {
   none: '不自动打包',
@@ -37,22 +36,12 @@ function scoreTone(total: number): string {
   return 'bad'
 }
 
-export interface QualityBellProps {
-  workspacePath: string | null
-  state: QualityState | null
-  publishTarget: QualityPublishTarget
-  busy: boolean
-  onDecide: (candidateId: string, decision: 'approve' | 'reject') => void
-  onPublish: (candidateId: string) => void
-  onEvaluate: () => void
-  onTune: () => void
-  onOpenChange?: (open: boolean) => void
-}
-
 export interface QualityBellPanelProps {
   state: QualityState
   publishTarget: QualityPublishTarget
   busy: boolean
+  /** 作为弹层内容时由外壳传入关闭动作，头部右侧多一个关按钮；内嵌渲染可省略。 */
+  onClose?: () => void
   onDecide: (candidateId: string, decision: 'approve' | 'reject') => void
   onPublish: (candidateId: string) => void
   onEvaluate: () => void
@@ -60,13 +49,15 @@ export interface QualityBellPanelProps {
 }
 
 /**
- * 铃铛弹层本体。单独导出让渲染测试能直接断言用户看到的那份文案：
+ * 质量闸门的面板本体：顶栏三个点菜单打开的「产出质量」弹层渲染的就是它
+ * （`QualityDialog`）。单独导出让渲染测试能直接断言用户看到的那份文案：
  * 待授权的候选必须同时给出分数、差值、理由和两个决策按钮。
  */
 export function QualityBellPanel({
   state,
   publishTarget,
   busy,
+  onClose,
   onDecide,
   onPublish,
   onEvaluate,
@@ -81,7 +72,7 @@ export function QualityBellPanel({
   const target = TARGET_LABEL[publishTarget] ?? publishTarget
 
   return (
-    <div className="quality-pop" role="dialog" aria-label={t('产出质量')}>
+    <div className="quality-pop" role="group" aria-label={t('产出质量')}>
       <header className="quality-pop-head">
         <div>
           <strong>{t('产出质量')}</strong>
@@ -102,6 +93,17 @@ export function QualityBellPanel({
           <button type="button" className="button ghost small" onClick={onTune} disabled={busy}>
             {t('重调指标')}
           </button>
+          {onClose ? (
+            <button
+              type="button"
+              className="modal-close quality-pop-close"
+              onClick={onClose}
+              aria-label={t('关闭')}
+              title={t('关闭')}
+            >
+              <XIcon width={15} height={15} />
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -215,85 +217,6 @@ export function QualityBellPanel({
         </span>
         <span className="quality-target">{target}</span>
       </footer>
-    </div>
-  )
-}
-
-/**
- * App 里的小铃铛。
- *
- * 它只做一件事：把「评估模型认为有更优版本」变成用户眼前的一个数字和一次决策。
- * 批准之前不会打包，拒绝之后基线不动——所有按钮都只调用主进程的白名单接口。
- */
-export function QualityBell({
-  workspacePath,
-  state,
-  publishTarget,
-  busy,
-  onDecide,
-  onPublish,
-  onEvaluate,
-  onTune,
-  onOpenChange,
-}: QualityBellProps): ReactElement | null {
-  const [open, setOpen] = useState(false)
-  const rootRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onPointerDown = (event: MouseEvent): void => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
-    }
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onPointerDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
-  useEffect(() => {
-    onOpenChange?.(open)
-  }, [open, onOpenChange])
-
-  if (!workspacePath || !state) return null
-
-  const pending = bellCount(state)
-  const current = state.baseline
-  return (
-    <div className="quality-bell" ref={rootRef}>
-      <button
-        type="button"
-        className={`topbar-icon quality-bell-button${pending > 0 ? ' alert' : ''}`}
-        onClick={() => setOpen((value) => !value)}
-        title={
-          pending > 0
-            ? t('{v1} 个更优版本等待授权', { v1: pending })
-            : current
-              ? t('产出质量 {v1} 分（点击查看评估指标）', { v1: current.total })
-              : t('产出质量闸门：尚未建立基线')
-        }
-        aria-label={t('产出质量与更优版本')}
-        aria-expanded={open}
-      >
-        <BellIcon width={16} height={16} />
-        {pending > 0 ? <span className="quality-bell-badge">{pending}</span> : null}
-      </button>
-
-      {open ? (
-        <QualityBellPanel
-          state={state}
-          publishTarget={publishTarget}
-          busy={busy}
-          onDecide={onDecide}
-          onPublish={onPublish}
-          onEvaluate={onEvaluate}
-          onTune={onTune}
-        />
-      ) : null}
     </div>
   )
 }

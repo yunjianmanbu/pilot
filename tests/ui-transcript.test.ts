@@ -244,12 +244,9 @@ describe('report written before the closing cleanup', () => {
     expect(answer?.kind).toBe('assistant')
     expect(answer?.kind === 'assistant' ? answer.content : '').toBe(body)
     // 报告之后的那次清理仍是过程：单独一个框，排在报告下面。
-    expect(blocks.map((block) => block.kind)).toEqual([
-      'process',
-      'assistant',
-      'process',
-      'assistant',
-    ])
+    // 报告已交付后该 run 不再产生答案块，流式视图同样把后续文本放进步骤框，
+    // 两边保持一致，否则同一条回复在流式中与重载后位置不同。
+    expect(blocks.map((block) => block.kind)).toEqual(['process', 'assistant', 'process'])
     const box = blocks[2]
     expect(box?.kind === 'process' ? box.tools.length : 0).toBe(1)
     // 报告不再作为说明出现在任何执行框里。
@@ -270,7 +267,9 @@ describe('report written before the closing cleanup', () => {
       cleanupOutput(),
       assistant({ id: 'closing', content: '收尾完成。' }),
     ])
-    expect(blocks.map((block) => block.kind)).toEqual(['assistant', 'process', 'assistant'])
+    expect(blocks.map((block) => block.kind)).toEqual(['assistant', 'process'])
+    const box = blocks[1]
+    expect(box?.kind === 'process' ? box.text : []).toEqual(['收尾完成。'])
     expect(blocks[0]?.kind === 'assistant' ? blocks[0].content : '').toBe(body)
   })
 
@@ -308,6 +307,47 @@ describe('report written before the closing cleanup', () => {
       assistant({ id: 'closing', content: '收尾完成。' }),
     ]
     expect([...runsWithAnswer(messages)]).toEqual(['run-1'])
+  })
+
+  it('shows only the first report of a run as its answer', () => {
+    // 真例（xiaofang-workspace 第一轮）：报告后面跟了一段「校验通过，结论未变」，
+    // 两段都有标题和表格，看上去像两份并列的结论。第二段是补充，不是答案。
+    const recap = [
+      '## 结果',
+      '',
+      '证据链已跑通，报告结论未被推翻。本轮实际执行的是端到端可复现检查，所有取数均来自盘点表原始记录。',
+      '',
+      '| 脚本 | 检查 | 结果 |',
+      '| --- | --- | --- |',
+      '| a.mjs | node --check | 7/7 通过 |',
+      '| b.mjs | 实跑 | 通过 |',
+      '| c.mjs | 实跑 | 通过 |',
+      '',
+      ...Array.from({ length: 8 }, (_, index) => `- 第 ${index + 1} 条：只读取，未改动，产物 md5 与既有文件一致。`),
+      '',
+      '复现命令：`node group.mjs`。',
+    ].join('\n')
+    const messages = [
+      assistant({
+        id: 'step-1',
+        content: '',
+        toolCalls: [{ id: 'call-1', name: 'run_shell', arguments: { command: 'node', args: [] } }],
+      }),
+      assistant({ id: 'report', content: report() }),
+      cleanupStep(),
+      assistant({ id: 'recap', content: recap }),
+    ]
+    const blocks = buildTranscript(messages)
+    expect(blocks.map((block) => block.kind)).toEqual(['process', 'assistant', 'process'])
+    const answers = blocks.filter((block) => block.kind === 'assistant')
+    expect(answers).toHaveLength(1)
+    expect(answers[0]?.kind === 'assistant' ? answers[0].id : '').toBe('report')
+    // 第二段没丢，收在过程里
+    const allProcess = blocks
+      .filter((block) => block.kind === 'process')
+      .flatMap((block) => (block.kind === 'process' ? block.text : []))
+      .join('\n')
+    expect(allProcess).toContain('证据链已跑通')
   })
 })
 

@@ -14,7 +14,7 @@ import type {
 import type { Store } from '../store'
 import { sanitizeReviewReport } from '../store'
 import { redactSecrets } from './redact'
-import { reasoningLanguage } from './prompt'
+import { reasoningLanguage, thinkingLanguageGuard } from './prompt'
 import {
   executePilotTool,
   pilotTools,
@@ -655,7 +655,7 @@ export function buildReviewSystemPrompt(input: ReviewPromptInput): string {
     .join('\n')
   const lines = [
     'You are Pilot\'s independent review analyst. You examine delivered work and stored runs with an evidence-first, objective stance. You are not the agent that did the work, and you do not defend it.',
-    `Thinking language: write every reasoning/thinking block in ${reasoningLanguage(input.locale)}, the language the app UI and system use, even when the transcript, the code or the objective is written in another language. Keep file paths, identifiers, commands and quoted text exactly as written.`,
+    `Thinking language: write every reasoning/thinking block in ${reasoningLanguage(input.locale)}, the language the app UI and system use, even when the transcript, the code or the objective is written in another language. ${thinkingLanguageGuard(input.locale)} Keep file paths, identifiers, commands and quoted text exactly as written.`,
     '',
     'READ-ONLY BOUNDARY:',
     '- You have no write, edit, shell, network, MCP or memory-management tools. Never claim you changed a file, ran a test, installed anything or fixed a problem.',

@@ -52,6 +52,12 @@ export const MISSING_TOOL_RESULT_TEXT =
  * after "continue" — so the request is repaired here, at the one place every
  * caller passes through, instead of hoping each producer is correct.
  *
+ * The requirement is positional, not merely existential: the results must
+ * *follow* the assistant turn, with nothing else in between. A result that
+ * survived compaction but ended up after a later user message still provokes the
+ * same 400, so it is moved back in front of the blocking message and its content
+ * is kept rather than replaced by the synthetic error.
+ *
  * The input is never mutated, and when nothing needs repairing the same array
  * reference is returned so the common path costs one pass and no allocation.
  */
@@ -60,41 +66,74 @@ export function pairToolResults(messages: AgentMessage[]): {
   patched: number
   dropped: number
 } {
-  const callIds = new Set<string>()
-  const answeredIds = new Set<string>()
+  // Fast path: walk the transcript once as a state machine. Every tool call must
+  // be answered before anything other than a tool message may follow it.
+  let pendingCalls: string[] | null = null
+  let needsRepair = false
   for (const message of messages) {
-    for (const call of message.toolCalls ?? []) {
-      if (call.id) callIds.add(call.id)
+    if (message.role === 'tool') {
+      if (!pendingCalls || !message.toolCallId) {
+        needsRepair = true
+        break
+      }
+      const index = pendingCalls.indexOf(message.toolCallId)
+      if (index < 0) {
+        needsRepair = true
+        break
+      }
+      pendingCalls.splice(index, 1)
+      if (pendingCalls.length === 0) pendingCalls = null
+      continue
     }
-    if (message.role === 'tool' && message.toolCallId) answeredIds.add(message.toolCallId)
+    if (pendingCalls) {
+      needsRepair = true
+      break
+    }
+    if (isEmptyAssistant(message)) {
+      needsRepair = true
+      break
+    }
+    if (message.role === 'assistant' && (message.toolCalls?.length ?? 0) > 0) {
+      pendingCalls = (message.toolCalls ?? []).map((call) => call.id).filter(Boolean)
+      if (pendingCalls.length === 0) pendingCalls = null
+    }
+  }
+  if (!needsRepair && !pendingCalls) return { messages, patched: 0, dropped: 0 }
+
+  // Repair path. Results are looked up by id instead of being trusted in place,
+  // so a misplaced result is re-attached where the provider requires it.
+  const results = new Map<string, AgentMessage[]>()
+  let dropped = 0
+  for (const message of messages) {
+    if (message.role !== 'tool') continue
+    if (!message.toolCallId) {
+      dropped += 1
+      continue
+    }
+    const queue = results.get(message.toolCallId)
+    if (queue) queue.push(message)
+    else results.set(message.toolCallId, [message])
   }
 
   const patched = new Set<string>()
-  let dropped = 0
-  let changed = false
+  const used = new Set<AgentMessage>()
   const result: AgentMessage[] = []
   for (const message of messages) {
-    // A tool result whose call is no longer in the request, or which has no id
-    // at all, is an orphan the provider rejects.
-    if (message.role === 'tool') {
-      if (!message.toolCallId || !callIds.has(message.toolCallId)) {
-        dropped += 1
-        changed = true
-        continue
-      }
-      result.push(message)
-      continue
-    }
-    if (isEmptyAssistant(message)) {
-      changed = true
-      continue
-    }
+    if (message.role === 'tool') continue
+    if (isEmptyAssistant(message)) continue
     result.push(message)
     if (message.role !== 'assistant' || (message.toolCalls?.length ?? 0) === 0) continue
     for (const call of message.toolCalls ?? []) {
-      if (!call.id || answeredIds.has(call.id) || patched.has(call.id)) continue
+      if (!call.id) continue
+      const queue = results.get(call.id)
+      const answer = queue?.shift()
+      if (answer) {
+        used.add(answer)
+        result.push(answer)
+        continue
+      }
+      if (patched.has(call.id)) continue
       patched.add(call.id)
-      changed = true
       result.push({
         role: 'tool',
         toolCallId: call.id,
@@ -105,6 +144,8 @@ export function pairToolResults(messages: AgentMessage[]): {
     }
   }
 
-  if (!changed) return { messages, patched: 0, dropped: 0 }
+  // Whatever is left had no call to answer: an orphan, or a duplicate answer.
+  for (const queue of results.values()) dropped += queue.length
+
   return { messages: result, patched: patched.size, dropped }
 }

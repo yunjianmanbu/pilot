@@ -7,6 +7,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RunEvent } from '../shared/types'
 import type { AppLogEntry } from './app-log'
+import { runInBackground } from './background'
 import {
   DEFAULT_SUPERVISOR_SETTINGS,
   SUPERVISOR_HISTORY_LIMIT,
@@ -113,6 +114,7 @@ export class SupervisorService {
     }
   }
 
+  /** @background-isolated 见 tests/background-isolation.test.ts：写盘失败只记日志，不上抛。 */
   private async persist(): Promise<void> {
     const payload = JSON.stringify({ version: STATE_VERSION, ...this.state }, null, 2)
     await writeFile(this.stateFile, payload, 'utf8').catch((error: unknown) => {
@@ -182,16 +184,24 @@ export class SupervisorService {
     const intervalMs = this.state.settings.intervalMinutes * 60 * 1000
     this.state.nextRunAt = new Date(this.now().getTime() + intervalMs).toISOString()
     this.timer = setTimeout(() => {
-      void this.run('schedule')
-        .catch((error: unknown) => {
-          this.deps.log?.({
-            area: 'supervisor',
-            event: 'round.failed',
-            level: 'warn',
-            detail: { message: error instanceof Error ? error.message : String(error) },
-          })
-        })
-        .finally(() => this.restart())
+      // 优化轮次要建索引、扫工作区并跑基准：同样进副线队列，会话在跑时让路。
+      void runInBackground(
+        'supervisor:cycle',
+        () =>
+          this.run('schedule').then(
+            () => undefined,
+            (error: unknown) => {
+              this.deps.log?.({
+                area: 'supervisor',
+                event: 'round.failed',
+                level: 'warn',
+                detail: { message: error instanceof Error ? error.message : String(error) },
+              })
+              throw error
+            },
+          ),
+        { whenIdle: true, timeoutMs: 60 * 60_000 },
+      ).finally(() => this.restart())
     }, intervalMs)
     // 优化轮次不该阻止应用退出。
     this.timer.unref?.()

@@ -79,7 +79,7 @@ export const en: Record<string, string> = {
   "默认审批模式不是「全部自动」":
     "the default approval mode is not Fully automatic (a session can still switch to it)",
   "token 总量上限低于 100000": "the token cap is below 100000",
-  "步数上限低于 20": "the step cap is below 20",
+  "步数上限低于 20 且不是「不限」": "the step cap is below 20 and not set to unlimited",
   "；": "; ",
   "自主探索学习": "Autonomous learning",
   "允许智能体从白名单公开站点只读搜集资料、自己决定做什么任务，并把来源、任务与阶段成果记在工作区的 .pilot/learning 账本里。开启后请求仍只允许 GET/HEAD：抓到的内容只落在工作区，任何上传、提交、发布、推送类命令都会被拒绝；每个阶段成果都要你点头才算完成。":
@@ -699,8 +699,11 @@ export const en: Record<string, string> = {
   "一次最多上传 {v1} 个文件": "Up to {v1} files per upload",
   "松开即可附件：图片随消息发送，其它文件上传到工作区":
     "Drop to attach: images travel with the message, other files go into the workspace",
-  "最大步数": "Max steps",
-  "最大步数需要在 1 到 1,000 之间。": "Max steps must be between 1 and 1,000.",
+  "最大步数（软上限）": "Max steps (soft limit)",
+  "最大步数需要在 {v1} 到 {v2} 之间（0 = 不限）。":
+    "Max steps must be between {v1} and {v2} (0 = unlimited).",
+  "0 = 不限 · 有进展时最多延展到 {v1} 步":
+    "0 = unlimited · extends up to {v1} while progress continues",
   "最近 30 天": "Last 30 days",
   "最近 7 天": "Last 7 days",
   "最近会话": "Recent sessions",
@@ -767,6 +770,20 @@ export const en: Record<string, string> = {
   "还没有网页授权记录。": "No authorized page yet.",
   "撤销": "Revoke",
   "模型": "Model",
+  "可从下拉选择，也可直接手填": "Pick from the list or type the name yourself",
+  "模型名称": "Model name",
+  "模型列表": "Model list",
+  "推荐": "Suggested",
+  "已取到该地址的最新模型名": "Latest names fetched from this endpoint",
+  "展开模型列表": "Show the model list",
+  "刷新模型列表": "Refresh the model list",
+  "用当前 Key 向厂商获取最新模型名": "Ask the provider for its current model names using this key",
+  "正在获取模型列表…": "Loading the model list…",
+  "没有匹配的模型，可直接手填": "No matching model; type the name directly",
+  "已从 {v1} 取到最新模型名": "Latest names fetched from {v1}",
+  "显示本机缓存的列表，点刷新可重新获取": "Showing the cached list; refresh to fetch again",
+  "显示内置清单，填好 Key 后点刷新可取到最新模型名": "Showing the built-in list; add a key and refresh for the latest names",
+  "（{v1} 个可选）": " ({v1} available)",
   "标签": "Tag",
   "最多四个字，如“个人”“公司A”": "Up to four characters, e.g. “Personal” or “Acme”.",
   "不超过四字": "Four characters max",
@@ -1739,6 +1756,15 @@ export const en: Record<string, string> = {
   "实测更优": "Measured better",
   "实测更差": "Measured worse",
   "实测无明显差异": "No measurable difference",
+  "实测已失效": "Measurement voided",
+  "旧实测已失效：{v1}；重新跑一次实测才能启用。":
+    "The recorded measurement is void: {v1}. Run the benchmark again before enabling this version.",
+  "旧实测已失效：{v1}；重新跑一次实测对比才能重新启用。":
+    "The recorded measurement is void: {v1}. Run the benchmark again before re-enabling this version.",
+  "这份数据没有记录是哪一版题库量的，无法和当前题库 v{v1} 比较；重新实测才有参考价值。":
+    "This record does not say which task-library revision produced it, so it cannot be compared with the current library v{v1}. Measure again before trusting it.",
+  "这份数据是在题库 v{v2} 上量的，当前题库已经是 v{v1}；两者不能直接比较，重新实测才有参考价值。":
+    "This record was measured against task library v{v2}, while the current one is v{v1}; the two are not comparable. Measure again before trusting it.",
   "样本不足": "Not enough samples",
   "候选 {v1} 胜 / {v2} 负 / {v3} 平": "candidate: {v1} better / {v2} worse / {v3} tied",
   "任务通过率": "Tasks passed",
@@ -1810,17 +1836,60 @@ export const en: Record<string, string> = {
   "缺少文件参数，请从主界面重新打开。":
     "No file was given; open it again from the main window.",
 
-  // 产出质量闸门与小铃铛
+  // 文件预览：PDF / Word / Excel / PowerPoint 解析
+  "文档预览": "Document preview",
+  "正在解析文档…": "Parsing the document…",
+  "渲染中…": "Rendering…",
+  "上一页": "Previous page",
+  "下一页": "Next page",
+  "备注": "Notes",
+  "用系统应用打开": "Open with a system application",
+  "没有拿到这个文件的读取地址。": "No readable address was obtained for this file.",
+  "文件超过 64 MB，应用内预览会拖慢界面，请用系统应用打开。":
+    "The file is over 64 MB: previewing it here would slow the interface down, so open it with a system application.",
+  "这个文档有密码保护，无法在应用内打开。":
+    "This document is password-protected and cannot be opened in the app.",
+  "文件结构损坏，或者扩展名和真实格式对不上。":
+    "The file structure is damaged, or the extension does not match the real format.",
+  "PDF 文件不完整，或者不是标准的 PDF。":
+    "The PDF is incomplete or is not a standard PDF.",
+  "这个文件暂时无法在应用内渲染。": "This file cannot be rendered in the app right now.",
+  "这个表格没有可预览的内容（可能是空的或被隐藏了）。":
+    "This spreadsheet has nothing to preview (it may be empty or hidden).",
+  "这个演示文稿里没有找到幻灯片。": "No slides were found in this presentation.",
+  "这类文档还不支持应用内预览": "This kind of document cannot be previewed in the app yet",
+  "可以在系统应用里打开查看（.doc / .xls / .ppt / .odt 等旧格式请用系统应用）。":
+    "You can open it with a system application (legacy formats such as .doc / .xls / .ppt / .odt need one).",
+  "表格较大，只显示前 {v1} 行 × {v2} 列（共 {v3} 行 × {v4} 列）。":
+    "The table is large: showing the first {v1} rows × {v2} columns of {v3} rows × {v4} columns.",
+  "大纲预览：文字与图片按阅读顺序排列，不含原版式":
+    "Outline preview: text and images in reading order, without the original layout",
+  "这一页没有可提取的文字或图片。": "This page has no text or images to extract.",
+  "演示文稿页数较多，只显示前 200 页。":
+    "The presentation has many slides; only the first 200 are shown.",
+
+  // 产出质量闸门与通知中心
   "已记录（未超过基线）": "Recorded (did not beat the baseline)",
   "等待你授权": "Waiting for your authorization",
   "已批准，待打包": "Approved, not packaged yet",
   "打包中…": "Packaging…",
   "已打包发布": "Packaged",
   "打包失败": "Packaging failed",
-  "{v1} 个更优版本等待授权": "{v1} better version(s) awaiting your authorization",
-  "产出质量 {v1} 分（点击查看评估指标）": "Output quality {v1} (click for the metrics)",
-  "产出质量闸门：尚未建立基线": "Quality gate: no baseline yet",
-  "产出质量与更优版本": "Output quality and better versions",
+  "通知与提醒": "Notifications and reminders",
+  "{v1} 条未读通知": "{v1} unread notification(s)",
+  "{v1} 个工具调用等待审批": "{v1} tool call(s) awaiting approval",
+  "{v1} 个工具调用等待你审批，请在会话里处理。": "{v1} tool call(s) are waiting for your approval; handle them in the session.",
+  "{v1} 条未读": "{v1} unread",
+  "没有未读通知：提醒会留在列表里": "Nothing unread; reminders stay in the list",
+  "全部已读": "Mark all read",
+  "还没有通知。会话中的提示、更新与后台任务提醒都会留在这里。": "No notifications yet. Tips from sessions, update notices and background-task reminders are kept here.",
+  "看评估分数、裁决候选版本：超过基线才会生成候选":
+    "See the score and rule on candidate builds; a candidate only appears once it beats the baseline",
+  "还没有质量数据：先选择一个工作区，再让评估模型打分。": "No quality data yet: select a workspace, then let the judge model score it.",
+  "应用": "App",
+  "后台任务": "Background task",
+  "审批": "Approval",
+  "更新": "Update",
   "产出质量": "Output quality",
   "现行版本 {v1} 分 · 指标集 v{v2}": "Current version {v1} · metric set v{v2}",
   "尚未建立基线：下一次评估将成为基线": "No baseline yet: the next evaluation becomes it",
@@ -1841,16 +1910,16 @@ export const en: Record<string, string> = {
   "评估模型评分 + 运行记录统计；权重随评估自动调优（指标集 v{v1}）":
     "Evaluation-model score plus run-record statistics; weights re-tune automatically (metric set v{v1})",
   "产出质量闸门": "Output quality gate",
-  "让探索任务围绕可度量的产出质量展开：由你在下面配置的评估模型按可自动调优的指标给当前产出打分，分数高于现行基线时，在 App 顶部小铃铛和桌面通知里提醒你。它不会自己上线：只有你在铃铛里批准某个候选版本后，才会用固定脚本打包。评估模型不可用时仍记录客观指标，只是缺少评审分。":
-    "Turns exploration into work on measurable output quality: the evaluation model you configure below scores the current output against tunable metrics, and when the score beats the current baseline the bell in the title bar and a desktop notification tell you. Nothing ships on its own: packaging only runs with a fixed script after you approve a specific candidate in the bell. If the evaluation model is unavailable the objective metrics are still recorded, just without a review score.",
+  "让探索任务围绕可度量的产出质量展开：由你在下面配置的评估模型按可自动调优的指标给当前产出打分，分数高于现行基线时，顶栏三个点菜单里的产出质量项会亮角标，并发一条桌面通知。它不会自己上线：只有你在产出质量面板里批准某个候选版本后，才会用固定脚本打包。评估模型不可用时仍记录客观指标，只是缺少评审分。":
+    "Turns exploration into work on measurable output quality: the evaluation model you configure below scores the current output against tunable metrics, and when the score beats the current baseline the Output quality item in the title-bar menu gets a badge and a desktop notification appears. Nothing ships on its own: packaging only runs with a fixed script after you approve a specific candidate in the Output quality panel. If the evaluation model is unavailable the objective metrics are still recorded, just without a review score.",
   "授权后执行的打包命令": "Packaging command run after authorization",
   "只提供白名单脚本，批准候选版本后原样运行、不接受附加参数。选“不自动打包”时，批准只更新质量基线。":
     "Only allowlisted scripts are offered; they run as-is with no extra arguments after you approve a candidate. With \"do not package\" selected, approving only updates the quality baseline.",
   "不自动打包（只更新基线）": "Do not package (baseline only)",
   "打包到目录（package:dir）": "Package to a directory (package:dir)",
   "指标重调频次": "Metric re-tune frequency",
-  "每评估多少次重新计算一次指标权重（低分与无样本维度会被重新分配比重）。填 0 关闭自动调优，改为在铃铛里手动重调。":
-    "How many evaluations pass before metric weights are recomputed (weak and unmeasured dimensions get re-weighted). Set 0 to turn automatic tuning off and re-tune by hand from the bell.",
+  "每评估多少次重新计算一次指标权重（低分与无样本维度会被重新分配比重）。填 0 关闭自动调优，改为在产出质量面板里手动重调。":
+    "How many evaluations pass before metric weights are recomputed (weak and unmeasured dimensions get re-weighted). Set 0 to turn automatic tuning off and re-tune by hand from the Output quality panel.",
 
   "插件": "Plugins",
   "插件视图": "Plugin views",
@@ -2241,6 +2310,11 @@ export const en: Record<string, string> = {
   "删除这条定时任务？": "Delete this scheduled task?",
   "上次执行失败": "Last run failed",
   "上次 {v1}": "Last {v1}",
+  "最近触发：{v1}": "Recent runs: {v1}",
+  "{v1} 已触发": "{v1} started",
+  "{v1} 失败": "{v1} failed",
+  "已经连续 {v1} 次失败，先暂停或改一下任务描述再试":
+    "Failed {v1} times in a row. Pause it or reword the task before trying again.",
   "没有定时任务": "No scheduled tasks",
   "正在汇总所有会话的定时任务…": "Collecting scheduled tasks from every session…",
   "{v1} 项定时任务": "{v1} scheduled tasks",
@@ -2344,13 +2418,22 @@ export const en: Record<string, string> = {
   "报错触发": "On error",
   "一次运行失败后自动反思；10 分钟内的连续失败只跑一次，避免烧额度。":
     "Reflect after a failed run; repeated failures within 10 minutes run once to save quota.",
-  "固定时间触发": "On schedule",
-  "按间隔或每天固定时刻自动反思；到点后一分钟内开始。":
-    "Reflect every N minutes or at a fixed time each day; it starts within a minute of the slot.",
+  "自动触发反思": "On schedule",
+  "按版本变化、间隔或每天固定时刻自动反思；到点后一分钟内开始。":
+    "Reflect when the app version changes, every N minutes, or at a fixed time each day; it starts within a minute.",
   "反思模型": "Reflection model",
   "默认跟随会话模型；换成独立模型可以让反思不受当前任务上下文影响。":
     "Defaults to the session model; an independent model keeps reflection clear of the current task context.",
-  "定时方式": "Schedule",
+  "触发方式": "Trigger mode",
+  "升级到新版本后自动反思一次：高速迭代期一版一个行为，按版本切分才看得清这版改了什么。版本长期不变时每 7 天兜底一次。":
+    "Reflect once after each upgrade: while the app changes fast, one version means one behaviour, so only a per-version slice shows what that version changed. If the version never changes it still checks in every 7 days.",
+  "版本变化时": "When the version changes",
+  "版本基线": "Version baseline",
+  "上一次反思记录的应用版本": "App version recorded by the last reflection",
+  "上次反思：v{v1}；升级后会自动再反思一次。":
+    "Last reflected v{v1}; the next upgrade reflects again automatically.",
+  "还没有版本基线；下次自动触发时会记下当前版本。":
+    "No version baseline yet; the next automatic run records the current version.",
   "按间隔": "Every N minutes",
   "每天固定时刻": "Fixed time each day",
   "间隔分钟": "Interval (minutes)",
@@ -2434,8 +2517,8 @@ export const en: Record<string, string> = {
   "共 {v1} 类通知，已选 {v2} 类。未勾选的事件不会发信。":
     "{v1} notification types, {v2} selected. Unchecked events are never mailed.",
   "至少选择一个反思问题域。": "Pick at least one reflection topic.",
-  "Pilot 按报错或固定时间对自己提问：会话压缩、存储、页面设计、项目结构、代码、执行效率、输出质量和交互体验哪里还能更好。":
-    "Pilot asks itself on error or on a schedule: where can session compaction, storage, page design, project structure, code, execution efficiency, output quality and interaction still improve.",
+  "Pilot 按升级、报错或你选的时刻对自己提问：会话压缩、存储、页面设计、项目结构、代码、执行效率、输出质量和交互体验哪里还能更好。":
+    "Pilot asks itself on upgrade, on error or at a schedule you pick: where can session compaction, storage, page design, project structure, code, execution efficiency, output quality and interaction still improve.",
   "自主优化": "Self-optimization",
   "按信号在护栏内自己开一轮修复会话":
     "Driven by signals, open one repair session inside the guardrails",
@@ -2534,4 +2617,273 @@ export const en: Record<string, string> = {
   "模型密钥与偏好见左下角「模型」「偏好」。":
     "Model keys and preferences live in “Models” and “Preferences” at the bottom left.",
   "设置（{v1} 项进化草稿待确认）": "Settings ({v1} evolution draft(s) awaiting review)",
+  "对话卡点":
+    "Run trail",
+  "看这次运行停在哪一步、停了多久":
+    "See which step a run stopped at, and for how long",
+  "（没有匹配的日志）":
+    "(no matching logs)",
+  "运行日志":
+    "Runtime log",
+  "主进程健康、副线队列、进行中的会话与最近日志都在这里。会话看起来「卡住」时，先看第一行：延迟和卡顿为 0 说明主进程没被堵，慢在模型或网络。":
+    "Main-process health, the background queue, running sessions and recent logs all live here. When a session looks stuck, read the first line: a latency and stall count of 0 means the main process is not blocked, so the delay is in the model or the network.",
+  "每 4 秒自动刷新，关闭后只看手动刷新结果":
+    "Refreshes every 4 seconds; turn it off to see only manual refreshes",
+  "自动刷新中":
+    "Auto-refreshing",
+  "已暂停刷新":
+    "Refresh paused",
+  "读取运行状态失败：{v1}":
+    "Failed to read runtime state: {v1}",
+  "事件循环延迟":
+    "Event loop latency",
+  "最差 {v1}，累计卡顿 {v2} 次":
+    "Worst {v1}, {v2} stalls in total",
+  "主进程已运行":
+    "Main process up for",
+  "启动于 {v1}":
+    "Started at {v1}",
+  "副线队列":
+    "Background queue",
+  "同一时刻只跑一个，有会话时主动让路":
+    "One job at a time, and it yields while a session runs",
+  "进行中的会话":
+    "Running sessions",
+  "按启动时间，最久的在最前":
+    "By start time, longest first",
+  "正在跑什么":
+    "What is running",
+  "副线任务与对话并行，任一副线阻塞都不会挡住对话":
+    "Background work runs alongside the conversation; a stuck background job never blocks it",
+  "查看卡点":
+    "View trail",
+  "当前没有进行中的会话。":
+    "No sessions are running right now.",
+  "排队于 {v1}":
+    "Queued at {v1}",
+  "，让路 {v1} 次":
+    ", yielded {v1} time(s)",
+  "问题聚合":
+    "Issue summary",
+  "最近 {v1} 条日志按领域与事件归并，先看这里再翻明细":
+    "The last {v1} log entries grouped by area and event; read this before the details",
+  "{v1} 次":
+    "{v1} time(s)",
+  "最近日志里没有错误或警告。":
+    "No errors or warnings in the recent log.",
+  "日志明细":
+    "Log details",
+  "写盘前已脱敏；正文与密钥不会出现在这里":
+    "Redacted before writing; message bodies and keys never appear here",
+  "按领域筛选":
+    "Filter by area",
+  "全部领域":
+    "All areas",
+  "搜索事件或细节":
+    "Search events or details",
+  "打开日志目录":
+    "Open log folder",
+  "没有匹配的日志。":
+    "No matching logs.",
+  "显示最近 {v1} 条（共扫描 {v2} 条）。":
+    "Showing the latest {v1} of {v2} scanned entries.",
+  "这个会话当前没有运行中的任务。":
+    "This session has no running task right now.",
+  "主进程自身有卡顿（延迟 {v1}），先看运行日志里的 runtime 事件。":
+    "The main process itself is stalling (latency {v1}); check the runtime events in the runtime log first.",
+  "主进程响应正常（延迟 {v1}），慢的地方在下面这个节点。":
+    "The main process responds normally (latency {v1}); the delay is in the node below.",
+  "看这次运行停在哪一步、停了多久；再决定是等、是停、还是去看日志。":
+    "See which step this run stopped at and for how long, then decide whether to wait, stop it, or open the log.",
+  "准备运行":
+    "Preparing",
+  "空闲":
+    "Idle",
+  "已结束":
+    "Finished",
+  "第 {v1} 步 · 已调用工具 {v2} 次":
+    "Step {v1} · {v2} tool call(s)",
+  "节点轨迹":
+    "Node timeline",
+  "新的在上；每一步都带时间，可用来判断是哪一段突然不动了":
+    "Newest first; every step is timestamped so you can see which stretch stopped moving",
+  "还没有事件。运行一次任务后这里会逐条记下每个节点。":
+    "No events yet. Run a task once and every node is recorded here.",
+  "同一时刻的其他负载":
+    "Other load at the same time",
+  "副线任务不会阻塞对话，但能解释「为什么慢了一点」":
+    "Background jobs never block the conversation, but they explain why something felt slower",
+  "排队中":
+    "Queued",
+  "用时 {v1}":
+    "Took {v1}",
+  "副线队列是空的。":
+    "The background queue is empty.",
+  "主进程延迟 {v1}，累计卡顿 {v2} 次。":
+    "Main-process latency {v1}, {v2} stalls in total.",
+  "复制轨迹":
+    "Copy trail",
+  "超级 Pilot":
+    "Super Pilot",
+  "未能打开应急窗口":
+    "Could not open the emergency window",
+  "未能启动":
+    "Failed to start",
+  "启动中":
+    "Starting",
+  "就绪":
+    "Ready",
+  "超级 Pilot（应急通道）":
+    "Super Pilot (emergency channel)",
+  "Pilot 自己出问题时用它修自己。它有自己的存储、回退点与运行器，不排队也不参与回退点维护，所以主引擎卡住时仍能发指令。它拥有自身源码与配置的完整读写权限，但不改会话与设置。":
+    "Use it to repair Pilot when Pilot itself misbehaves. It has its own store, checkpoints and runner, never queues and never joins checkpoint maintenance, so it still takes instructions while the main engine is stuck. It has full read/write access to its own source and config, but does not touch sessions or settings.",
+  "刷新状态":
+    "Refresh status",
+  "正在打开…":
+    "Opening…",
+  "打开超级 Pilot 窗口":
+    "Open the Super Pilot window",
+  "未配置模型":
+    "No model configured",
+  "完全自主档":
+    "Full autonomy",
+  "已生效":
+    "Active",
+  "未生效":
+    "Inactive",
+  "读写、联网、改自身源码都不逐次确认":
+    "File writes, network access and source edits need no confirmation",
+  "原因未知":
+    "Unknown reason",
+  "最近错误":
+    "Latest error",
+  "数据面目录":
+    "Data directory",
+  "工作区（自身源码）":
+    "Workspace (its own source)",
+  "模型通道来源":
+    "Model channel",
+  "已从主客户端继承；主客户端读不出来时用自己存下的那份":
+    "Inherited from the main client; falls back to its own saved copy when the main client cannot be read",
+  "独立配置：主客户端不可用时仍然可用":
+    "Own configuration: works even when the main client is unavailable",
+  "应急会话":
+    "Emergency session",
+  "应急窗口里的「一键抢救」会取消卡住的运行、放掉待批审批，并把每一步成功与否列出来。它不能绕过 JS 单线程：主进程被同步死循环堵住时，正确出路仍是重启应用，日志面板能看到当时的延迟。":
+    "“Rescue” in the emergency window cancels stuck runs, releases pending approvals and lists whether each step succeeded. It cannot bypass the single JS thread: when a synchronous loop blocks the main process, restarting stays the right fix, and the log panel shows the latency at the time.",
+  "正在连接…":
+    "Connecting…",
+  "开始运行":
+    "Run started",
+  "步":
+    "steps",
+  "工具结果":
+    "Tool result",
+  "上下文压缩":
+    "Context compacted",
+  "条":
+    "messages",
+  "运行结束":
+    "Run finished",
+  "桥不可用：请从主界面的设置里重新打开这个窗口。":
+    "Bridge unavailable: reopen this window from Settings in the main window.",
+  "已发出，等待超级 Pilot 接管…":
+    "Sent, waiting for Super Pilot to pick it up…",
+  "指令已进入运行。":
+    "The instruction is now running.",
+  "发送失败":
+    "Send failed",
+  "已请求取消。":
+    "Cancellation requested.",
+  "已换新会话。":
+    "Started a new session.",
+  "换会话失败":
+    "Could not start a new session",
+  "抢救完成：所有动作都成功。":
+    "Rescue finished: every action succeeded.",
+  "抢救完成，但有动作失败，见左侧明细。":
+    "Rescue finished with failures; see the details on the left.",
+  "完全自主档已生效：读写、联网、改自身源码都不再逐次确认。":
+    "Full autonomy is active: file writes, network access and source edits are no longer confirmed one by one.",
+  "完全自主档未生效":
+    "Full autonomy is not active",
+  "应急通道 · 独立数据面 · 全权限":
+    "Emergency channel · Own data store · Full permissions",
+  "通道来源":
+    "Channel source",
+  "已从主客户端继承模型通道":
+    "Model channel inherited from the main client",
+  "独立配置（主客户端不可用时仍可用）":
+    "Own configuration (still works when the main client is unavailable)",
+  "动作":
+    "Actions",
+  "换新会话":
+    "New session",
+  "一键抢救":
+    "Rescue",
+  "打开数据目录":
+    "Open data folder",
+  "「一键抢救」只做放开卡住的东西：取消主引擎所有运行、放掉待批审批、停止这里的运行。它不改任何业务数据。":
+    "“Rescue” only releases what is stuck: it cancels every main-engine run, releases pending approvals and stops runs here. It changes no business data.",
+  "运行轨迹":
+    "Run timeline",
+  "还没有事件。发一条指令就能看到步骤。":
+    "No events yet. Send an instruction to see the steps.",
+  "这个窗口用于修 Pilot 自己。示例：":
+    "This window repairs Pilot itself. Examples:",
+  "「读一下运行日志，找出最近一次对话卡住的原因并修掉」":
+    "\"Read the runtime log, find why the last conversation got stuck and fix it\"",
+  "「检查回退点维护是否还在占住主线程，必要时调低上限」":
+    "\"Check whether checkpoint maintenance is still holding the main thread, and lower the cap if needed\"",
+  "告诉超级 Pilot 要修什么（Ctrl+Enter 发送）":
+    "Tell Super Pilot what to fix (Ctrl+Enter to send)",
+  "取消运行":
+    "Cancel run",
+  "它不看主界面的设置：审批固定「全部自动 + 完全自主」，改自身源码后能直接构建验证。":
+    "It ignores the main window's settings: approvals are fixed to “all automatic + full autonomy”, so it can edit its own source and build to verify right away.",
+  "会话报告": "Session report",
+  "这一轮做了什么、改了什么、验证过没有":
+    "What this run did, what it changed, and whether it was verified",
+  "这一轮改了什么、验证过没有；复制或存成 Markdown 交给别人看。":
+    "What changed this run and whether it was verified. Copy it or save it as Markdown to hand to someone else.",
+  "报告只读，不含任何凭据。": "The report is read-only and contains no credentials.",
+  "正在汇总这一轮…": "Summarizing this run…",
+  "这一轮还没有可报告的运行。": "This run has nothing to report yet.",
+  "已验证": "Verified",
+  "未验证": "Not verified",
+  "改了 {v1} 个文件": "{v1} files changed",
+  "{v1} 次失败": "{v1} failures",
+  "复制 Markdown": "Copy Markdown",
+  "保存为 Markdown": "Save as Markdown",
+  "已保存到 {v1}": "Saved to {v1}",
+  "Hook 规则": "Hook rules",
+  "规则文件放在工作区的 .pilot/hooks/*.md：正则需要一行说明，命中时给模型一句提示，action 为 block 时拦下那一次调用。规则不能执行命令，也不能放宽权限或沙箱判定。":
+    "Rule files live in the workspace at .pilot/hooks/*.md: a pattern needs one line of explanation, a match shows the model that hint, and action block stops that single call. Rules cannot run commands and cannot loosen permission or sandbox decisions.",
+  "先打开一个工作区。": "Open a workspace first.",
+  "工作区钩子当前是关闭的（运行参数里的「工作区钩子」）。规则仍然可以编辑，但不会生效。":
+    "Workspace hooks are currently off (Run settings → Workspace hooks). Rules can still be edited, but they will not take effect.",
+  "还没有规则。常见写法：命令执行里匹配 rm -rf 并设为阻断，或写文件里匹配 console.log 并设为提示。":
+    "No rules yet. Common patterns: match rm -rf on command calls and block it, or match console.log on file writes and warn.",
+  "有 {count} 个规则文件没被采用：": "{count} rule files were not loaded:",
+  "另有 {count} 条命令钩子（.pilot/hooks.json：pre_tool {pre} / post_edit {post} / stop {stop}）。命令钩子需要直接编辑该文件。":
+    "Plus {count} command hooks (.pilot/hooks.json: pre_tool {pre} / post_edit {post} / stop {stop}). Command hooks have to be edited in that file directly.",
+  "没有命令钩子。需要跑 lint、跑测试这类动作时，直接编辑 .pilot/hooks.json。":
+    "No command hooks. For things like running lint or tests, edit .pilot/hooks.json directly.",
+  "规则名": "Rule name",
+  "生效时机": "Applies to",
+  "处理方式": "Action",
+  "正则": "Pattern",
+  "大小写不敏感，匹配对象由生效时机决定":
+    "Case-insensitive; what it matches depends on when it applies",
+  "给模型的说明": "Message for the model",
+  "命中时原样显示": "Shown as-is when it matches",
+  "先问用户，再强推远端分支。": "Ask the user first, then force-push the remote branch.",
+  "保存规则": "Save rule",
+  "新建规则": "New rule",
+  "删除规则「{name}」？这会从工作区删掉 {source}，无法撤销。":
+    "Delete rule “{name}”? This deletes {source} from the workspace and cannot be undone.",
+  "已删除 {name}。": "Deleted {name}.",
+  "已新建规则 {name}（{source}）。": "Created rule {name} ({source}).",
+  "名称与正则不能为空，且正则必须能编译。":
+    "Name and pattern are required, and the pattern has to compile.",
 }

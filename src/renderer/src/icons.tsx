@@ -41,7 +41,7 @@ export const FeedbackIcon = (props: IconProps) => (
   </Base>
 )
 
-/** 质量闸门的小铃铛：只有存在待裁决的更优版本时才亮。 */
+/** 顶栏通知中心的小铃铛：有未读提醒或待审批调用时亮。 */
 export const BellIcon = (props: IconProps) => (
   <Base {...props}>
     <path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7" />

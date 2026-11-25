@@ -388,6 +388,8 @@ export class MailNotifier {
   private sentAt: number[] = []
   private lastByEvent = new Map<NotifyEventId, number>()
   private seen: string[] = []
+  /** 已记过日志的缺失项：同一原因只报一次，免得刷满 app 日志。 */
+  private loggedSkips = new Set<string>()
 
   constructor(deps: MailNotifierDeps) {
     this.deps = deps
@@ -404,7 +406,13 @@ export class MailNotifier {
       if (!settings.notifyEmailEnabled) return
       const enabled = normalizeNotifyEmailEvents(settings.notifyEmailEvents)
       if (!enabled.includes(id)) return
-      if (!this.mailReady(settings)) return
+      // 缺项以前是静默 return：用户只看到「没收到邮件」，日志里一片安静，
+      // 没法判断是没配置还是 SMTP 挂了。现在留一条带原因的日志。
+      const missing = this.missingForMail(settings)
+      if (missing) {
+        this.logSkip(id, missing)
+        return
+      }
       const key = dedupeKey(event)
       if (this.seen.includes(key)) return
       const last = this.lastByEvent.get(id) ?? 0
@@ -441,9 +449,30 @@ export class MailNotifier {
 
   /** 邮箱是否具备发信条件：地址、主机、授权码三项都齐。 */
   mailReady(settings: NotifyMailSettings): boolean {
-    if (!parseRecipients(settings.reflectEmailTo)[0]) return false
-    if (!this.deps.smtp()) return false
-    return this.deps.hasPassword()
+    return this.missingForMail(settings) === null
+  }
+
+  /**
+   * 缺哪一项。名字直接进日志，所以按「读者该去设置页补哪一栏」来写：
+   * `no-recipient` = 邮箱地址空，`no-smtp-host` = SMTP 主机空，`no-password` = 授权码空。
+   */
+  private missingForMail(settings: NotifyMailSettings): string | null {
+    if (!parseRecipients(settings.reflectEmailTo)[0]) return 'no-recipient'
+    if (!this.deps.smtp()) return 'no-smtp-host'
+    if (!this.deps.hasPassword()) return 'no-password'
+    return null
+  }
+
+  /** 同一原因只记一次：每封被跳过的信都写一行，反而会把真正的线索淹掉。 */
+  private logSkip(id: NotifyEventId, reason: string): void {
+    if (this.loggedSkips.has(reason)) return
+    this.loggedSkips.add(reason)
+    this.deps.log?.({
+      area: 'mail-notify',
+      event: 'skipped',
+      level: 'warn',
+      detail: { id, reason },
+    })
   }
 
   private remember(key: string): void {
@@ -457,6 +486,7 @@ export class MailNotifier {
   }
 
   /** 串行发送：SMTP 一次一个连接，并发只会互相拖到超时。 */
+  /** @background-isolated 见 tests/background-isolation.test.ts：异常在本方法内收口。 */
   private async drain(): Promise<void> {
     if (this.running) return
     this.running = true
@@ -487,6 +517,8 @@ export class MailNotifier {
           )
           if (!rendered) continue
           const result = await this.send(config, { to, ...rendered })
+          // 发出去就说明配置齐了：清掉「缺项」记忆，下次再缺时能重新报警。
+          if (result.ok) this.loggedSkips.clear()
           this.deps.log?.({
             area: 'mail-notify',
             event: result.ok ? 'sent' : 'failed',
@@ -505,6 +537,15 @@ export class MailNotifier {
           })
         }
       }
+    } catch (error) {
+      // 排空队列是副线：单封邮件遇到任何意外都不能变成只会沉进全局日志的 rejection，
+      // 否则这轮队列后面的通知就静默丢了。
+      this.deps.log?.({
+        area: 'mail-notify',
+        event: 'queue.failed',
+        level: 'warn',
+        detail: { message: error instanceof Error ? error.message : String(error) },
+      })
     } finally {
       this.running = false
     }

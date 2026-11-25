@@ -15,6 +15,7 @@ import { CheckIcon, RefreshIcon, SparkIcon, XIcon } from '../icons'
 import { t } from '../i18n'
 import { BillingPanel, balanceSummary } from './BillingPanel'
 import { Field } from './form-fields'
+import { ModelNameField } from './ModelNameField'
 import { SelectMenu } from './SelectMenu'
 
 const MAX_MODEL_RESOURCES = 12
@@ -383,15 +384,14 @@ disabled: !resource.enabled,
                     }
                   />
                 </Field>
-                <Field label={t("模型")}>
-                  <input
-                    className="text-input mono"
+                <Field label={t("模型")} hint={t("可从下拉选择，也可直接手填")}>
+                  <ModelNameField
                     value={resource.model}
-                    placeholder="qwen-plus"
-                    onChange={(event) =>
-                      patchResource(resource.id, { model: event.target.value })
-                    }
-                    spellCheck={false}
+                    baseUrl={resource.baseUrl}
+                    apiKey={resource.apiKey}
+                    providerId={resource.hasKey ? resource.id : ''}
+                    hasSavedKey={resource.hasKey}
+                    onChange={(model) => patchResource(resource.id, { model })}
                   />
                 </Field>
                 <Field label={t("标签")} hint={t("最多四个字，如“个人”“公司A”")}>

@@ -22,6 +22,7 @@ import {
 import type { ClientConnection, ConnectionSocket } from '../types'
 import type { CompanionServer } from '../server'
 
+/** @background-isolated 见 tests/background-isolation.test.ts：整个 body 包在 try/catch 里，读文件失败降为 404。 */
 export async function handleHttp(
   server: CompanionServer,
   request: IncomingMessage,

@@ -42,7 +42,7 @@ const LIST_GAP = 6
  * 抽屉和侧栏面板也一样：绝对定位的下拉列表展开到容器外就会被切掉一半。
  * 这种情况下把列表渲染到 body 上并用 fixed 定位，弹框里选模型、选频率才不会看不见。
  */
-function isClipped(node: HTMLElement | null): boolean {
+export function isClipped(node: HTMLElement | null): boolean {
   let parent = node?.parentElement ?? null
   while (parent && parent !== document.body) {
     const style = window.getComputedStyle(parent)

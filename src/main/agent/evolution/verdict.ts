@@ -238,6 +238,10 @@ export function applyActivationGate(
   review: ProfileReview,
   comparison: ProfileComparison | undefined,
   extraReasons: string[] = [],
+  /** Why a stored comparison was dropped as evidence; only read when there is
+   * no comparison, so "never measured" and "measured under an old ruler" stop
+   * reading as the same sentence. */
+  voidedReason?: string,
 ): ProfileReview {
   const reasons: string[] = []
   if (!review.pass) reasons.push('独立评审未通过')
@@ -248,7 +252,11 @@ export function applyActivationGate(
     reasons.push('删除旧规则缺少评审理由')
   }
   if (!comparison) {
-    reasons.push('尚未与当前版本完成实测对比')
+    reasons.push(
+      voidedReason
+        ? `旧实测已失效：${voidedReason}；请重新跑一次实测对比`
+        : '尚未与当前版本完成实测对比',
+    )
   } else if (comparison.verdict === 'worse') {
     reasons.push('实测比当前版本更差')
   } else if (comparison.verdict === 'inconclusive') {

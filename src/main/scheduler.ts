@@ -34,6 +34,7 @@ export class AgentScheduler {
     this.timer = null
   }
 
+  /** @background-isolated 见 tests/background-isolation.test.ts：异常在本方法内收口。 */
   private async tick(): Promise<void> {
     if (this.ticking) return
     this.ticking = true
@@ -78,6 +79,20 @@ export class AgentScheduler {
           })
         }
       }
+    } catch (error) {
+      // 定时轮询是副线：任何意外失败只报警。主进程不会因此退出（diagnostics 统一兜住
+      // 未处理的 rejection），但这一轮已排好的任务会被整批跳过，用户只看到「定时任务不动了」。
+      // 所以在这里收口并明确告知，下一轮 tick 照常重试。
+      const message = error instanceof Error ? error.message : String(error)
+      const english = this.store.uiLocale() === 'en'
+      this.emit({
+        type: 'notice',
+        level: 'warn',
+        topic: 'schedule',
+        message: english
+          ? `Scheduled task poll failed: ${localizeMain(message, 'en')}`
+          : `定时任务轮询失败：${message}`,
+      })
     } finally {
       this.ticking = false
     }

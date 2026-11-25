@@ -57,6 +57,17 @@ describe('loadHookConfig', () => {
       stop: [],
     })
   })
+  it('keeps the match glob and drops an oversized one', async () => {
+    const root = await workspaceWithHooks({
+      pre_tool: [
+        { tool: 'run_shell', match: '*git commit*', command: 'node' },
+        { match: 'x'.repeat(260), command: 'node' },
+      ],
+    })
+    const config = await loadHookConfig(root)
+    expect(config.pre_tool[0]?.match).toBe('*git commit*')
+    expect(config.pre_tool[1]?.match).toHaveLength(200)
+  })
 })
 
 describe('HookService', () => {
@@ -96,6 +107,60 @@ describe('HookService', () => {
     await expect(
       service.beforeTool(call, tool, new AbortController().signal),
     ).resolves.toEqual({ blocked: false, output: '' })
+  })
+
+  it('runs a hook only when the call arguments match its glob', async () => {
+    const root = await workspaceWithHooks({
+      pre_tool: [
+        {
+          tool: 'run_shell',
+          match: '*git commit*',
+          command: 'node',
+          args: ['-e', "console.error('run the tests first'); process.exit(2)"],
+        },
+      ],
+    })
+    const service = new HookService(root, true)
+    await service.load()
+    const signal = new AbortController().signal
+    const shell: AgentToolDefinition = {
+      name: 'run_shell',
+      description: 'shell',
+      inputSchema: { type: 'object', properties: {} },
+      risk: 'exec',
+    }
+    const commit: ToolCall = {
+      id: '2',
+      name: 'run_shell',
+      arguments: { command: 'git', args: ['commit', '-m', 'x'] },
+    }
+    const blocked = await service.beforeTool(commit, shell, signal)
+    expect(blocked.blocked).toBe(true)
+    expect(blocked.output).toContain('run the tests first')
+
+    const status: ToolCall = {
+      id: '3',
+      name: 'run_shell',
+      arguments: { command: 'git', args: ['status'] },
+    }
+    await expect(service.beforeTool(status, shell, signal)).resolves.toEqual({
+      blocked: false,
+      output: '',
+    })
+  })
+
+  it('runs post_edit hooks only for the tools they name', async () => {
+    const root = await workspaceWithHooks({
+      post_edit: [
+        { tool: 'write_file|apply_patch', command: 'node', args: ['-e', "console.log('linted')"] },
+      ],
+    })
+    const service = new HookService(root, true)
+    await service.load()
+    const signal = new AbortController().signal
+    expect(await service.afterEdit(call, signal)).toContain('linted')
+    const other: ToolCall = { id: '4', name: 'create_skill', arguments: { name: 'x' } }
+    expect(await service.afterEdit(other, signal)).toBeNull()
   })
 
   it('returns post_edit and stop output', async () => {

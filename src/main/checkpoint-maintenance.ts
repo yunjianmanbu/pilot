@@ -20,7 +20,20 @@ export function onRunSettled(sessionId: string, status: string, runId?: string):
     workspacePath && runId ? appState.store.run(workspacePath, runId) : undefined
   log(runSettledEntry({ sessionId, status, run }))
   if (status === 'cancelled') return
-  void appState.moduleCheck?.noteRunSettled(sessionId).catch(() => undefined)
+  // 自检重扫是副线：它要遍历整个工作区，绝不能占住刚刚结束这一轮所需的收尾工作。
+  // 交给副线队列后，会话空闲时才跑；同一会话连续结束两次只排一次。
+  const moduleCheck = appState.moduleCheck
+  const background = appState.background
+  if (!moduleCheck) return
+  if (background) {
+    background.schedule(
+      `module-check:${sessionId}`,
+      () => moduleCheck.noteRunSettled(sessionId),
+      { whenIdle: true, delayMs: 1_000, timeoutMs: 5 * 60_000 },
+    )
+    return
+  }
+  void moduleCheck.noteRunSettled(sessionId).catch(() => undefined)
 }
 
 /**
@@ -28,25 +41,38 @@ export function onRunSettled(sessionId: string, status: string, runId?: string):
  * persisted estimate is over budget or a periodic audit is due. It still waits
  * until the app is idle so a rare cleanup does not land in the middle of the
  * first model round trip, and retries after a run finishes.
+ *
+ * 走副线队列（单并发 + 会话让路）而不是自己管定时器：调度、重试、超时与
+ * 「谁在占主线程」的记录都收在一处，设置里的运行日志才能答出「当时在跑什么」。
  */
 export function scheduleCheckpointMaintenance(delayMs = 5_000): void {
-  if (appState.checkpointMaintenanceTimer) clearTimeout(appState.checkpointMaintenanceTimer)
-  appState.checkpointMaintenanceTimer = setTimeout(() => {
-    appState.checkpointMaintenanceTimer = null
-    const service = appState.checkpoints
-    if (!service) return
-    if (appState.store.anyRunning()) {      // A run is in flight; try again once it is done.
-      appState.pendingCheckpointMaintenance = true
-      return
-    }
-    appState.pendingCheckpointMaintenance = false
-    void service
-      .maintain({ maxBytes: appState.store.settings().checkpointMaxBytes })
-      .catch(() => undefined)
-  }, delayMs)
-  appState.checkpointMaintenanceTimer.unref?.()
+  const service = appState.checkpoints
+  const scheduler = appState.background
+  if (!service || !scheduler) return
+  // 已有同名任务在队列里或正在跑：不动标记，交给它自己收尾（背景队列本身会去重）。
+  const current = scheduler
+    .snapshot()
+    .find((job) => job.name === 'checkpoint-maintenance')?.state
+  if (current === 'queued' || current === 'deferred' || current === 'running') return
+  appState.pendingCheckpointMaintenance = false
+  void scheduler
+    .schedule(
+      'checkpoint-maintenance',
+      () => service.maintain({ maxBytes: appState.store.settings().checkpointMaxBytes }),
+      { whenIdle: true, delayMs, timeoutMs: 10 * 60_000, retryDelayMs: 30_000 },
+    )
+    .then((result) => {
+      // 让路次数用完、超时或失败都意味着这一次维护「没做成」：把标记留给下一次
+      // 运行结束补排（掉线式维护比抢主线程更安全），否则磁盘只会在下次重启前一直涨。
+      if (result === 'skipped' || result === 'timeout' || result === 'failed') {
+        appState.pendingCheckpointMaintenance = true
+      }
+    })
+    .catch(() => undefined)
 }
 
 export function onRunFinished(): void {
-  if (appState.pendingCheckpointMaintenance) scheduleCheckpointMaintenance(0)
+  // 有事的那一轮刚结束：把让路期间没做成的维护补上（队列自己再判一次空闲）。
+  // 不用 0 延迟：用户点「继续」时下一轮几乎立刻开始，立刻起跑就会和它抢主线程。
+  if (appState.pendingCheckpointMaintenance) scheduleCheckpointMaintenance(2_000)
 }

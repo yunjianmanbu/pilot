@@ -172,12 +172,29 @@ export function normalizeReflectionTriggers(value: unknown): ReflectionTriggers 
   }
 }
 
-/** 固定时间触发的两种粒度：按间隔，或每天固定时刻。 */
-export type ReflectionScheduleMode = 'interval' | 'daily'
+/**
+ * 自动触发的三种粒度：
+ * - `version`：应用版本变化后就反思一次。高速迭代期一版一个行为，反思按版本切分
+ *   才看得清「这一版改了什么」；版本不变时按 `REFLECTION_VERSION_FALLBACK_MINUTES`
+ *   兜底，长期不升级也不会永远等不到自省。
+ * - `interval`：每 N 分钟。
+ * - `daily`：每天固定时刻。
+ */
+export type ReflectionScheduleMode = 'interval' | 'daily' | 'version'
 
 export function normalizeReflectionScheduleMode(value: unknown): ReflectionScheduleMode {
-  return value === 'interval' ? 'interval' : 'daily'
+  if (value === 'interval' || value === 'daily') return value
+  return 'version'
 }
+
+/** 版本模式的兜底静默期：版本没变也要自己看一次，否则不升级的用户永远不反思。 */
+export const REFLECTION_VERSION_FALLBACK_MINUTES = 7 * 24 * 60
+
+/**
+ * 版本变了但这次反思没成（模型不可用等）时的重试间隔：
+ * 不加速度限制就会每分钟重试一次，一天几百封失败通知。
+ */
+export const REFLECTION_VERSION_RETRY_MINUTES = 10
 
 export const REFLECTION_INTERVAL_MIN_MINUTES = 30
 export const REFLECTION_INTERVAL_MAX_MINUTES = 60 * 24 * 7
@@ -215,9 +232,9 @@ export function clampReflectionInterval(minutes: unknown): number {
 }
 
 /**
- * 固定时间触发是否到点。`lastRunAt` 是上一次「反思成功」的时间，空表示从没跑过。
+ * 自动触发是否到点。`lastRunAt` 是上一次「反思成功」的时间，空表示从没跑过。
  * 从没跑过时按“启用后先跑一次建锦点”处理：每天模式下当天时刻已过就算到点，
- * 间隔模式下直接到点——否则刚开间隔模式的用户永远等不到第一次自问。
+ * 间隔与版本模式下直接到点——否则刚切换模式的用户永远等不到第一次自问。
  */
 export function reflectionScheduleDue(
   input: {
@@ -227,12 +244,33 @@ export function reflectionScheduleDue(
     lastRunAt: string | null
     /** 上一次排定触发被处理的时间，避免到点后每轮 tick 重复触发。 */
     lastScheduledAt?: string | null
+    /** 当前应用版本；`version` 模式下与上次反思的版本比较。 */
+    currentVersion?: string
+    /** 上一次成功反思时记录的应用版本。 */
+    lastVersion?: string
   },
   now: Date,
 ): boolean {
   const lastRun = parseTime(input.lastRunAt)
   const lastScheduled = parseTime(input.lastScheduledAt ?? null)
   const anchor = Math.max(lastRun ?? 0, lastScheduled ?? 0)
+  if (input.mode === 'version') {
+    const current = (input.currentVersion ?? '').trim()
+    const last = (input.lastVersion ?? '').trim()
+    // 从没跑过：立即跑一次，把当前版本落成基线。
+    if (anchor === 0) return true
+    if (!current) {
+      // 宿主报不出当前版本（未注入或启动早期）：版本比较无从判断，退回兜底静默期。
+      // 不能走下面的重试窗口，否则拿不到版本的机器会每 10 分钟反思一次，白烧额度。
+      return now.getTime() - anchor >= REFLECTION_VERSION_FALLBACK_MINUTES * 60_000
+    }
+    if (last === current) {
+      // 版本没变：只在兜底静默期到点时才再自省一次。
+      return now.getTime() - anchor >= REFLECTION_VERSION_FALLBACK_MINUTES * 60_000
+    }
+    // 版本变了（或旧存档还没基线）：立即反思，但刚失败过先等一个重试窗口，不追着每分钟重试。
+    return now.getTime() - anchor >= REFLECTION_VERSION_RETRY_MINUTES * 60_000
+  }
   if (input.mode === 'interval') {
     const intervalMs = clampReflectionInterval(input.intervalMinutes) * 60_000
     // 没有任何锦点时先跑一次，把 lastScheduledAt 落盘成为后续间隔的锦点。
@@ -304,6 +342,8 @@ export interface ReflectionReport {
   id: string
   createdAt: string
   trigger: ReflectionTrigger
+  /** 这次反思对应的应用版本；`version` 模式据此判断下一次何时到点。 */
+  version?: string
   /** 实际使用的模型名（资源里的 model 字段）。 */
   model: string
   topics: ReflectionTopicId[]
@@ -452,6 +492,9 @@ export function sanitizeReflectionReport(value: unknown): ReflectionReport | nul
     createdAt,
     trigger,
     model: cleanText(record['model'], 200),
+    ...(typeof record['version'] === 'string' && record['version'].trim()
+      ? { version: cleanText(record['version'], 40) }
+      : {}),
     topics: normalizeReflectionTopics(record['topics']),
     skipped,
     summary: cleanText(record['summary'], 800),

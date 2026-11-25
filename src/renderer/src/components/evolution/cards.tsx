@@ -20,6 +20,7 @@ import {
   STATUS_LABELS,
   canForce,
   cycleTone,
+  evidenceVoided,
   isReady,
   needsChinese,
   needsMeasurement,
@@ -69,6 +70,7 @@ export function ProfileCard({
   baseline,
   busy,
   runs,
+  suiteVersion,
   global = false,
   onReview,
   onBenchmark,
@@ -82,6 +84,8 @@ export function ProfileCard({
   profile: ProfileVersion
   baseline: ProfileVersion | null
   busy: string | null
+  /** Current task-library revision; a comparison from another one is stale. */
+  suiteVersion?: number
   /** Recorded runs of this workspace, for the before/after measurement. */
   runs: RunRecord[]
   global?: boolean
@@ -97,6 +101,16 @@ export function ProfileCard({
 }) {
   const scope: 'workspace' | 'global' = global ? 'global' : 'workspace'
   const review = profile.review
+  // The stored review carries the numbers of its own moment. Re-check them
+  // against the pair and the task library in force now, so the panel never
+  // offers an enable button that the gate will refuse as stale evidence.
+  const voided = evidenceVoided(review, {
+    candidateId: profile.id,
+    activeProfileId: baseline?.id ?? null,
+    suiteVersion,
+  })
+  const ready = !voided && isReady(review)
+  const forceable = !voided && canForce(review)
   const strategy = [
     profile.strategy.maxSteps !== undefined ? t("最多 {v1} 步", { v1: profile.strategy.maxSteps }) : null,
     profile.strategy.temperature !== undefined ? t("温度 {v1}", { v1: profile.strategy.temperature }) : null,
@@ -230,6 +244,11 @@ export function ProfileCard({
                     review.comparison.candidateId !== profile.id) ||
                   (review.comparison.currentId ?? null) !== (baseline?.id ?? null)
                 }
+                staleSuite={
+                  suiteVersion !== undefined &&
+                  review.comparison.suiteVersion !== suiteVersion
+                }
+                suiteVersion={suiteVersion}
               />
             ) : null}
             {review.activation && !review.activation.ready ? (
@@ -284,7 +303,7 @@ export function ProfileCard({
                 )}
                 {t("独立评审")}</button>
             ) : null}
-            {review?.pass && isReady(review) ? (
+            {review?.pass && ready ? (
               <button
                 type="button"
                 className="button primary small"
@@ -299,7 +318,7 @@ export function ProfileCard({
                 {global ? t("启用此全局版本") : t("启用此版本")}
               </button>
             ) : null}
-            {canForce(review) ? (
+            {forceable ? (
               <button
                 type="button"
                 className="button danger ghost small"
@@ -308,11 +327,13 @@ export function ProfileCard({
               >
                 {t("仍然启用")}</button>
             ) : null}
-            {review && !isReady(review) && !canForce(review) ? (
+            {review && !ready && !forceable ? (
               <span className="profile-active-note">
-                {needsMeasurement(review)
-                  ? t("还没有实测对比，先跑一次实测才能启用。")
-                  : (review.activation?.reasons?.[0] ?? t("当前还不满足启用条件。"))}
+                {voided
+                  ? t('旧实测已失效：{v1}；重新跑一次实测才能启用。', { v1: voided })
+                  : needsMeasurement(review)
+                    ? t("还没有实测对比，先跑一次实测才能启用。")
+                    : (review.activation?.reasons?.[0] ?? t("当前还不满足启用条件。"))}
               </span>
             ) : null}
             {onPromote && !global ? (
@@ -362,7 +383,11 @@ export function ProfileCard({
           </span>
         ) : null}
         {profile.status === 'retired' ? (
-          needsMeasurement(review) ? (
+          voided ? (
+            <span className="profile-active-note">
+              {t('旧实测已失效：{v1}；重新跑一次实测对比才能重新启用。', { v1: voided })}
+            </span>
+          ) : needsMeasurement(review) ? (
             <span className="profile-active-note">
               {t("这个版本没有实测记录，先跑一次实测对比才能重新启用。")}
             </span>
@@ -470,19 +495,28 @@ export function CycleTimeline({ cycle }: { cycle: EvolutionCycle }) {
 export function BenchmarkCard({
   comparison,
   stale = false,
+  staleSuite = false,
+  suiteVersion,
 }: {
   comparison: ProfileComparison
   /** The measured pair no longer matches what is in force, so don't quote it as current. */
   stale?: boolean
+  /** Measured against another task-library revision: the numbers cannot be
+   * compared with the current ruler at all, so "no clear difference" would lie. */
+  staleSuite?: boolean
+  /** Current task-library revision, for the stale note. */
+  suiteVersion?: number
 }) {
+  const voided = stale || staleSuite
   const tone =
-    comparison.verdict === 'better'
+    voided ? 'even' : comparison.verdict === 'better'
       ? 'pass'
       : comparison.verdict === 'worse'
         ? 'fail'
         : 'even'
-  const label =
-    comparison.verdict === 'better'
+  const label = voided
+    ? t('实测已失效')
+    : comparison.verdict === 'better'
       ? t('实测更优')
       : comparison.verdict === 'worse'
         ? t('实测更差')
@@ -505,6 +539,18 @@ export function BenchmarkCard({
       {stale ? (
         <p className="benchmark-judges">
           {t('这组数据测的是另一个版本组合，当前生效版本已经变了；重新跑一次实测才有参考价值。')}
+        </p>
+      ) : null}
+      {staleSuite ? (
+        <p className="benchmark-judges">
+          {comparison.suiteVersion === undefined
+            ? t('这份数据没有记录是哪一版题库量的，无法和当前题库 v{v1} 比较；重新实测才有参考价值。', {
+                v1: suiteVersion ?? '-',
+              })
+            : t('这份数据是在题库 v{v2} 上量的，当前题库已经是 v{v1}；两者不能直接比较，重新实测才有参考价值。', {
+                v1: suiteVersion ?? '-',
+                v2: comparison.suiteVersion,
+              })}
         </p>
       ) : null}
       {comparison.suiteVersion ? (

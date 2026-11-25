@@ -69,8 +69,46 @@ describe('pairToolResults', () => {
     expect(answeredIds(compacted)).toEqual(['a2'])
   })
 
-  it('pairs an interrupted run that persisted the calls and no results', () => {
-    const interrupted: AgentMessage[] = [
+  it('moves a real result back in front of the message that displaced it', () => {
+    // Compaction kept the result but pushed it behind a later user message. The
+    // id is answered, so an "answered at all" check passes, yet the provider
+    // still rejects the request. The real output must survive the repair.
+    const displaced: AgentMessage[] = [
+      { role: 'user', content: 'read it' },
+      assistantWith([call('e1')]),
+      { role: 'user', content: '继续' },
+      { role: 'tool', toolCallId: 'e1', name: 'read_file', content: 'real output' },
+    ]
+    const result = pairToolResults(displaced)
+    expect(result.patched).toBe(0)
+    expect(result.dropped).toBe(0)
+    expect(result.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'user',
+    ])
+    expect(result.messages[2]?.content).toBe('real output')
+  })
+
+  it('moves a displaced result past a second assistant turn', () => {
+    const displaced: AgentMessage[] = [
+      assistantWith([call('f1')]),
+      assistantWith([call('f2')]),
+      toolResult('f2'),
+      toolResult('f1'),
+    ]
+    const result = pairToolResults(displaced)
+    expect(result.patched).toBe(0)
+    expect(result.messages.map((message) => message.toolCallId)).toEqual([
+      undefined,
+      'f1',
+      undefined,
+      'f2',
+    ])
+  })
+
+  it('pairs an interrupted run that persisted the calls and no results', () => {    const interrupted: AgentMessage[] = [
       { role: 'user', content: 'do three things' },
       assistantWith([call('b1'), call('b2'), call('b3')]),
       { role: 'user', content: '从上次中断的地方继续完成当前任务' },

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { UIEvent } from 'react'
 import type {
   MessageSearchHit,
   Plan,
@@ -257,6 +258,20 @@ export function Sidebar({
   }, [query])
 
   const current = workspaces.find((workspace) => workspace.path === activeWorkspace) ?? null
+  const listRef = useRef<HTMLDivElement>(null)
+  /** 用户自己滚到的位置：程序恢复和浏览器夹紧都不许覆盖它。 */
+  const listScroll = useRef(0)
+  /** 列表行刚被换过的时间点：紧接的那几下 scroll 是浏览器夹紧，不是用户滚的。 */
+  const layoutChangedAt = useRef(0)
+  /** 正在把位置写回去：这期间的 scroll 事件不算用户操作。 */
+  const restoring = useRef(false)
+  const trackScroll = (event: UIEvent<HTMLDivElement>) => {
+    if (restoring.current) return
+    // 切工作区会给列表换一批行，内容高度瞬时变短时浏览器会把 scrollTop
+    // 夹小并补发 scroll 事件；那不是用户意思，不能拿它覆盖记忆位置。
+    if (performance.now() - layoutChangedAt.current < 250) return
+    listScroll.current = event.currentTarget.scrollTop
+  }
   const activeKey = activeWorkspace ? pathKey(activeWorkspace) : ''
   const running = sessions.filter((session) => session.running).length
   const workspaceByKey = useMemo(
@@ -339,6 +354,30 @@ export function Sidebar({
       (a, b) => b.latest - a.latest || a.name.localeCompare(b.name, 'zh-CN'),
     )
   }, [activeProject, query, runningOnly, sessions, sort, workspaceByKey])
+
+  // 切换工作区会给会话列表换一批行，内容高度瞬时变化时浏览器会把 scrollTop
+  // 夹到新高度内（看起来就是「列表跳回顶部」）。记住用户看的位置，重绘后补回去。
+  useLayoutEffect(() => {
+    const node = listRef.current
+    if (!node) return
+    // 这一帧的 scroll 事件可能是浏览器夹紧 scrollTop 引发的，记下时间点让
+    // trackScroll 忽略它，免得把「跳回顶部」写进记忆位置。
+    layoutChangedAt.current = performance.now()
+    const target = listScroll.current
+    if (target <= 0) return
+    if (Math.abs(node.scrollTop - target) < 1) return
+    restoring.current = true
+    node.scrollTop = target
+    // 内容这时可能还没长回来（换工作区那一帧），下一帧再补一次。
+    const frame = window.requestAnimationFrame(() => {
+      if (Math.abs(node.scrollTop - target) >= 1) node.scrollTop = target
+      restoring.current = false
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      restoring.current = false
+    }
+  }, [groups])
 
   const toggleGroup = (key: string) => {
     setCollapsed((previous) => {
@@ -453,7 +492,7 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="session-list">
+      <div className="session-list" ref={listRef} onScroll={trackScroll}>
         {query.trim().length >= 2 && (hits.length > 0 || searching) ? (
           <div className="search-hits">
             <div className="search-hits-head">

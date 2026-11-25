@@ -426,6 +426,27 @@ describe('persisted comparison', () => {
     expect(sanitizeProfileComparison('better')).toBeUndefined()
   })
 
+  it('keeps the ruler a verdict was measured against', () => {
+    // Dropping these on load made every stored verdict look like it came from
+    // an unknown ruler, so the suite-version check could never fire.
+    const restored = sanitizeProfileComparison({
+      ...recorded,
+      suiteVersion: 5,
+      ceilingTier: 'L3',
+      ceilingPassRate: 0.25,
+      suiteSaturated: false,
+      currentId: null,
+    })
+    expect(restored?.suiteVersion).toBe(5)
+    expect(restored?.ceilingTier).toBe('L3')
+    expect(restored?.ceilingPassRate).toBe(0.25)
+    expect(restored?.suiteSaturated).toBe(false)
+    // Null means "measured with no active profile", which is not the same as a
+    // legacy record that never wrote the field.
+    expect(restored?.currentId).toBeNull()
+    expect(restored && 'currentId' in restored).toBe(true)
+  })
+
   it('clamps numbers and drops non-string reasons from a hand-edited file', () => {
     const restored = sanitizeProfileComparison({
       ...recorded,
@@ -479,27 +500,44 @@ describe('reusable measurement', () => {
     candidate: { successRate: 1, avgSteps: 4, avgTokens: 90 },
     reasons: [],
     at: '2026-01-01T00:00:00.000Z',
+    suiteVersion: 4,
     currentId: 'v2',
     candidateId: 'v3',
   }
 
   it('keeps a measurement of the same pair', () => {
-    expect(reusableComparison(measured, 'v3', 'v2')).toBe(measured)
+    expect(reusableComparison(measured, 'v3', 'v2', 4)).toBe(measured)
   })
 
   it('drops a measurement taken against a different active version', () => {
-    expect(reusableComparison(measured, 'v3', 'v1')).toBeUndefined()
-    expect(reusableComparison(measured, 'v3', null)).toBeUndefined()
+    expect(reusableComparison(measured, 'v3', 'v1', 4)).toBeUndefined()
+    expect(reusableComparison(measured, 'v3', null, 4)).toBeUndefined()
   })
 
   it('drops a measurement of a different candidate', () => {
-    expect(reusableComparison(measured, 'v4', 'v2')).toBeUndefined()
+    expect(reusableComparison(measured, 'v4', 'v2', 4)).toBeUndefined()
   })
 
   it('drops a legacy entry that never recorded what it compared', () => {
     expect(
-      reusableComparison({ ...measured, currentId: undefined, candidateId: undefined }, 'v3', 'v2'),
+      reusableComparison(
+        { ...measured, currentId: undefined, candidateId: undefined },
+        'v3',
+        'v2',
+        4,
+      ),
     ).toBeUndefined()
+  })
+
+  it('drops a verdict measured against another revision of the library', () => {
+    expect(reusableComparison(measured, 'v3', 'v2', 5)).toBeUndefined()
+  })
+
+  it('drops a verdict that never recorded which library produced it', () => {
+    // This is the shape of every comparison written before revisions were
+    // recorded: 55 of the 58 stored ones had no version at all, and treating
+    // them as valid is what kept every later candidate gated shut.
+    expect(reusableComparison({ ...measured, suiteVersion: undefined }, 'v3', 'v2', 5)).toBeUndefined()
   })
 })
 

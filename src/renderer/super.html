@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http: https: ws: wss:; object-src 'none'; base-uri 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pilot · 超级 Pilot</title>
+    <!--
+      这页刻意不引 styles.css：主界面样式坏掉（或主进程把主题变量读成空）时，
+      应急页面仍要能显示出字。样式全部内联在这里，颜色带兜底值。
+    -->
+    <style>
+      :root {
+        color-scheme: dark light;
+        --sp-bg: #191a1c;
+        --sp-panel: #232529;
+        --sp-line: #34373c;
+        --sp-text: #d8dbe0;
+        --sp-soft: #9aa0a8;
+        --sp-accent: #4c8dff;
+        --sp-danger: #e5534b;
+        --sp-ok: #3fb950;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --sp-bg: #fbfbfb;
+          --sp-panel: #ffffff;
+          --sp-line: #e2e4e8;
+          --sp-text: #23252a;
+          --sp-soft: #5c6169;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: var(--sp-bg);
+        color: var(--sp-text);
+        font: 13px/1.55 system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--sp-line);
+      }
+      header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+      header .hint { color: var(--sp-soft); font-size: 12px; }
+      .badge {
+        margin-left: auto;
+        border: 1px solid var(--sp-line);
+        border-radius: 999px;
+        padding: 2px 10px;
+        font-size: 12px;
+        color: var(--sp-soft);
+      }
+      .badge.ok { color: var(--sp-ok); border-color: var(--sp-ok); }
+      .badge.bad { color: var(--sp-danger); border-color: var(--sp-danger); }
+      .badge.busy { color: var(--sp-accent); border-color: var(--sp-accent); }
+      main {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(300px, 380px) 1fr;
+      }
+      @media (max-width: 760px) {
+        main { grid-template-columns: 1fr; overflow: auto; }
+      }
+      aside {
+        border-right: 1px solid var(--sp-line);
+        padding: 12px;
+        overflow: auto;
+      }
+      @media (max-width: 760px) { aside { border-right: 0; border-bottom: 1px solid var(--sp-line); } }
+      .k { color: var(--sp-soft); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+      .v { word-break: break-all; font-size: 12px; margin-bottom: 8px; white-space: pre-wrap; }
+      .card {
+        background: var(--sp-panel);
+        border: 1px solid var(--sp-line);
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+      }
+      .card h2 { font-size: 12px; margin: 0 0 8px; font-weight: 600; color: var(--sp-soft); }
+      .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+      button {
+        font: inherit;
+        background: var(--sp-panel);
+        color: var(--sp-text);
+        border: 1px solid var(--sp-line);
+        border-radius: 6px;
+        padding: 5px 10px;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) { border-color: var(--sp-accent); }
+      button:disabled { opacity: .5; cursor: default; }
+      button.primary { background: var(--sp-accent); border-color: var(--sp-accent); color: #fff; }
+      button.danger { color: var(--sp-danger); border-color: var(--sp-danger); }
+      section.chat {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        padding: 12px;
+        gap: 10px;
+      }
+      .messages {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .msg {
+        border: 1px solid var(--sp-line);
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: var(--sp-panel);
+      }
+      .msg .meta { font-size: 11px; color: var(--sp-soft); margin-bottom: 4px; display: flex; gap: 8px; }
+      .msg.err { border-color: var(--sp-danger); }
+      .msg pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font: 12px/1.6 ui-monospace, 'Cascadia Mono', Consolas, monospace;
+      }
+      .composer { display: flex; flex-direction: column; gap: 8px; }
+      textarea {
+        width: 100%;
+        min-height: 76px;
+        resize: vertical;
+        font: 12px/1.6 ui-monospace, 'Cascadia Mono', Consolas, monospace;
+        color: var(--sp-text);
+        background: var(--sp-panel);
+        border: 1px solid var(--sp-line);
+        border-radius: 8px;
+        padding: 8px 10px;
+      }
+      .row { display: flex; gap: 8px; align-items: center; }
+      .note { color: var(--sp-soft); font-size: 11px; }
+      .note.bad { color: var(--sp-danger); }
+      .rescue { white-space: pre-wrap; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/super.tsx"></script>
+  </body>
+</html>

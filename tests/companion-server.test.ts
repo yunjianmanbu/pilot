@@ -364,6 +364,8 @@ async function createServer(
     trigger: 'manual' as const,
     model: 'deepseek-chat',
     topics: ['compaction-drift'],
+    // 本轮有一个域因缺证据没问：手机端详情页要把「为什么没问」说清楚。
+    skipped: [{ topic: 'page-design' as const, missing: ['runs' as const] }],
     summary: '摘'.repeat(240),
     findings: [
       {
@@ -524,6 +526,10 @@ async function createServer(
             clearReports: async () => {
               reflectCalls.push('clear')
               return reflectState() as never
+            },
+            setFindingStatus: async (reportId: string, findingId: string, status: string) => {
+              reflectCalls.push(`finding:${reportId}:${findingId}:${status}`)
+              return { report: { id: reportId } } as never
             },
           },
         }
@@ -1840,10 +1846,13 @@ describe('CompanionServer pairing and relay', () => {
         summary: string
         evidence: string
         durationMs: number
+        skipped: Array<{ topic: string; missing: string[] }>
         findings: Array<{ severity: string; observation: string }>
       }
     }).report
     expect(detail.summary).toHaveLength(240)
+    // 未提问的域连「缺哪类证据」一起下发，手机端才能解释而不是留白。
+    expect(detail.skipped).toEqual([{ topic: 'page-design', missing: ['runs'] }])
     expect(detail.evidence).toHaveLength(1_201)
     expect(detail.durationMs).toBe(1_234)
     expect(detail.findings).toHaveLength(2)
@@ -1870,6 +1879,22 @@ describe('CompanionServer pairing and relay', () => {
     const clearedReports = await call('req-11', 'reflect.reports.clear', {})
     expect(clearedReports).toMatchObject({ ok: true })
     expect(reflectCalls).toContain('clear')
+
+    // 结论三态：手机看完成结论直接标记，电脑端也会看到同一条状态。
+    const marked = await call('req-12', 'reflect.finding', {
+      reportId: 'reflect-3',
+      findingId: 'reflect-3#1',
+      status: 'done',
+    })
+    expect(marked).toMatchObject({ ok: true })
+    expect(reflectCalls).toContain('finding:reflect-3:reflect-3#1:done')
+
+    const missingFinding = await call('req-13', 'reflect.finding', {
+      reportId: 'reflect-3',
+      findingId: '',
+    })
+    expect(missingFinding).toMatchObject({ ok: false })
+    expect(String(missingFinding.error)).toContain('结论')
   })
 
   it('tells the phone to update when this desktop build has no reflection service', async () => {

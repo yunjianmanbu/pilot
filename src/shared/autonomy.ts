@@ -63,7 +63,12 @@ export function autonomyBlockers(input: AutonomyInput): AutonomyBlocker[] {
   const tokens = autonomyTokenBudget(input.maxTokens)
   if (tokens < AUTONOMY_MIN_TOKEN_BUDGET) blockers.push('token-budget')
   const steps = Number(input.maxSteps ?? 0)
-  if (!Number.isFinite(steps) || steps < AUTONOMY_MIN_STEPS) blockers.push('step-cap')
+  // `0` 是设置里的「不限」：循环会把它换成 UNLIMITED_STEPS_FALLBACK 作阀门，
+  // 远高于 AUTONOMY_MIN_STEPS，所以它同样算「预算可控」。把它当成「没设上限」
+  // 会让用户看到「填 0 反而不允许开启完全自主」这种自相矛盾的结论。
+  if (!Number.isFinite(steps) || steps < 0 || (steps > 0 && steps < AUTONOMY_MIN_STEPS)) {
+    blockers.push('step-cap')
+  }
   return blockers
 }
 

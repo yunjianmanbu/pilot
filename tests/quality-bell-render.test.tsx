@@ -1,12 +1,15 @@
 import './locale-zh.mjs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { QualityBell, QualityBellPanel } from '../src/renderer/src/components/QualityBell'
+import { NotificationCenter } from '../src/renderer/src/components/NotificationCenter'
+import { QualityBellPanel } from '../src/renderer/src/components/QualityBell'
+import { QualityDialog } from '../src/renderer/src/components/QualityDialog'
+import type { NoticeEntry } from '../src/renderer/src/notifications'
 import { defaultMetricSet, scoreMetrics } from '../src/shared/quality'
 import type { QualityCandidate, QualityState } from '../src/shared/types'
 
 /**
- * 铃铛是这条链路唯一由人看到的界面，所以直接渲染真实组件断言文案：
+ * 产出质量面板是这条链路唯一由人看到的界面，所以直接渲染真实组件断言文案：
  * 待授权候选必须同时出现分数、差值、理由、两个决策按钮，以及"批准=打包"的后果。
  */
 
@@ -69,60 +72,105 @@ function renderPanel(
   )
 }
 
-describe('QualityBell badge', () => {
-  it('有待授权候选时显示数字角标与提示', () => {
-    const html = renderToStaticMarkup(
-      <QualityBell
-        workspacePath="/ws"
+describe('NotificationCenter badge', () => {
+  const notice = (overrides: Partial<NoticeEntry> = {}): NoticeEntry => ({
+    id: 1,
+    message: '已复制',
+    level: 'info',
+    at: Date.now(),
+    source: 'app',
+    read: false,
+    ...overrides,
+  })
+
+  function renderCenter(overrides: Partial<Parameters<typeof NotificationCenter>[0]> = {}) {
+    return renderToStaticMarkup(
+      <NotificationCenter
+        open={false}
+        notices={[]}
+        pendingApprovals={0}
+        onOpenChange={noop}
+        onMarkAllRead={noop}
+        onClear={noop}
+        {...overrides}
+      />,
+    )
+  }
+
+  it('未读提醒与待审批一起计数，弹层默认关闭', () => {
+    const html = renderCenter({
+      notices: [notice(), notice({ id: 2, level: 'warn' })],
+      pendingApprovals: 1,
+    })
+    expect(html).toContain('quality-bell-badge')
+    expect(html).toContain('>3<')
+    expect(html).toContain('3 条未读通知')
+    expect(html).toContain('quality-bell-button alert')
+    expect(html).not.toContain('notice-pop')
+  })
+
+  it('没有未读、没有待审批时只显示普通铃铛，不报假数', () => {
+    const html = renderCenter({ notices: [notice({ read: true })] })
+    expect(html).not.toContain('quality-bell-badge')
+    expect(html).not.toContain('quality-bell-button alert')
+    expect(html).toContain('通知与提醒')
+  })
+
+  it('打开时把提醒历史列出来，并单独提示待审批的调用', () => {
+    const html = renderCenter({
+      open: true,
+      notices: [notice({ message: '这个配对请求已失效，请让手机重新扫码。', level: 'warn', source: 'session' })],
+      pendingApprovals: 2,
+    })
+    expect(html).toContain('这个配对请求已失效，请让手机重新扫码。')
+    expect(html).toContain('会话')
+    expect(html).toContain('2 个工具调用等待你审批')
+    expect(html).toContain('全部已读')
+  })
+
+  it('没有提醒时说明这里会留什么，而不是空面板', () => {
+    const html = renderCenter({ open: true })
+    expect(html).toContain('会话中的提示、更新与后台任务提醒都会留在这里')
+  })
+
+  it('质量裁决不在通知中心里：铃铛只管提醒与审批', () => {
+    const html = renderCenter({ open: true })
+    expect(html).not.toContain('产出质量')
+    expect(html).not.toContain('立即评估')
+    expect(html).not.toContain('notice-tabs')
+  })
+})
+
+describe('QualityDialog', () => {
+  function renderDialog(overrides: Partial<Parameters<typeof QualityDialog>[0]> = {}) {
+    return renderToStaticMarkup(
+      <QualityDialog
         state={state()}
         publishTarget="package:dir"
-        busy={false}
-        onDecide={noop}
-        onPublish={noop}
-        onEvaluate={noop}
-        onTune={noop}
-      />,
-    )
-    expect(html).toContain('quality-bell-badge')
-    expect(html).toContain('>1<')
-    expect(html).toContain('1 个更优版本等待授权')
-    expect(html).toContain('quality-bell-button alert')
-    // 弹层默认关闭：不占屏幕
-    expect(html).not.toContain('quality-pop')
-  })
-
-  it('只有已记录的候选时不亮角标，只报当前分数', () => {
-    const html = renderToStaticMarkup(
-      <QualityBell
         workspacePath="/ws"
-        state={state({ candidates: [candidate({ status: 'recorded', comparison: { better: false, delta: 1, regressions: [], reason: '未达门槛' } })] })}
-        publishTarget="none"
         busy={false}
+        onClose={noop}
         onDecide={noop}
         onPublish={noop}
         onEvaluate={noop}
         onTune={noop}
+        {...overrides}
       />,
     )
-    expect(html).not.toContain('quality-bell-badge')
-    expect(html).toContain('产出质量 70 分（点击查看评估指标）')
+  }
+
+  it('弹窗里渲染闸门面板，并自带关闭按钮', () => {
+    const html = renderDialog()
+    expect(html).toContain('aria-label="产出质量"')
+    expect(html).toContain('候选 #3')
+    expect(html).toContain('立即评估')
+    expect(html).toContain('aria-label="关闭"')
   })
 
-  it('没有工作区或没有状态时不渲染任何东西', () => {
-    expect(
-      renderToStaticMarkup(
-        <QualityBell
-          workspacePath={null}
-          state={state()}
-          publishTarget="none"
-          busy={false}
-          onDecide={noop}
-          onPublish={noop}
-          onEvaluate={noop}
-          onTune={noop}
-        />,
-      ),
-    ).toBe('')
+  it('没有工作区或质量数据时给出下一步，不渲染空白弹窗', () => {
+    const html = renderDialog({ workspacePath: null, state: null })
+    expect(html).toContain('先选择一个工作区')
+    expect(html).not.toContain('候选 #3')
   })
 })
 

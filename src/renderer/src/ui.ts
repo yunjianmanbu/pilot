@@ -88,6 +88,14 @@ export interface LiveRun {
   runId: string
   sessionId: string
   content: string
+  /**
+   * The run's answer, once it has been recognised as one. Text that arrives
+   * afterwards belongs to the process: a model that writes its report and then
+   * appends a verification recap used to replace the answer on screen, so the
+   * reader ended up looking at the recap and calling it the conclusion. The
+   * answer is frozen here and the late text goes to the step box instead.
+   */
+  answer?: string
   reasoning: string
   processText: string[]
   processReasoning: string[]
@@ -212,22 +220,12 @@ function attachToolResult(
   tool.durationMs = result.durationMs
 }
 
-/**
- * Whether a chunk of assistant text reads as a deliverable report rather than a
- * line of narration inside the process.
- *
- * Narration is one sentence ("先看一下目录", "再看另一处"). A result is a
- * document: a heading, a code fence or a table. Length alone is not enough, so
- * the shape has to match as well.
- */
-export function isDeliverableText(text: string): boolean {
-  const body = text.trim()
-  if (body.length < 320) return false
-  if (/^#{2,6}\s+\S/m.test(body)) return true
-  if (body.includes('```')) return true
-  const table = body.split(/\r?\n/).filter((line) => /^\s*\|.+\|\s*$/.test(line))
-  return table.length >= 2
-}
+// Shared with the loop: the renderer decides which chunk to show as the answer,
+// the loop decides whether a run has already delivered one. Imported for local
+// use and re-exported so existing imports keep working.
+import { isDeliverableText } from '../../shared/deliverable'
+
+export { isDeliverableText }
 
 /** Where each run's last step sits (a tool result or a tool-calling turn). */
 function lastStepIndexes(messages: StoredMessage[]): Map<string, number> {
@@ -252,10 +250,17 @@ function lastStepIndexes(messages: StoredMessage[]): Map<string, number> {
  * alone pushed that report into the collapsed execution box and left the reader
  * with only the closing sentence, so a report-shaped chunk counts as an answer
  * wherever it sits in the run.
+ *
+ * Only the *first* report-shaped chunk of a run is its answer, and once a run
+ * has an answer nothing it says afterwards is one. The live view follows the same
+ * rule (`appendLiveProcessText`), so a run shows one conclusion while it streams
+ * and one conclusion after a reload; before this, a short closing sentence was an
+ * answer block in the transcript but extra text under the answer while streaming.
  */
 export function answerMessageIds(messages: StoredMessage[]): Set<string> {
   const lastStep = lastStepIndexes(messages)
   const out = new Set<string>()
+  const deliveredRuns = new Set<string>()
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]!
     if (message.role !== 'assistant') continue
@@ -264,8 +269,12 @@ export function answerMessageIds(messages: StoredMessage[]): Set<string> {
     const calls = message.toolCalls?.length ?? 0
     const runId = message.runId
     const midRun = Boolean(runId) && (lastStep.get(runId!) ?? -1) > index
-    if (!calls && !midRun) out.add(message.id)
-    else if (isDeliverableText(body)) out.add(message.id)
+    if (isDeliverableText(body)) {
+      if (!runId || !deliveredRuns.has(runId)) out.add(message.id)
+      if (runId) deliveredRuns.add(runId)
+      continue
+    }
+    if (!calls && !midRun && !(runId && deliveredRuns.has(runId))) out.add(message.id)
   }
   return out
 }
@@ -650,6 +659,108 @@ export function transcriptText(messages: StoredMessage[]): string {
     }
   }
   return parts.join('\n\n')
+}
+
+/**
+ * Text the answer area should show for a run that is still streaming.
+ *
+ * Once the answer is frozen the answer area never changes again: everything the
+ * model writes afterwards is process (see `appendLiveProcessText`), which is
+ * also where the stored transcript puts it. Showing a closing line here used to
+ * cost more than it gave: the first few frames of a verification recap are too
+ * short to read as a report, so they appeared under the answer and then vanished
+ * when the text grew past the threshold — the reader watched a second conclusion
+ * appear, disappear and reappear in the step box.
+ */
+export function liveAnswerText(live: LiveRun | undefined): string {
+  if (!live) return ''
+  if (live.answer?.trim()) return live.answer
+  return live.content
+}
+
+const LIVE_NOTE_PREFIX = 'live-note-'
+
+/**
+ * Fold one streamed delta into a live run.
+ *
+ * Kept here rather than inside the renderer's event handler so the branching is
+ * testable: before the answer is frozen the text is the answer in progress, and
+ * after it the text grows the process box. Text must never be buffered invisibly
+ * in either case, or the reader watches a run that stopped moving.
+ */
+export function applyLiveDelta(
+  live: LiveRun,
+  delta: { text?: string; reasoning?: string },
+): LiveRun {
+  const withText = delta.text
+    ? live.answer
+      ? appendLiveProcessText(live, delta.text)
+      : { ...live, content: live.content + delta.text }
+    : live
+  return delta.reasoning
+    ? { ...withText, reasoning: withText.reasoning + delta.reasoning }
+    : withText
+}
+
+/**
+ * Append text to the live process box, growing the last streaming note.
+ *
+ * Called for every delta that arrives after the run's answer is frozen. The
+ * answer area stays still and the text is visible while it arrives, instead of
+ * being buffered invisibly until the next tool call settles the message.
+ */
+export function appendLiveProcessText(live: LiveRun, text: string): LiveRun {
+  if (!text) return live
+  const parts = live.parts ?? []
+  const last = parts[parts.length - 1]
+  if (last && last.kind === 'note' && last.key.startsWith(LIVE_NOTE_PREFIX)) {
+    const merged = [...parts.slice(0, -1), { ...last, text: last.text + text }]
+    const processText =
+      live.processText.length > 0
+        ? [...live.processText.slice(0, -1), live.processText[live.processText.length - 1]! + text]
+        : [text]
+    return { ...live, parts: merged, processText }
+  }
+  return {
+    ...live,
+    parts: [...parts, { kind: 'note', key: `${LIVE_NOTE_PREFIX}${live.step}`, text }],
+    processText: [...live.processText, text],
+  }
+}
+
+/**
+ * Close the text that is currently streaming into a live run.
+ *
+ * Called when a message ends: the first report-shaped text becomes the run's
+ * answer, and a second report-shaped text is carried into the process instead -
+ * a run that wrote its conclusion and then appended a verification recap used
+ * to show two equally formatted conclusions on screen, and the reader could not
+ * tell which one was the answer. A short closing line stays in the answer area
+ * because the stored transcript keeps it there too.
+ *
+ * A message boundary caused by a truncated answer (`freeze: false`) must not
+ * freeze a half-written report: the loop re-sends the partial answer, and the
+ * continuation would then be stranded in the step box.
+ */
+export function settleLiveAnswer(
+  live: LiveRun,
+  key: string,
+  options?: { freeze?: boolean },
+): LiveRun {
+  const text = live.content.trim() ? live.content : ''
+  if (!text) return live
+  const freeze = options?.freeze !== false
+  const report = isDeliverableText(text)
+  if (!live.answer) {
+    return freeze && report ? { ...live, answer: text, content: '' } : live
+  }
+  if (!report) return live
+  return {
+    ...live,
+    content: '',
+    processText: [...live.processText, text],
+    parts: [...(live.parts ?? []), { kind: 'note', key, text }],
+  }
 }
 
 export function emptyLiveRun(sessionId: string): LiveRun {

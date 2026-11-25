@@ -15,6 +15,7 @@ import {
   type ReflectionReport,
 } from '../shared/reflect'
 import { pruneProfiles } from '../core/profile-archive'
+import { BENCHMARK_SUITE_VERSION } from './agent/profile-benchmark-suite'
 import { MEMORY_ENTRY_MAX_CHARS, MEMORY_STORE_LIMIT, inferMemoryCategory } from '../shared/memory'
 import { shellInterpreterStatus } from './shell'
 import { localizeMain, localizeSessionTitle } from './localize'
@@ -63,6 +64,7 @@ import {
   BODY_KEYS,
   CONTEXT_SUMMARY_MAX_CHARS,
   SEARCH_INDEX_MIN_INTERVAL_MS,
+  MAX_SCHEDULED_RUNS,
   SessionBodyRef,
 } from './store-schema'
 
@@ -1069,6 +1071,7 @@ export class Store {
       reflectDailyTime: this.state.settings.reflectDailyTime,
       reflectTopics: [...this.state.settings.reflectTopics],
       reflectLastRunAt: this.state.settings.reflectLastRunAt,
+      reflectLastVersion: this.state.settings.reflectLastVersion,
       reflectEmailEnabled: this.state.settings.reflectEmailEnabled,
       notifyEmailEnabled: this.state.settings.notifyEmailEnabled,
       notifyEmailEvents: [...this.state.settings.notifyEmailEvents],
@@ -1427,6 +1430,39 @@ export class Store {
   ): void {
     if (info) this.runInfo.set(id, info)
     else this.runInfo.delete(id)
+  }
+
+  /**
+   * 正在跑的会话与它们的运行信息：诊断面板用它回答「到底谁在占用主进程」。
+   * 只读快照，不触发任何落盘。
+   */
+  activeRuns(): Array<{
+    sessionId: string
+    runId: string
+    instruction: string
+    startedAt: string
+    sessionTitle: string
+  }> {
+    const out: Array<{
+      sessionId: string
+      runId: string
+      instruction: string
+      startedAt: string
+      sessionTitle: string
+    }> = []
+    for (const sessionId of this.running) {
+      const info = this.runInfo.get(sessionId)
+      if (!info) continue
+      const session = this.session(sessionId)
+      out.push({
+        sessionId,
+        runId: info.runId,
+        instruction: info.instruction,
+        startedAt: info.startedAt,
+        sessionTitle: session?.title ?? '',
+      })
+    }
+    return out
   }
 
   async createSession(
@@ -2054,10 +2090,16 @@ export class Store {
   ): Promise<ScheduledTask | null> {
     const task = this.scheduledTask(taskId)
     if (!task) return null
-    task.lastRunAt = now()
+    const at = now()
+    task.lastRunAt = at
     task.lastStatus = status
     if (error) task.lastError = error.slice(0, 1_000)
     else delete task.lastError
+    // 历史只追加结论：面板靠它区分「偶发一次失败」和「每次都挂」。
+    task.runs = [
+      { at, status, ...(error ? { detail: error.slice(0, 400) } : {}) },
+      ...(task.runs ?? []),
+    ].slice(0, MAX_SCHEDULED_RUNS)
     if (task.kind === 'once') {
       task.enabled = false
     } else {
@@ -2095,6 +2137,8 @@ export class Store {
     const rest = this.state.reflectionReports.filter((entry) => entry.id !== report.id)
     this.state.reflectionReports = [report, ...rest].slice(0, MAX_REFLECTION_REPORTS)
     if (report.createdAt) this.state.settings.reflectLastRunAt = report.createdAt
+    // 版本锚点：`version` 模式靠它判断版本有没有换过，不写回去就会每轮 tick 都触发。
+    if (report.version) this.state.settings.reflectLastVersion = report.version
     await this.save()
   }
 
@@ -2323,6 +2367,7 @@ export class Store {
       cycles: this.state.evolutionCycles
         .filter((cycle) => cycle.workspacePath === workspacePath)
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
+      benchmarkSuiteVersion: BENCHMARK_SUITE_VERSION,
     }
   }
 

@@ -258,11 +258,10 @@ export class UpdaterService {
 
   check(): Promise<UpdateState> {
     if (this.checkPromise) return this.checkPromise
-    if (
-      this.state.status === 'downloading' ||
-      this.state.status === 'installing' ||
-      this.state.status === 'ready'
-    ) {
+    // 「已下载待安装」不是终态：用户可能就停在这里等重启，而这段时间上游又发了
+    // 新版本。旧逻辑把 ready 当成终态直接返回，于是 1.2.0 → 已下载 1.2.1 →
+    // 上游出 1.2.2 之后永远停在 1.2.1。这里只挡住正在传输/安装的中间态。
+    if (this.state.status === 'downloading' || this.state.status === 'installing') {
       return Promise.resolve(this.stateSnapshot())
     }
     this.checkPromise = this.runCheck().finally(() => {
@@ -273,6 +272,14 @@ export class UpdaterService {
 
   private async runCheck(): Promise<UpdateState> {
     if (this.state.status === 'disabled') return this.stateSnapshot()
+
+    // 检查前的待装快照。检查过程中 status 会被写成 checking，如果查完发现没有比
+    // 它更新的版本，必须原样还回去——否则一条「已是最新」会把已经下载并校验过的
+    // 安装包从入口上抹掉，用户只能重新下一遍。
+    const pendingReady: UpdateState | null =
+      this.state.status === 'ready' && this.state.release && this.installerPath
+        ? { ...this.state, release: { ...this.state.release } }
+        : null
 
     this.publish({
       status: 'checking',
@@ -286,13 +293,29 @@ export class UpdaterService {
       const release = await this.fetchRelease()
       const checkedAt = new Date().toISOString()
       if (isNewerVersion(release.version, this.currentVersion)) {
+        const downloaded = pendingReady?.release ?? null
+        if (downloaded && !isNewerVersion(release.version, downloaded.version)) {
+          // 远端没有比「已下载」更新的版本：这次检查什么也不用改。
+          this.publish({ ...pendingReady!, checkedAt })
+          return this.stateSnapshot()
+        }
+        // 已下载的是更旧的版本，改指向新版本重新下载。旧安装包留在 updates
+        // 目录里当增量基线（findBaseInstaller 会挑它），所以只断开路径不删文件。
+        if (downloaded) this.installerPath = null
         this.publish({
           status: 'available',
           release,
-          message: `发现新版本 v${release.version}（${formatBytes(release.size)}）。`,
+          message: downloaded
+            ? `发现新版本 v${release.version}（${formatBytes(release.size)}），比已下载的 v${downloaded.version} 更新。`
+            : `发现新版本 v${release.version}（${formatBytes(release.size)}）。`,
           checkedAt,
+          progress: 0,
+          transferred: 0,
           total: release.size,
         })
+      } else if (pendingReady) {
+        // 本地待装版本比线上还新（清单回退）：继续保留待安装。
+        this.publish({ ...pendingReady, checkedAt })
       } else {
         this.publish({
           status: 'up-to-date',
@@ -302,6 +325,15 @@ export class UpdaterService {
         })
       }
     } catch (error) {
+      if (pendingReady) {
+        // 网络失败不该抹掉已经校验好的待安装包：恢复 ready 并把失败写在提示里。
+        this.publish({
+          ...pendingReady,
+          checkedAt: new Date().toISOString(),
+          message: `${pendingReady.message}（本次检查更新失败：${errorMessage(error)}）`,
+        })
+        return this.stateSnapshot()
+      }
       this.publish({
         status: 'error',
         release: null,

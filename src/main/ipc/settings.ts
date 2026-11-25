@@ -5,10 +5,24 @@ import { app, clipboard, dialog, nativeImage, session, shell } from 'electron'
 import { basename } from 'node:path'
 import { buildToolCatalog, countToolCalls } from '../../shared/tools-catalog'
 import { crashEntry } from '../app-audit'
+import { collectDiagnostics } from '../diagnostics'
 import { ensureGlobalInstructions, loadProjectInstructions } from '../instructions'
 import { fetchBalance } from '../billing'
 import { filterLearningTools, pilotTools, RUN_SHELL } from '../agent/tools'
 import { loadMcpConfig } from '../agent/mcp'
+import {
+  createHookRule,
+  deleteHookRule,
+  loadHookRulesDetailed,
+  setHookRuleEnabled,
+} from '../agent/hook-rules'
+import { loadHookConfig } from '../agent/hooks'
+import type {
+  HookRuleAction,
+  HookRuleEvent,
+  HookRuleView,
+  HookRulesReport,
+} from '../../shared/hook-rules'
 import { pluginCatalogTools } from '../plugins/shared'
 import { localizeMain } from '../localize'
 import { mkdir } from 'node:fs/promises'
@@ -21,6 +35,7 @@ import { sanitizeImages } from '../agent/attachments'
 import { systemInfo, feedbackEnvironment } from '../system-info'
 import { normalizeFindingStatus } from '../../shared/reflect'
 import { testDeepSeekConnection } from '../agent/model'
+import { discoverModels } from '../model-catalog'
 import { workspaceRoot } from '../workspace'
 import type {
   JudgeBalanceInput,
@@ -184,6 +199,41 @@ export function registerSettingsIpc(ctx: IpcContext): void {
         apiKey: key,
         baseUrl: input?.baseUrl?.trim() || target?.baseUrl || settings.baseUrl,
         model: input?.model?.trim() || target?.model || settings.model,
+      })
+    },
+  )
+
+
+  // 「模型」页的模型名下拉：用用户自己的密钥问厂商要最新清单。
+  //
+  // 三条规矩：拉不到不报错（降级成缓存/内置清单 + note，不能挡住保存），
+  // 不把主账号的密钥发给任意地址（只有同一条地址或该资源自己的密钥才用），
+  // 以及返回体里永远不带密钥本身。
+  ctx.handle(
+    'pilot:models-discover',
+    async (input?: {
+      baseUrl?: string
+      apiKey?: string
+      current?: string
+      providerId?: string
+      refresh?: boolean
+    }) => {
+      const settings = ctx.store.settingsView()
+      const target = input?.providerId ? ctx.store.judgeTarget(input.providerId) : null
+      const baseUrl = input?.baseUrl?.trim() || target?.baseUrl || settings.baseUrl
+      const sameAsPrimary =
+        Boolean(baseUrl) &&
+        baseUrl.trim().replace(/\/+$/, '').toLowerCase() ===
+          (settings.baseUrl ?? '').trim().replace(/\/+$/, '').toLowerCase()
+      // 主账号的密钥只在「问的就是主账号那条地址」时兜底，否则用户随便写个
+      // 地址就能把主 key 发出去。
+      const apiKey =
+        input?.apiKey?.trim() || target?.apiKey || (sameAsPrimary ? ctx.store.getApiKey() : '') || ''
+      return discoverModels({
+        baseUrl,
+        apiKey,
+        current: input?.current ?? '',
+        refresh: input?.refresh === true,
       })
     },
   )
@@ -446,6 +496,10 @@ export function registerSettingsIpc(ctx: IpcContext): void {
 
   ctx.handle('pilot:logs-dir', () => ctx.appLog?.dir ?? '')
 
+  // 运行日志面板：一次拿到事件循环健康、副线队列、进行中的运行与日志聚合，
+  // 免得渲染进程为了拼一张图连发四个 IPC。
+  ctx.handle('pilot:diagnostics-snapshot', async (limit?: number) => collectDiagnostics(limit))
+
   ctx.handle('pilot:logs-open', async () => {
     if (!ctx.appLog) return
     await mkdir(ctx.appLog.dir, { recursive: true })
@@ -545,4 +599,61 @@ export function registerSettingsIpc(ctx: IpcContext): void {
     ctx.broadcast({ type: 'tools.changed', workspacePath: path })
     return tools
   })
+
+  // 声明式 hook 规则：`.pilot/hooks/*.md` 与 `.pilot/hooks.json` 命令钩子。
+  // 设置页只看、只改开关与内容，不提供「运行规则」的入口——规则本身不能执行命令。
+  const hookRulesReport = async (path: string): Promise<HookRulesReport> => {
+    const detail = await loadHookRulesDetailed(path).catch(() => ({ rules: [], broken: [] }))
+    const config = await loadHookConfig(path).catch(() => ({
+      pre_tool: [],
+      post_edit: [],
+      stop: [],
+    }))
+    return {
+      enabled: ctx.store.settings().hooksEnabled === true,
+      rules: detail.rules,
+      commands: {
+        preTool: config.pre_tool.length,
+        postEdit: config.post_edit.length,
+        stop: config.stop.length,
+      },
+      broken: detail.broken,
+    }
+  }
+
+  ctx.handle('pilot:hook-rules', async (path?: string) => {
+    const root = path?.trim() || ctx.store.activeWorkspace()
+    if (!root) return { enabled: false, rules: [], commands: { preTool: 0, postEdit: 0, stop: 0 }, broken: [] }
+    return hookRulesReport(root)
+  })
+
+  ctx.handle(
+    'pilot:hook-rule-enabled',
+    async (path: string, source: string, enabled: boolean) => {
+      await setHookRuleEnabled(path, source, enabled === true)
+      return hookRulesReport(path)
+    },
+  )
+
+  ctx.handle('pilot:hook-rule-delete', async (path: string, source: string) => {
+    await deleteHookRule(path, source)
+    return hookRulesReport(path)
+  })
+
+  ctx.handle(
+    'pilot:hook-rule-create',
+    async (
+      path: string,
+      input: {
+        name: string
+        event: HookRuleEvent
+        pattern: string
+        action: HookRuleAction
+        message: string
+      },
+    ): Promise<HookRuleView | null> => {
+      const rule = await createHookRule(path, input)
+      return rule ?? null
+    },
+  )
 }

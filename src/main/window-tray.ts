@@ -5,6 +5,7 @@ import { appIconPath } from './app-icon'
 import { localizeUpdateState } from './localize'
 import { instructionTitle } from './notify/instruction-title'
 import { sendToRenderers } from './renderer-sink'
+import { openSuperWindow } from './super-window'
 import { trayClickAction } from './window-action'
 import { windowPalette } from './window-platform'
 import {
@@ -278,7 +279,17 @@ export function revealMainWindow(): void {
 
 function refreshTrayMenu(): void {
   if (!appState.tray) return
-  const english = appState.store.uiLocale() === 'en'
+  // 启动早期（主 store 还没加载 / 加载失败）也要能建出托盘：locale 与主题读不到
+  // 就用中文 + 深色，绝不因为在修复路径上抛错而让托盘的「超级 Pilot」入口消失。
+  let english = false
+  let theme: ThemeMode = 'dark'
+  try {
+    english = appState.store.uiLocale() === 'en'
+    theme = appState.store.settings().theme
+  } catch {
+    english = false
+    theme = 'dark'
+  }
   const open = Boolean(appState.mainWindow && !appState.mainWindow.isDestroyed() && appState.mainWindow.isVisible() && !appState.mainWindow.isMinimized())
   appState.tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -297,6 +308,19 @@ function refreshTrayMenu(): void {
             return
           }
           revealMainWindow()
+        },
+      },
+      { type: 'separator' },
+      {
+        // 主窗口白屏 / 主引擎卡死时，这是唯一还能摸到的应急入口：与设置里那个
+        // 按钮走同一个 `openSuperWindow`，不依赖主 store 与主 IPC 表。
+        label: english ? 'Super Pilot (emergency)' : '超级 Pilot（应急）',
+        click: () => {
+          try {
+            openSuperWindow({ theme })
+          } catch {
+            // 唯一后果是这次没打开；托盘菜单下次仍可再点。
+          }
         },
       },
       { type: 'separator' },

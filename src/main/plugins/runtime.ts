@@ -848,6 +848,7 @@ export class PluginHost {
     }
   }
 
+  /** @background-isolated 见 tests/background-isolation.test.ts：异常在 try/catch 内收口并记入 lastError。 */
   private async fireSchedule(
     id: string,
     trigger: PluginTrigger,

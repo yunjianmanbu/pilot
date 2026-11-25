@@ -26,6 +26,7 @@ import type {
   WorkspaceSummary,
 } from '../../shared/types'
 import { modelOptionLabel, modelResourceName, normalizeModelTag } from '../../shared/model-label'
+import { bellCount } from '../../shared/quality'
 import type { HostKind } from '../../shared/capabilities'
 import { copyText } from './clipboard'
 import { ChangeReviewPanel } from './components/ChangeReviewPanel'
@@ -35,7 +36,8 @@ import { CompanionDialog } from './components/CompanionDialog'
 import { PairRequestDialog } from './components/PairRequestDialog'
 import { evolutionWorkspaceTabs } from './components/EvolutionWorkspace'
 import { SessionResourcesPanel } from './components/SessionResourcesPanel'
-import { QualityBell } from './components/QualityBell'
+import { NotificationCenter } from './components/NotificationCenter'
+import { QualityDialog } from './components/QualityDialog'
 import { ResourceMeters } from './components/ResourceMeters'
 import { RunningPill } from './components/RunningPill'
 import { SystemResourceDialog } from './components/SystemResourceDialog'
@@ -48,15 +50,27 @@ import { PreferencesPanel } from './components/PreferencesPanel'
 import { PluginsPanel } from './components/PluginsPanel'
 import { ReviewDialog } from './components/ReviewDialog'
 import { ReviewReportDialog } from './components/ReviewReportDialog'
+import { RunTrailDialog } from './components/RunTrailDialog'
+import { SessionReportDialog } from './components/SessionReportDialog'
 import { SelectMenu } from './components/SelectMenu'
 import type { ResourceTab } from './session-resources'
 import { FeedbackDialog } from './components/FeedbackDialog'
 import { SettingsDialog, type SettingsFocus } from './components/SettingsDialog'
 import { Sidebar } from './components/Sidebar'
+import { applyTrailEvent, type RunTrail } from './run-trail'
+import { sessionSwapView } from './session-swap'
+import { mergeWorkspaceSessions } from './workspace-switch'
+import {
+  markAllRead as markAllNoticesReadIn,
+  pushNotice,
+  type NoticeEntry,
+  type NoticeSource,
+} from './notifications'
 import { TopbarMenu, type TopbarMenuItem } from './components/TopbarMenu'
 import { WorkspaceDialog } from './components/WorkspaceDialog'
 import {
   CopyIcon,
+  ClockIcon,
   DiffIcon,
   DownloadIcon,
   FileIcon,
@@ -76,11 +90,13 @@ import {
 } from './icons'
 import { transcriptUsage } from './tokens'
 import {
+  applyLiveDelta,
   createToolView,
   emptyLiveRun,
   inferRisk,
+  settleLiveAnswer,
   insertProcessMessages,
-  isDeliverableText,
+  liveAnswerText,
   mergePendingProcesses,
   processPlaceholders,
   restoreCachedRuns,
@@ -100,7 +116,6 @@ interface Toast {
   message: string
   level: ToastLevel
 }
-
 const APPROVAL_MODES: Array<{ value: ApprovalMode; label: string }> = [
   { value: 'auto', label: t("全部自动") },
   { value: 'manual', label: t("只读自动") },
@@ -361,13 +376,28 @@ export function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null)
-  /** 质量闸门正在评估/打包：铃铛按钮与弹窗按钮在此期间都不能重入。 */
+  /** 质量闸门正在评估/打包：质量弹窗里的按钮在此期间不能重入。 */
   const [qualityBusy, setQualityBusy] = useState(false)
   const [liveRuns, setLiveRuns] = useState<Record<string, LiveRun>>({})
+  /**
+   * 每个会话最近一次运行的「卡点轨迹」。由 handleEvent 归约，面板只负责画。
+   * 只按非流式事件更新：`message.delta` 一秒几十条，进这里会把渲染打到掉帧。
+   */
+  const [trails, setTrails] = useState<Record<string, RunTrail>>({})
+  const [trailOpen, setTrailOpen] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
   const [activeRuns, setActiveRuns] = useState<Record<string, boolean>>({})
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([])
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
   const [toasts, setToasts] = useState<Toast[]>([])
+  /**
+   * 通知中心的历史。每条 toast 同时写一份到这里：toast 4.5 秒后消失，
+   * 而「会话里到底弹过什么」需要留到用户回来之后。
+   */
+  const [notices, setNotices] = useState<NoticeEntry[]>([])
+  const [noticesOpen, setNoticesOpen] = useState(false)
+  /** 「产出质量」裁决面板：入口在顶栏三个点菜单里，不再是通知中心的页签。 */
+  const [qualityOpen, setQualityOpen] = useState(false)
   const [view, setView] = useState<MainView>('chat')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
@@ -427,6 +457,8 @@ export function App() {
   const activeWorkspaceRef = useRef<string | null>(null)
   const composerSeedKeyRef = useRef(0)
   const sessionRef = useRef<Session | null>(null)
+  /** 上一份已加载完的会话：切换期间继续显示它，避免整块闪成「载入会话…」。 */
+  const lastSessionRef = useRef<Session | null>(null)
   const pendingProcessesRef = useRef<SessionProcessSummary[]>([])
   /**
    * Steps the reader already opened, per session and per run, with the dialogue
@@ -455,6 +487,10 @@ export function App() {
   }, [session])
 
   useEffect(() => {
+    if (session) lastSessionRef.current = session
+  }, [session])
+
+  useEffect(() => {
     pendingProcessesRef.current = pendingProcesses
   }, [pendingProcesses])
 
@@ -463,14 +499,28 @@ export function App() {
     setSessionHasMore(value)
   }, [])
 
-  const pushToast = useCallback((message: string, level: ToastLevel = 'info') => {
-    const id = ++toastId.current
-    setToasts((previous) => [...previous.slice(-4), { id, message, level }])
-    window.setTimeout(
-      () => setToasts((previous) => previous.filter((toast) => toast.id !== id)),
-      level === 'error' ? 8000 : 4500,
-    )
-  }, [])
+  const pushToast = useCallback(
+    (message: string, level: ToastLevel = 'info', source: NoticeSource = 'app') => {
+      const id = ++toastId.current
+      setToasts((previous) => [...previous.slice(-4), { id, message, level }])
+      // 同一条提示进两份：tos 是瞬时的，notices 是铃铛里的历史。
+      setNotices((previous) =>
+        pushNotice(previous, { id, message, level, at: Date.now(), source, read: false }),
+      )
+      window.setTimeout(
+        () => setToasts((previous) => previous.filter((toast) => toast.id !== id)),
+        level === 'error' ? 8000 : 4500,
+      )
+    },
+    [],
+  )
+
+  const markAllNoticesRead = useCallback(
+    () => setNotices((previous) => markAllNoticesReadIn(previous)),
+    [],
+  )
+
+  const clearNotices = useCallback(() => setNotices([]), [])
 
   const showError = useCallback(
     (message: string) => pushToast(stripIpcWrapper(message), 'error'),
@@ -777,6 +827,8 @@ export function App() {
       })
     } catch {
       // The detail panel is best-effort; the conversation remains usable.
+      // 切到别的工作区后旧详情不能留在面板里，失败的这一份直接清空。
+      if (detailSeq.current === seq && activeWorkspaceRef.current === workspacePath) setDetail(null)
     }
   }, [])
 
@@ -889,7 +941,11 @@ export function App() {
           if (cancelled) return
           setUpdate(next)
           if (next.status === 'available' && next.release) {
-            pushToast(t("发现新版本 v{v1}，点击左下角版本号查看。", { v1: next.release.version }), 'info')
+            pushToast(
+              t("发现新版本 v{v1}，点击左下角版本号查看。", { v1: next.release.version }),
+              'info',
+              'update',
+            )
           }
         })
         .catch(() => undefined)
@@ -938,11 +994,9 @@ export function App() {
     setLiveRuns((previous) => {
       let next = previous
       for (const delta of batch) {
-        next = updateLive(next, delta.sessionId, delta.runId, (live) => ({
-          ...live,
-          ...(delta.text ? { content: live.content + delta.text } : {}),
-          ...(delta.reasoning ? { reasoning: live.reasoning + delta.reasoning } : {}),
-        }))
+        next = updateLive(next, delta.sessionId, delta.runId, (live) =>
+          applyLiveDelta(live, delta),
+        )
       }
       return next
     })
@@ -972,6 +1026,18 @@ export function App() {
       // the streamed text that preceded it, so flush synchronously first.
       if (event.type !== 'message.delta' && event.type !== 'reasoning.delta') {
         flushPendingDeltas()
+      }
+      // 卡点轨迹：正文增量不参与归约（一秒几十条），其余事件按会话累积一条。
+      // 推理增量例外：它第一次到达时把阶段从「等模型」切成「模型推理中」，
+      // 之后 increments 由 run-trail 自己判掉，不会每条都触发重画。
+      if (event.type !== 'message.delta') {
+        const sessionId = 'sessionId' in event ? event.sessionId : ''
+        if (sessionId) {
+          setTrails((previous) => {
+            const updated = applyTrailEvent(previous[sessionId], event, Date.now())
+            return updated ? { ...previous, [sessionId]: updated } : previous
+          })
+        }
       }
       switch (event.type) {
         case 'run.started': {
@@ -1009,12 +1075,17 @@ export function App() {
         case 'message.started': {
           const sessionId = event.sessionId
           setLiveRuns((previous) =>
-            updateLive(previous, sessionId, event.runId, (live) => ({
-              ...live,
-              content: '',
-              reasoning: '',
-              status: 'running',
-            })),
+            updateLive(previous, sessionId, event.runId, (live) => {
+              // A message that starts after the answer was delivered is more work,
+              // not a second answer: carry whatever it wrote into the process.
+              // Freezing is off here because a truncated answer restarts the
+              // message with its own prefix, and freezing now would strand the
+              // continuation in the step box while the answer stayed cut short.
+              const settled = live.answer
+                ? settleLiveAnswer(live, `n-msg-${live.runId}-${live.step}`, { freeze: false })
+                : live
+              return { ...settled, content: '', reasoning: '', status: 'running' }
+            }),
           )
           return
         }
@@ -1032,32 +1103,26 @@ export function App() {
             updateLive(previous, sessionId, event.runId, (live) => {
               if (live.tools.some((tool) => tool.id === event.call.id)) return live
               const tool = createToolView(event.call, event.risk)
-              const note = live.content.trim() ? live.content : ''
               const reasoning = live.reasoning.trim() ? live.reasoning : ''
-              // A report stays in the answer area instead of sliding into the
-              // step box: the step here is only the cleanup after it, and the
-              // replay would put the report back in the dialogue.
-              const report = note ? isDeliverableText(note) : false
+              // The message that wrote this text is over. Settle it before the
+              // step box grows: a report stays the answer, and a recap written
+              // after it is carried into the process instead of replacing it.
+              const settled = settleLiveAnswer(live, `n-${tool.id}`)
               // Reasoning and interim text belong to the step that ends with this call.
               const parts: ProcessPart[] = [
-                ...(live.parts ?? []),
+                ...(settled.parts ?? []),
                 ...(reasoning
                   ? [{ kind: 'reasoning' as const, key: `r-${tool.id}`, text: reasoning, at: tool.at }]
-                  : []),
-                ...(note && !report
-                  ? [{ kind: 'note' as const, key: `n-${tool.id}`, text: note, at: tool.at }]
                   : []),
                 { kind: 'tool' as const, key: tool.id, toolId: tool.id },
               ]
               return {
-                ...live,
-                content: report ? live.content : '',
+                ...settled,
                 reasoning: '',
-                processText: note && !report ? [...live.processText, note] : live.processText,
                 processReasoning: reasoning
-                  ? [...live.processReasoning, reasoning]
-                  : live.processReasoning,
-                tools: [...live.tools, tool],
+                  ? [...settled.processReasoning, reasoning]
+                  : settled.processReasoning,
+                tools: [...settled.tools, tool],
                 parts,
               }
             }),
@@ -1321,7 +1386,7 @@ export function App() {
           return
         }
         case 'notice': {
-          pushToast(event.message, event.level)
+          pushToast(event.message, event.level, 'notice')
           return
         }
         case 'companion.pair_request': {
@@ -1391,15 +1456,15 @@ export function App() {
     void runQualityAction(() => window.pilot.qualityTune(workspacePath))
   }, [runQualityAction])
 
-  // 点系统通知打开铃铛：把工作区切到通知里那个，再重拉一次 detail。
+  // 点桌面通知直接打开质量裁决面板。
   useEffect(
     () =>
       window.pilot.onFocusQuality((workspacePath) => {
-        if (!workspacePath) return
-        if (activeWorkspaceRef.current !== workspacePath) {
+        if (workspacePath && activeWorkspaceRef.current !== workspacePath) {
           setActiveWorkspace(workspacePath)
           void loadDetail(workspacePath)
         }
+        setQualityOpen(true)
       }),
     [loadDetail],
   )
@@ -1431,42 +1496,6 @@ export function App() {
       cancelled = true
     }
   }, [activeWorkspace])
-
-  const newSession = useCallback(
-    async (workspacePath?: string) => {
-      const target = workspacePath ?? activeWorkspaceRef.current
-      if (!target) {
-        setWorkspaceDialogOpen(true)
-        return
-      }
-      try {
-        if (activeWorkspaceRef.current !== target) {
-          await window.pilot.openWorkspace(target)
-          applyBootstrap(await window.pilot.bootstrap())
-        }
-        const created = await window.pilot.createSession(target)
-        activeSessionRef.current = created.id
-        setActiveSessionId(created.id)
-        setSession(created)
-        setSessionHasMoreBoth(false)
-        setSessionLoading(false)
-        // 新会话没有历史：上一个会话的占位框必须就地丢掉。它们带着旧会话的
-        // runId，留在状态里既会在新会话顶部挤出成排执行框，点开也只会得到
-        // 「这一轮的执行过程已经不在会话记录里」，因为按新会话 id 查不到。
-        setPendingProcesses([])
-        setSessions((previous) => [
-          summaryOf(created),
-          ...previous.filter((entry) => entry.id !== created.id),
-        ])
-        setView('chat')
-        void refreshSessions(target)
-        void loadDetail(target)
-      } catch (error) {
-        pushToast(errorMessage(error), 'error')
-      }
-    },
-    [applyBootstrap, loadDetail, pushToast, refreshSessions, setSessionHasMoreBoth],
-  )
 
   const openModuleCheckSession = useCallback(
     async (sessionId: string): Promise<void> => {
@@ -1658,28 +1687,104 @@ export function App() {
     [sendMessage, settings?.hasKey],
   )
 
+
+  /**
+   * 切到另一个工作区：只替换这个工作区的会话清单，不重跑整份 bootstrap。
+   * 重新 bootstrap 会把会话列表、运行态和当前会话一起换掉，侧边栏因此整体重排、
+   * 滚动位置被夹回顶部——用户看到的就是「切个工作区，列表刷新了」。
+   */
+  const activateWorkspace = useCallback(
+    async (
+      workspacePath: string,
+      sessionId?: string,
+      options: { loadFirstSession?: boolean } = {},
+    ): Promise<void> => {
+      const opened = await window.pilot.openWorkspace(workspacePath)
+      const openedPath = opened.workspace.path
+      activeWorkspaceRef.current = openedPath
+      setActiveWorkspace(openedPath)
+      // 工作区摘要（顶栏名字、会话数）立刻对齐，不等 loadDetail 回来。
+      setWorkspaces((previous) =>
+        previous.some((entry) => entry.path === openedPath)
+          ? previous.map((entry) => (entry.path === openedPath ? opened.workspace : entry))
+          : [opened.workspace, ...previous],
+      )
+      // 只换这一个工作区的会话，并把它们放回原来的位置：其它分组不重排，
+      // 列表高度与行顺序稳定，滚动位置就不会被浏览器夹回顶部。
+      setSessions((previous) => mergeWorkspaceSessions(previous, openedPath, opened.sessions))
+      // 详情在加载完成前沿用旧内容（此时会话区轻微变淡且不可交互），抽屉不闪空。
+      void loadDetail(openedPath)
+      const targetId =
+        sessionId ?? (options.loadFirstSession === false ? null : opened.sessions[0]?.id ?? null)
+      activeSessionRef.current = targetId
+      setActiveSessionId(targetId)
+      setSession(null)
+      setSessionHasMoreBoth(false)
+      // 没有可打开的会话（例如切过来只为新建任务）就不能停在载入态，
+      // 否则会话区会一直显示「载入会话…」。
+      setSessionLoading(Boolean(targetId))
+      if (targetId) {
+        void loadSession(targetId)
+        // 主进程记的「当前会话」跟着走，否则重启后回到的是这个工作区的第一个会话。
+        void window.pilot.activateSession(targetId).catch(() => undefined)
+      }
+    },
+    [loadDetail, loadSession, setSessionHasMoreBoth],
+  )
+
+  const newSession = useCallback(
+    async (workspacePath?: string) => {
+      const target = workspacePath ?? activeWorkspaceRef.current
+      if (!target) {
+        setWorkspaceDialogOpen(true)
+        return
+      }
+      try {
+        if (activeWorkspaceRef.current !== target) {
+          // 在另一个工作区新建：只换这一个工作区的会话，不重跑整份 bootstrap，
+          // 否则侧边栏其它分组会整体重排、滚动位置被夹回顶部。
+          await activateWorkspace(target, undefined, { loadFirstSession: false })
+        }
+        const created = await window.pilot.createSession(target)
+        activeSessionRef.current = created.id
+        setActiveSessionId(created.id)
+        setSession(created)
+        setSessionHasMoreBoth(false)
+        setSessionLoading(false)
+        // 新会话没有历史：上一个会话的占位框必须就地丢掉。它们带着旧会话的
+        // runId，留在状态里既会在新会话顶部挤出成排执行框，点开也只会得到
+        // 「这一轮的执行过程已经不在会话记录里」，因为按新会话 id 查不到。
+        setPendingProcesses([])
+        setSessions((previous) => [
+          summaryOf(created),
+          ...previous.filter((entry) => entry.id !== created.id),
+        ])
+        setView('chat')
+        void refreshSessions(target)
+        void loadDetail(target)
+      } catch (error) {
+        pushToast(errorMessage(error), 'error')
+      }
+    },
+    [activateWorkspace, loadDetail, pushToast, refreshSessions, setSessionHasMoreBoth],
+  )
+
   const selectSession = useCallback(
     (target: SessionSummary) => {
       const sessionId = target.id
       setView('chat')
       setReviewReportOpen(false)
       setFocusMessageId(null)
-      if (activeSessionRef.current === sessionId) return
+      if (
+        activeSessionRef.current === sessionId &&
+        activeWorkspaceRef.current === target.workspacePath
+      ) {
+        return
+      }
       if (activeWorkspaceRef.current !== target.workspacePath) {
-        void (async () => {
-          try {
-            await window.pilot.openWorkspace(target.workspacePath)
-            applyBootstrap(await window.pilot.bootstrap())
-            activeSessionRef.current = sessionId
-            setActiveSessionId(sessionId)
-            setSession(null)
-            setSessionHasMoreBoth(false)
-            setSessionLoading(true)
-            void loadSession(sessionId)
-          } catch (error) {
-            pushToast(errorMessage(error), 'error')
-          }
-        })()
+        void activateWorkspace(target.workspacePath, sessionId).catch((error) =>
+          pushToast(errorMessage(error), 'error'),
+        )
         return
       }
       activeSessionRef.current = sessionId
@@ -1688,8 +1793,9 @@ export function App() {
       setSessionHasMoreBoth(false)
       setSessionLoading(true)
       void loadSession(sessionId)
+      void window.pilot.activateSession(sessionId).catch(() => undefined)
     },
-    [applyBootstrap, loadSession, pushToast, setSessionHasMoreBoth],
+    [activateWorkspace, loadSession, pushToast, setSessionHasMoreBoth],
   )
 
   /** 全量待办里点会话标题：按 id 找到列表里的会话再切过去。 */
@@ -2610,11 +2716,9 @@ export function App() {
 
   const switchWorkspace = useCallback(
     async (path: string) => {
-      await window.pilot.openWorkspace(path)
-      const data = await window.pilot.bootstrap()
-      applyBootstrap(data)
+      await activateWorkspace(path)
     },
-    [applyBootstrap],
+    [activateWorkspace],
   )
 
   const openSelfSource = useCallback(async () => {
@@ -2815,6 +2919,25 @@ export function App() {
     (settings?.modelResources ?? []).some((item) => item.id === session.sessionModelId)
       ? session.sessionModelId
       : ''
+  // 切换对话时先清空 session 再加载；加载期间继续显示上一份内容（轻微变淡且不可交互），
+  // 就绪后淡入。直接换成「载入会话…」会白屏闪一下，切得越快越明显。
+  const { staged: stagedSession, swapping: sessionSwapping } = sessionSwapView({
+    session,
+    loading: sessionLoading,
+    previous: lastSessionRef.current,
+  })
+  // 新对话挂上去的那一瞬单独给一次淡入：内容硬替换才是「突兀」的主因，
+  // 光靠加载期间压暗挡不住。只动 opacity / transform，不重排布局。
+  const stagedId = stagedSession?.id ?? null
+  const [enteringSessionId, setEnteringSessionId] = useState<string | null>(null)
+  const enteredIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!stagedId || sessionSwapping || enteredIdRef.current === stagedId) return
+    enteredIdRef.current = stagedId
+    setEnteringSessionId(stagedId)
+    const timer = window.setTimeout(() => setEnteringSessionId(null), 200)
+    return () => window.clearTimeout(timer)
+  }, [stagedId, sessionSwapping])
   const live = activeSessionId ? liveRuns[activeSessionId] : undefined
   const running = Boolean(
     activeSessionId && (activeRuns[activeSessionId] || session?.running),
@@ -2834,9 +2957,12 @@ export function App() {
   const contextUsage = useMemo(
     () =>
       session
-        ? transcriptUsage(session.messages, live?.content ?? '')
+        ? transcriptUsage(
+            session.messages,
+            `${liveAnswerText(live)}${live?.answer ? live.content : ''}`,
+          )
         : null,
-    [session, live?.content],
+    [session, live?.answer, live?.content],
   )
 
   // 会话级操作原来平铺成七个图标，现在收进一个「更多操作」菜单：
@@ -2848,6 +2974,14 @@ export function App() {
       label: t("复制对话"),
       icon: <CopyIcon width={15} height={15} />,
       onSelect: () => void copyTranscript(),
+    })
+    sessionMenuItems.push({
+      key: 'session-report',
+      label: t("会话报告"),
+      hint: t("这一轮做了什么、改了什么、验证过没有"),
+      icon: <FileIcon width={15} height={15} />,
+      active: reportOpen,
+      onSelect: () => setReportOpen(true),
     })
     // 「会话资源」只保留导航栏右侧那一个图标，避免两个入口互相抢焦点。
     if (session.kind !== 'review') {
@@ -2867,6 +3001,14 @@ export function App() {
         onSelect: () => setCheckpointsOpen(true),
       })
       sessionMenuItems.push({
+        key: 'trail',
+        label: t("对话卡点"),
+        hint: t("看这次运行停在哪一步、停了多久"),
+        icon: <ClockIcon width={15} height={15} />,
+        active: trailOpen,
+        onSelect: () => setTrailOpen(true),
+      })
+      sessionMenuItems.push({
         key: 'changes',
         label: t("变更审阅"),
         hint: t("变更审阅：比较并撤销本次会话修改的文件"),
@@ -2876,6 +3018,17 @@ export function App() {
       })
       // 定时任务不再是弹框：入口在输入框上方的待办列表下面，与移动端一致。
     }
+    // 产出质量是工作区级的，不跟会话类型走：评审会话也要能裁决上一份产出。
+    sessionMenuItems.push({
+      key: 'quality',
+      label: t("产出质量"),
+      hint: t("看评估分数、裁决候选版本：超过基线才会生成候选"),
+      icon: <SparkIcon width={15} height={15} />,
+      dividerBefore: true,
+      active: qualityOpen,
+      badge: detail?.quality ? bellCount(detail.quality) : 0,
+      onSelect: () => setQualityOpen(true),
+    })
   }
 
   if (!booted) {
@@ -3100,16 +3253,14 @@ export function App() {
               {/* 分隔线把「当前会话的模式与操作」与「全局的铃铛/模型/主题/连接」分开。 */}
               {view === 'chat' && session ? <span className="topbar-split" /> : null}
 
-              {/* 小铃铛：评估模型认为有更优版本时亮起，批准前不会打包。 */}
-              <QualityBell
-                workspacePath={detail?.workspace.path ?? activeWorkspace}
-                state={detail?.quality ?? null}
-                publishTarget={settings?.qualityPublishTarget ?? 'none'}
-                busy={qualityBusy}
-                onDecide={onQualityDecide}
-                onPublish={onQualityPublish}
-                onEvaluate={onQualityEvaluate}
-                onTune={onQualityTune}
+              {/* 小铃铛：会话内所有弹框提醒的历史 + 待审批汇总。产出质量的裁决入口在三个点菜单里。 */}
+              <NotificationCenter
+                open={noticesOpen}
+                notices={notices}
+                pendingApprovals={activeApprovals.length}
+                onOpenChange={setNoticesOpen}
+                onMarkAllRead={markAllNoticesRead}
+                onClear={clearNotices}
               />
 
               <button
@@ -3148,16 +3299,20 @@ export function App() {
           </header>
 
           {view === 'chat' ? (
-            sessionLoading && !session ? (
+            sessionLoading && !stagedSession ? (
               <div className="session-loading-view">
                 <i className="spinner" />
                 <span>{t("载入会话…")}</span>
               </div>
             ) : (
-              <>
-                {session?.kind === 'review' ? (
+              <div
+                className={`chat-stage${sessionSwapping ? ' is-switching' : ''}${
+                  enteringSessionId ? ' is-entering' : ''
+                }`}
+              >
+                {stagedSession?.kind === 'review' ? (
                   <ReviewBanner
-                    session={session}
+                    session={stagedSession}
                     handingOff={handingOff}
                     onOpenReport={() => setReviewReportOpen(true)}
                     onHandoff={() => void handoffReview()}
@@ -3166,7 +3321,7 @@ export function App() {
                 <ChatView
                 workspace={workspace}
                 workspaces={workspaces}
-                session={session}
+                session={stagedSession}
                 live={live}
                 runs={detail?.runs ?? []}
                 approvals={activeApprovals}
@@ -3217,11 +3372,11 @@ export function App() {
                 onScheduleSeedUsed={() => setScheduleSeed(null)}
                 onConvertTodoToSchedule={convertTodoToSchedule}
                 onConvertScheduleToTodo={convertScheduledTaskToTodo}
-                onNotice={(message) => pushToast(message, 'info')}
+                onNotice={(message) => pushToast(message, 'info', 'session')}
                 onOpenArtifact={openArtifact}
                 onOpenArtifacts={openArtifacts}
                 />
-              </>
+              </div>
             )
           ) : view === 'memory' ? (
             <MemoryPanel
@@ -3300,6 +3455,20 @@ export function App() {
           }}
           onError={showError}
           onNotice={(message) => pushToast(message, 'info')}
+        />
+      ) : null}
+
+      {qualityOpen ? (
+        <QualityDialog
+          state={detail?.quality ?? null}
+          publishTarget={settings?.qualityPublishTarget ?? 'none'}
+          workspacePath={detail?.workspace.path ?? activeWorkspace}
+          busy={qualityBusy}
+          onClose={() => setQualityOpen(false)}
+          onDecide={onQualityDecide}
+          onPublish={onQualityPublish}
+          onEvaluate={onQualityEvaluate}
+          onTune={onQualityTune}
         />
       ) : null}
 
@@ -3429,6 +3598,7 @@ export function App() {
             setSettingsOpen(false)
             openSessionById(sessionId)
           }}
+          onOpenSession={(sessionId) => openSessionById(sessionId)}
         />
       ) : null}
 
@@ -3458,6 +3628,23 @@ export function App() {
               throw error
             }
           }}
+        />
+      ) : null}
+
+      {reportOpen && session ? (
+        <SessionReportDialog
+          sessionId={session.id}
+          onClose={() => setReportOpen(false)}
+          onError={(error: unknown) => showError(errorMessage(error))}
+        />
+      ) : null}
+
+      {trailOpen && session ? (
+        <RunTrailDialog
+          session={session}
+          trail={trails[session.id]}
+          running={Boolean(activeRuns[session.id])}
+          onClose={() => setTrailOpen(false)}
         />
       ) : null}
 

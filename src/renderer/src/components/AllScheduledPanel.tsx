@@ -33,6 +33,26 @@ function workspaceName(path: string): string {
   return parts[parts.length - 1] || path
 }
 
+/** 从最近一次往回数连续失败：一次偶发失败和「每次都挂」要能分得出来。 */
+export function trailingFailures(task: ScheduledTask): number {
+  let count = 0
+  for (const run of task.runs ?? []) {
+    if (run.status !== 'failed') break
+    count += 1
+  }
+  return count
+}
+
+/** 最近几次触发的可读时间线，最多取前 4 条。 */
+export function runTimeline(task: ScheduledTask): string[] {
+  return (task.runs ?? []).slice(0, 4).map((run) => {
+    const at = formatLocal(run.at) || run.at
+    return run.status === 'failed'
+      ? t('{v1} 失败', { v1: at })
+      : t('{v1} 已触发', { v1: at })
+  })
+}
+
 /**
  * 左下角「定时」的全量视图：所有会话的定时任务都在这儿，按下一次触发时间排序。
  * 会话里的定时面板负责新建，这里负责「我到底还挂着哪些定时任务」。
@@ -102,6 +122,8 @@ export function AllScheduledPanel({
 
   const renderTask = (group: ScheduledTaskGroup, task: ScheduledTask) => {
     const busy = busyId === task.id
+    const timeline = runTimeline(task)
+    const streak = trailingFailures(task)
     return (
       <div className={`schedule-row${task.enabled ? '' : ' is-off'}`} key={task.id}>
         <span className={`schedule-kind kind-${task.kind}`}>{KIND_LABELS[task.kind]}</span>
@@ -116,6 +138,16 @@ export function AllScheduledPanel({
           </small>
           {task.lastStatus === 'failed' ? (
             <small className="schedule-row-error">{task.lastError || t('上次执行失败')}</small>
+          ) : null}
+          {timeline.length > 0 ? (
+            <small className="schedule-row-runs">
+              {t('最近触发：{v1}', { v1: timeline.join(' · ') })}
+            </small>
+          ) : null}
+          {streak >= 2 ? (
+            <small className="schedule-row-error">
+              {t('已经连续 {v1} 次失败，先暂停或改一下任务描述再试', { v1: streak })}
+            </small>
           ) : null}
         </div>
         <div className="schedule-row-actions">

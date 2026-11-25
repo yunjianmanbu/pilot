@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { HARD_CEILING_MAX } from '../src/shared/step-budget'
 
 let userDataDir = ''
 
@@ -147,8 +148,16 @@ describe('Store run limits', () => {
     const { store } = await setup()
     const raised = await store.updateSettings({ maxSteps: 800 })
     expect(raised.maxSteps).toBe(800)
+    // 上限就是循环里的硬天花板：以前夹到 1,000，但 step-budget 实际允许延展到 4,000，
+    // 两边数字不一致时用户填的值会被静默改掉。
     const clamped = await store.updateSettings({ maxSteps: 5_000 })
-    expect(clamped.maxSteps).toBe(1_000)
+    expect(clamped.maxSteps).toBe(HARD_CEILING_MAX)
+    // 0 是「不限」，不能被当成非法值改成默认值。
+    const unlimited = await store.updateSettings({ maxSteps: 0 })
+    expect(unlimited.maxSteps).toBe(0)
+    // 负数是无效输入，回落当前值而不是变成「不限」。
+    const negative = await store.updateSettings({ maxSteps: -5 })
+    expect(negative.maxSteps).toBe(unlimited.maxSteps)
   })
 
   it('enables auto-continue by default and preserves an explicit opt-out', async () => {

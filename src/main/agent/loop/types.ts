@@ -8,6 +8,7 @@ import type {
   ToolResult,
   ToolRisk,
 } from '../../../shared/types'
+import type { StepBudget } from '../../../shared/step-budget'
 
 /**
  * Per-step usage samples kept on a run record. Enough to attribute cost to a
@@ -149,8 +150,18 @@ export interface LoopOptions {
    * current verification, then report 已完成 / 未完成 / 下一步. Unlike `wrapUpAt`
    * (read-only analysis: stop searching and answer), this is for normal work and
    * turns a hard `max_steps` stop into a planned close. Default off.
+   * Ignored when `stepBudget` is supplied: the stall detector owns close-out then.
    */
   budgetWrapUp?: boolean
+  /**
+   * Dynamic step budget (see `shared/step-budget.ts`). When present the loop
+   * starts at `initial`, extends by `extension` after every step that produced
+   * new evidence, and only stops early when the run stalls for `stallAfter`
+   * consecutive steps. The hard stop moves to `ceiling`, so a static number no
+   * longer truncates long multi-task work. `maxSteps` becomes a fallback that
+   * is ignored in favour of `ceiling`.
+   */
+  stepBudget?: StepBudget
   /** Run independent read-only calls concurrently, capped at this size (default 4). */
   maxParallelReadTools?: number
   /**

@@ -2,6 +2,7 @@ import type { AgentToolDefinition } from '../../shared/types'
 import type { ToolHost } from './tools/spec'
 import { REVIEW_TOOL_ALLOWLIST, RUN_SHELL, RUN_SHELL_DESCRIPTION, LEARNING_RESEARCH, LEARNING_LOG, READ_FILE, LIST_DIRECTORY, SEARCH_FILES, GET_FILE_INFO, PROJECT_MAP } from './tools/spec'
 import { runFileTool, fileTools } from './tools/files'
+import { runCodeIntelTool, codeIntelTools } from './tools/code-intel'
 import { runShellTool, shellTools } from './tools/shell'
 import { runScreenTool, screenTools } from './tools/screen'
 import { runToolsmithTool, toolsmithTools } from './tools/toolsmith'
@@ -20,6 +21,7 @@ export { formatLearningSummary, withReferenceRoots } from './tools/host'
  */
 export const pilotTools: AgentToolDefinition[] = [
   ...fileTools,
+  ...codeIntelTools,
   ...shellTools,
   ...screenTools,
   ...toolsmithTools,
@@ -89,6 +91,7 @@ export function withAutonomyAccess(
 
 const TOOL_HANDLERS = [
   runFileTool,
+  runCodeIntelTool,
   runShellTool,
   runScreenTool,
   runToolsmithTool,

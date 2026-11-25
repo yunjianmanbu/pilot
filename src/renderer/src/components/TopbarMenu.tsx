@@ -16,6 +16,8 @@ export interface TopbarMenuItem {
   hint?: string
   /** 该操作对应的面板正开着：菜单里打勾，触发器也进入活跃态。 */
   active?: boolean
+  /** 这一项背后有多少件事等着人处理（如待裁决的质量候选）：菜单里出角标，触发器也提示。 */
+  badge?: number
   disabled?: boolean
   /** 在这一项之前画分隔线，用来分组（对话操作 / 产出与工作区）。 */
   dividerBefore?: boolean
@@ -88,6 +90,9 @@ export function TopbarMenuPopup({
           >
             <span className="topbar-menu-icon">{item.icon}</span>
             <span className="topbar-menu-label">{item.label}</span>
+            {item.badge && item.badge > 0 ? (
+              <span className="topbar-menu-badge">{item.badge > 99 ? '99+' : item.badge}</span>
+            ) : null}
             {item.active ? <CheckIcon width={13} height={13} className="topbar-menu-check" /> : null}
           </button>
         </Fragment>
@@ -142,20 +147,25 @@ export function TopbarMenu({ items, label, title }: TopbarMenuProps): ReactEleme
   }
 
   const anyActive = items.some((item) => item.active)
+  /** 收起时也要能看出「菜单里有事等你」：把各项待办数汇总成触发器上的一个角标。 */
+  const pending = items.reduce((sum, item) => sum + (item.badge ?? 0), 0)
 
   return (
     <div className="topbar-menu" ref={rootRef}>
       <button
         ref={triggerRef}
         type="button"
-        className={`topbar-icon${open || anyActive ? ' is-active' : ''}`}
+        className={`topbar-icon${open || anyActive ? ' is-active' : ''}${pending > 0 ? ' alert' : ''}`}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={label}
-        title={title ?? label}
+        title={pending > 0 ? `${title ?? label} · ${pending}` : (title ?? label)}
         onClick={() => setOpen((value) => !value)}
       >
         <MoreIcon width={16} height={16} />
+        {pending > 0 ? (
+          <span className="topbar-menu-trigger-badge">{pending > 99 ? '99+' : pending}</span>
+        ) : null}
       </button>
       {open ? (
         <TopbarMenuPopup items={items} label={label} onPick={pick} onClose={close} />

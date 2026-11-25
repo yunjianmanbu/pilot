@@ -92,6 +92,11 @@ export function scheduleInput(
   if (typeof params['timeOfDay'] === 'string') {
     input.timeOfDay = params['timeOfDay'].slice(0, 5)
   }
+  // 手机端传本地 "YYYY-MM-DD"；空串表示「不再限定起始日」，由 store 按今天重新算。
+  // 形状校验留给 store（cleanStartDate 报「起始日期要像 2026-11-25」），这里只管透传。
+  if (typeof params['startDate'] === 'string') {
+    input.startDate = params['startDate'].trim().slice(0, 10)
+  }
   if (typeof params['enabled'] === 'boolean') input.enabled = params['enabled']
   return input
 }

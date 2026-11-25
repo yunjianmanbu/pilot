@@ -3,6 +3,7 @@
 import type { AgentToolDefinition, PlanItem, ScheduledTaskInput, ToolResult } from '../../../shared/types'
 import { join } from 'node:path'
 import { REMEMBER, UPDATE_PLAN, ADD_TODO, SCHEDULE_TASK, PROPOSE_SELF_UPDATE } from './spec'
+import { PLAN_ITEM_LIMIT } from '../../../shared/plan-limits'
 import type { ToolHost } from './spec'
 import { formatScheduleLine, formatScheduleList, scheduleKindArg, minutesArg } from './host'
 
@@ -26,7 +27,7 @@ export const planTools: AgentToolDefinition[] = [
 {
     name: UPDATE_PLAN,
     description:
-      'Create or update the visible task plan. Use this at the start of any multi-step task and after each milestone. Keep 2-8 items, one in_progress at a time, and mark items done only when verified.',
+      'Create or update the visible task plan. Use this at the start of any multi-step task and after each milestone. Keep 2-8 items, one in_progress at a time, and mark items done only when verified. Order items by dependency instead of by the order they were asked: work that another item must wait for goes first, independent work keeps the order the user wrote, and when your order differs from theirs, explain why in goal.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -177,7 +178,7 @@ export async function runPlanTool(
   {
         const rawItems = Array.isArray(args['items']) ? args['items'] : []
         const items: PlanItem[] = []
-        for (const [index, item] of rawItems.slice(0, 12).entries()) {
+        for (const [index, item] of rawItems.slice(0, PLAN_ITEM_LIMIT).entries()) {
           if (!item || typeof item !== 'object') continue
           const record = item as Record<string, unknown>
           const text = typeof record['text'] === 'string' ? record['text'].trim() : ''

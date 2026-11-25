@@ -98,6 +98,8 @@ interface PersistedMaintenance {
   lastMaintenanceAt: number
   lastAuditAt: number
   lastTrashSweepAt: number
+  overBudgetAt?: number
+  overBudgetBytes?: number
 }
 
 async function readMaintenanceState(): Promise<PersistedMaintenance> {
@@ -558,6 +560,178 @@ describe('checkpoint service', () => {
     // The newest snapshot is never evicted.
     expect(remaining[0]?.id).toBe(snapshots[2]?.id)
     expect(await blobFiles()).toHaveLength(1)
+  })
+
+  it('stops a full scan when a snapshot is queued behind the store', async () => {
+    const { service, session, workspacePath } = await setup()
+    await service.create({
+      sessionId: session.id,
+      workspacePath,
+      label: 'queued',
+      messageCount: 0,
+      trigger: 'manual',
+      retention: 20,
+    })
+    const orphan = join(userDataDir, 'checkpoints', 'blobs', 'ff', 'f'.repeat(64))
+    await mkdir(dirname(orphan), { recursive: true })
+    await writeFile(orphan, 'orphan', 'utf8')
+
+    // A run's first snapshot is waiting for the store-wide gate; the scan must
+    // bail out instead of making it wait for every manifest in the store.
+    ;(service as unknown as { pendingSnapshotWaiters: number }).pendingSnapshotWaiters = 1
+    await expect(service.maintain({ maxBytes: 1, force: true })).resolves.toBeUndefined()
+    expect(await exists(orphan)).toBe(true)
+    // Deferral must not record a completed pass, so an idle moment retries.
+    const statePath = join(userDataDir, 'checkpoints', '.maintenance.json')
+    const before = await readFile(statePath, 'utf8')
+    await service.maintain({ maxBytes: 1, force: true })
+    expect(await readFile(statePath, 'utf8')).toBe(before)
+  })
+
+  it('counts a snapshot queued behind the store as a waiter', async () => {
+    const { service, session, workspacePath } = await setup()
+    const inner = service as unknown as {
+      exclusive: (task: () => Promise<void>) => Promise<void>
+      pendingSnapshotWaiters: number
+    }
+    // Hold the store-wide gate the way a maintenance pass does.
+    let release: () => void = () => undefined
+    const holding = inner.exclusive(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+    )
+    // A run's first snapshot queues behind it; that queue is what makes the
+    // scan give way, so it has to be counted by the real create path, not only
+    // by a test that pokes the field.
+    const snapshot = service.create({
+      sessionId: session.id,
+      workspacePath,
+      label: 'queued behind maintenance',
+      messageCount: 0,
+      trigger: 'prompt',
+      retention: 20,
+    })
+    snapshot.then(
+      () => undefined,
+      () => undefined,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(inner.pendingSnapshotWaiters).toBe(1)
+    release()
+    await holding
+    expect((await snapshot).complete).toBe(true)
+    expect(inner.pendingSnapshotWaiters).toBe(0)
+  })
+
+  it('still waits for a running snapshot when nothing else is queued', async () => {
+    const { service } = await setup()
+    const inner = service as unknown as { running: Set<Promise<void>> }
+    // Giving way must not turn into running beside a snapshot that is writing
+    // blobs right now; that wait is what keeps the sweep safe.
+    let release: () => void = () => undefined
+    const writing = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    inner.running.add(writing)
+    let settled = false
+    const pass = service.maintain({ maxBytes: 1, force: true }).then(() => {
+      settled = true
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(settled).toBe(false)
+    inner.running.delete(writing)
+    release()
+    await pass
+    expect(settled).toBe(true)
+  })
+
+  it('does not take the store-wide gate for a pass with nothing to do', async () => {
+    const { service, session, workspacePath } = await setup()
+    await service.create({
+      sessionId: session.id,
+      workspacePath,
+      label: 'first',
+      messageCount: 0,
+      trigger: 'manual',
+      retention: 20,
+    })
+    // First pass persists the byte estimate and the timers it throttles on.
+    await service.maintain({ maxBytes: 4 * 1024 * 1024 })
+
+    const inner = service as unknown as { exclusive: (task: () => Promise<void>) => Promise<void> }
+    const exclusive = vi.spyOn(inner, 'exclusive')
+    // Inside the five-minute throttle: no scan, and no store-wide gate either -
+    // taking it would wait for every running snapshot and block every new run's
+    // first snapshot in the meantime.
+    await service.maintain({ maxBytes: 4 * 1024 * 1024 })
+    expect(exclusive).not.toHaveBeenCalled()
+  })
+
+  it('gives way when a snapshot is already queued behind the store', async () => {
+    const { service } = await setup()
+    const inner = service as unknown as {
+      running: Set<Promise<void>>
+      pendingSnapshotWaiters: number
+    }
+    // A snapshot that never finishes: without the deferral the pass would wait
+    // for it forever while holding the gate every other run's first snapshot
+    // needs.
+    inner.running.add(new Promise<void>(() => undefined))
+    inner.pendingSnapshotWaiters = 1
+    const startedAt = Date.now()
+    await expect(service.maintain({ maxBytes: 1, force: true })).resolves.toBeUndefined()
+    expect(Date.now() - startedAt).toBeLessThan(500)
+  })
+
+  it('backs off when the protected snapshots keep the store over budget', async () => {
+    const { store, service, session, workspacePath } = await setup()
+    await service.create({
+      sessionId: session.id,
+      workspacePath,
+      label: 'pinned',
+      messageCount: 0,
+      trigger: 'manual',
+      retention: 20,
+    })
+    await service.maintain({ maxBytes: 1, force: true })
+    const persisted = await readMaintenanceState()
+    expect(persisted.overBudgetAt).toBeTypeOf('number')
+    expect(persisted.blobBytes).toBeGreaterThan(1)
+
+    // An unchanged estimate must not start another full scan.
+    const statePath = join(userDataDir, 'checkpoints', '.maintenance.json')
+    await writeFile(
+      statePath,
+      JSON.stringify({ ...persisted, lastMaintenanceAt: 0 }),
+      'utf8',
+    )
+    const restarted = new CheckpointService(userDataDir, store, { watch: false })
+    const scanAll = vi.spyOn(
+      restarted as unknown as { scanAll: () => Promise<unknown> },
+      'scanAll',
+    )
+    await restarted.maintain({ maxBytes: 1 })
+    expect(scanAll).not.toHaveBeenCalled()
+
+    // Growth past the threshold earns another attempt.
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        ...persisted,
+        lastMaintenanceAt: 0,
+        blobBytes: Math.ceil(persisted.blobBytes * 2),
+      }),
+      'utf8',
+    )
+    const grown = new CheckpointService(userDataDir, store, { watch: false })
+    const scanGrown = vi.spyOn(
+      grown as unknown as { scanAll: () => Promise<unknown> },
+      'scanAll',
+    )
+    await grown.maintain({ maxBytes: 1 })
+    expect(scanGrown).toHaveBeenCalled()
   })
 
   it('keeps the newest snapshot of every session under budget pressure', async () => {

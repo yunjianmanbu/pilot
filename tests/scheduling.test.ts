@@ -22,6 +22,7 @@ vi.mock('electron', () => ({
 }))
 
 import { Store } from '../src/main/store'
+import { MAX_SCHEDULED_RUNS } from '../src/main/store-schema'
 
 const cleanups: string[] = []
 
@@ -223,6 +224,43 @@ describe('Store scheduled tasks', () => {
     expect(completedInterval?.lastStatus).toBe('failed')
     expect(completedInterval?.lastError).toBe('队列已满')
     expect(Date.parse(completedInterval!.nextRunAt)).toBe(Date.now() + 30 * 60_000)
+  })
+
+  it('keeps a bounded trigger history for each task', async () => {
+    const { store, sessionId } = await setup()
+    const task = await store.addScheduledTask(sessionId, {
+      content: '巡检部署状态',
+      kind: 'interval',
+      intervalMinutes: 30,
+    })
+    for (let index = 0; index < 12; index += 1) {
+      vi.setSystemTime(new Date(`2026-03-01T09:${String(index).padStart(2, '0')}:00.000Z`))
+      const failed = index === 3
+      await store.completeScheduledRun(
+        task.id,
+        failed ? 'failed' : 'queued',
+        failed ? '队列已满' : undefined,
+      )
+    }
+
+    const stored = store.allScheduledTasks()[0]!
+    // 只留最近 10 次，新的在前：任务不会跑一次就胀大一份状态文件。
+    expect(stored.runs).toHaveLength(MAX_SCHEDULED_RUNS)
+    expect(stored.runs![0]!.at).toBe('2026-03-01T09:11:00.000Z')
+    expect(stored.runs![0]!.status).toBe('queued')
+    expect(stored.runs![0]!.detail).toBeUndefined()
+    expect(stored.runs!.some((run) => run.status === 'failed' && run.detail === '队列已满')).toBe(
+      true,
+    )
+    // 最早那条已经被裁掉。
+    expect(stored.runs!.some((run) => run.at === '2026-03-01T09:00:00.000Z')).toBe(false)
+
+    // 历史要能过一遍落盘/读回：读回来时脏条目被丢掉，条数上限仍然成立。
+    const reloaded = new Store()
+    await reloaded.load()
+    const after = reloaded.allScheduledTasks()[0]!
+    expect(after.runs).toHaveLength(MAX_SCHEDULED_RUNS)
+    expect(after.runs![0]!.at).toBe(stored.runs![0]!.at)
   })
 
   it('re-enabling an expired once task moves it into the future', async () => {

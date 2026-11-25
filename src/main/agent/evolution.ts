@@ -34,6 +34,8 @@ import {
 } from './profile-benchmark'
 import { createBenchmarkTaskRunner } from './benchmark-runner'
 import { DEFAULT_BENCHMARK_TASKS } from './profile-benchmark-tasks'
+import { BENCHMARK_SUITE_VERSION } from './profile-benchmark-suite'
+import { comparisonVoidReason } from '../../shared/profile-evidence'
 import { isUserTaskTurn } from './context'
 import { extractJsonObject as extractJson } from './json'
 import {
@@ -442,10 +444,21 @@ export class EvolutionService {
     let comparison =
       options.comparison ??
       reusableComparison(profile.review?.comparison, profileId, current?.id ?? null)
+    // A review that was scored under an older pair or an older task library
+    // stays on disk; without this the panel says "never measured" about a
+    // measurement that exists and was simply voided.
+    let voidedReason = comparison
+      ? undefined
+      : comparisonVoidReason(profile.review?.comparison, {
+          candidateId: profileId,
+          activeProfileId: current?.id ?? null,
+          suiteVersion: BENCHMARK_SUITE_VERSION,
+        })
     let measureError = ''
     if (options.auto === true && !comparison) {
       try {
         comparison = await this.measureComparison('workspace', workspacePath, profileId)
+        voidedReason = undefined
       } catch (error) {
         measureError = error instanceof Error ? scrub(error.message, 300) : '实测对比失败'
       }
@@ -455,6 +468,7 @@ export class EvolutionService {
       review,
       comparison,
       measureError ? [`实测对比失败：${measureError}`] : [],
+      voidedReason,
     )
     const updated = await this.store.setProfileReview(workspacePath, profileId, review)
     if (review.pass && review.activation?.ready && autoActivate) {
@@ -581,7 +595,7 @@ export class EvolutionService {
         ? await this.benchmarkGlobal(profileId)
         : await this.benchmark(workspacePath, profileId)
     return toProfileComparison(run, this.judgeLabels(), {
-      ...(run.currentProfileId ? { currentId: run.currentProfileId } : {}),
+      currentId: run.currentProfileId,
       candidateId: profileId,
     })
   }
@@ -603,7 +617,7 @@ export class EvolutionService {
         : this.store.workspaceDetail(workspacePath).profiles.find((entry) => entry.id === profileId)
     if (!profile) throw new Error(scope === 'global' ? '全局画像不存在' : '画像不存在')
     const comparison = toProfileComparison(run, this.judgeLabels(), {
-      ...(run.currentProfileId ? { currentId: run.currentProfileId } : {}),
+      currentId: run.currentProfileId,
       candidateId: profileId,
     })
     if (profile.review) {
@@ -1210,10 +1224,18 @@ export class EvolutionService {
     let comparison =
       options.comparison ??
       reusableComparison(profile.review?.comparison, profileId, current?.id ?? null)
+    let voidedReason = comparison
+      ? undefined
+      : comparisonVoidReason(profile.review?.comparison, {
+          candidateId: profileId,
+          activeProfileId: current?.id ?? null,
+          suiteVersion: BENCHMARK_SUITE_VERSION,
+        })
     let measureError = ''
     if (!comparison) {
       try {
         comparison = await this.measureComparison('global', '', profileId)
+        voidedReason = undefined
       } catch (error) {
         measureError = error instanceof Error ? scrub(error.message, 300) : '实测对比失败'
       }
@@ -1223,6 +1245,7 @@ export class EvolutionService {
       review,
       comparison,
       measureError ? [`实测对比失败：${measureError}`] : [],
+      voidedReason,
     )
     const updated = await this.store.setGlobalProfileReview(profileId, review)
     return { profile: updated, activated: false }

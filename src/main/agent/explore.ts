@@ -2,7 +2,7 @@ import type { AppLocale } from '../../shared/i18n'
 import type { AgentToolDefinition } from '../../shared/types'
 import { toolOutputCharsFor, truncateMiddle } from './context'
 import { runAgentLoop, type ModelClient } from './loop'
-import { reasoningLanguage } from './prompt'
+import { reasoningLanguage, thinkingLanguageGuard } from './prompt'
 import {
   executePilotTool,
   LIST_DIRECTORY,
@@ -56,7 +56,7 @@ export function buildExplorePrompt(
     '- Return concise findings with exact relative paths and line ranges. Separate verified facts from guesses, and say explicitly when something could not be determined.',
     '- Do not modify anything and do not propose shell commands that would change the workspace.',
     "- Answer in the user's language.",
-    `- Write every reasoning/thinking block in ${reasoningLanguage(locale)}, the language the app UI and system use, even when the task, the files or the tool output are in another language. Keep paths, identifiers, commands and quoted text exactly as written.`,
+    `- Write every reasoning/thinking block in ${reasoningLanguage(locale)}, the language the app UI and system use, even when the task, the files or the tool output are in another language. ${thinkingLanguageGuard(locale)} Keep paths, identifiers, commands and quoted text exactly as written.`,
     '',
     `Task: ${task}`,
   ]

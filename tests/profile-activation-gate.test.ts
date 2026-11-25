@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { assertActivatable } from '../src/core/profile-gate'
+import { BENCHMARK_SUITE_VERSION } from '../src/main/agent/profile-benchmark-suite'
 import type { ProfileComparison, ProfileReview, ProfileVersion } from '../src/shared/types'
 
 function comparison(overrides: Partial<ProfileComparison> = {}): ProfileComparison {
@@ -13,6 +14,11 @@ function comparison(overrides: Partial<ProfileComparison> = {}): ProfileComparis
     current: empty,
     candidate: empty,
     reasons: [],
+    // A win only counts as evidence for the pair and the ruler it was measured
+    // on; the gate re-checks those on every activation.
+    currentId: 'incumbent',
+    candidateId: 'candidate',
+    suiteVersion: BENCHMARK_SUITE_VERSION,
     ...overrides,
   } as ProfileComparison
 }
@@ -95,6 +101,47 @@ describe('assertActivatable', () => {
       review: review({ comparison: comparison() }),
     })
     expect(() => assertActivatable(current, candidate, true, failMessage)).toThrow(/不能删除/)
-    expect(() => assertActivatable(null, candidate, true, failMessage)).not.toThrow()
+    // No active version means the recorded "no baseline" pair still applies.
+    const firstProfile = profile({
+      promptAddendum: 'Prefer tests before reports.',
+      review: review({ comparison: comparison({ currentId: null }) }),
+    })
+    expect(() => assertActivatable(null, firstProfile, true, failMessage)).not.toThrow()
+  })
+})
+
+describe('assertActivatable: stale evidence', () => {
+  it('refuses a win measured against an older task library, even with force', () => {
+    const candidate = profile({
+      review: review({ comparison: comparison({ suiteVersion: BENCHMARK_SUITE_VERSION - 1 }) }),
+    })
+    expect(() => assertActivatable(current, candidate, false, failMessage)).toThrow(/旧实测已失效/)
+    expect(() => assertActivatable(current, candidate, true, failMessage)).toThrow(/旧实测已失效/)
+  })
+
+  it('refuses evidence that never recorded which library produced it', () => {
+    const candidate = profile({
+      review: review({ comparison: comparison({ suiteVersion: undefined }) }),
+    })
+    expect(() => assertActivatable(current, candidate, false, failMessage)).toThrow(/题库版本/)
+  })
+
+  it('refuses evidence measured for another candidate', () => {
+    const candidate = profile({
+      review: review({ comparison: comparison({ candidateId: 'someone-else' }) }),
+    })
+    expect(() => assertActivatable(current, candidate, false, failMessage)).toThrow(/不是这个版本量的/)
+  })
+
+  it('refuses evidence whose baseline is no longer in force', () => {
+    const candidate = profile({
+      review: review({ comparison: comparison({ currentId: 'rolled-back-version' }) }),
+    })
+    expect(() => assertActivatable(current, candidate, false, failMessage)).toThrow(/基线/)
+  })
+
+  it('accepts a fresh win for the pair in force', () => {
+    const candidate = profile({ review: review({ comparison: comparison() }) })
+    expect(() => assertActivatable(current, candidate, false, failMessage)).not.toThrow()
   })
 })

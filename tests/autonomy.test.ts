@@ -104,6 +104,18 @@ describe('完全自主档的准入门槛', () => {
     ).toEqual(['manual-mode', 'token-budget', 'step-cap'])
   })
 
+  it('treats 0 steps as "unlimited" rather than as a missing cap', () => {
+    // 设置里的 0 会被循环换成 UNLIMITED_STEPS_FALLBACK 作阀门，预算依然是可控的；
+    // 把它当「没设上限」会得出「填 0 反而不允许开启完全自主」这种自相矛盾的结论。
+    expect(
+      autonomyBlockers({ fullAutonomy: true, approvalMode: 'auto', maxTokens: 500_000, maxSteps: 0 }),
+    ).toEqual([])
+    // 负数是无效输入，不能被当成「不限」。
+    expect(
+      autonomyBlockers({ fullAutonomy: true, approvalMode: 'auto', maxTokens: 500_000, maxSteps: -1 }),
+    ).toEqual(['step-cap'])
+  })
+
   it('turns "no cap" into a concrete budget instead of infinity', () => {
     expect(autonomyTokenBudget(0)).toBe(AUTONOMY_DEFAULT_TOKEN_BUDGET)
     expect(autonomyTokenBudget(undefined)).toBe(AUTONOMY_DEFAULT_TOKEN_BUDGET)

@@ -55,6 +55,7 @@ export const TOOL_DESCRIPTIONS_ZH: Record<string, string> = {
   write_file: '新建文件或整体重写，适合新文件与全文替换。',
   apply_patch: '对已有文件做定点修改，一次可提交多处改动。',
   search_files: '在工作区里搜文本或正则，返回文件名、行号与预览。',
+  code_intel: '查符号定义、引用与引用计数，按语言解析而不是按文本匹配；改前先看哪些地方在用。',
   get_file_info: '查看某个路径的类型、大小与修改时间。',
   // 命令与进程
   run_command: '直接运行一个程序，不经过 shell，不支持管道与重定向。',

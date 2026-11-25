@@ -32,6 +32,8 @@ import type { NotifyEventDef, NotifyEventId } from '../../shared/notify-events'
 import type {
   ReflectionEmailState,
   ReflectionFinding,
+  ReflectionFindingStatus,
+  ReflectionReport,
   ReflectionScheduleMode,
   ReflectionTrigger,
   ReflectionTriggers,
@@ -384,6 +386,15 @@ export interface CompanionOptions {
     run(): Promise<unknown>
     testMail(to: string): Promise<{ ok: boolean; error?: string }>
     clearReports(): Promise<PhoneReflectState>
+    /**
+     * 标记一条结论的处理状态，返回更新后的报告详情。
+     * 手机上看完结论就能标「已处理 / 不打算做」，下一轮反思据此不重复提同一条。
+     */
+    setFindingStatus(
+      reportId: string,
+      findingId: string,
+      status: ReflectionFindingStatus,
+    ): Promise<PhoneReflectReport>
   }
   onStatus: (status: CompanionStatus) => void
   /** Mirror phone-initiated changes to the desktop window. */
@@ -456,6 +467,8 @@ export interface PhoneReflectSettings {
   dailyTime: string
   topics: ReflectionTopicId[]
   lastRunAt: string
+  /** 上一次成功反思时的应用版本；`version` 模式下按它判断是否升级过。 */
+  lastVersion: string
   /** 旧字段：只代表「反思报告」这一类通知，仅为旧版手机端保留。 */
   emailEnabled: boolean
   /** 唯一邮箱：收件人、SMTP 登录名与发件人。 */
@@ -492,6 +505,8 @@ export interface PhoneReflectReport {
   trigger: ReflectionTrigger
   model: string
   topics: ReflectionTopicId[]
+  /** 本轮因证据不足而没有交给模型的问题域；手机端也要能说明「为什么没问这个域」。 */
+  skipped: ReflectionReport['skipped']
   summary: string
   findings: ReflectionFinding[]
   evidence: string

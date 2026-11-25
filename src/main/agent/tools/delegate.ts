@@ -3,6 +3,7 @@
 import type { AgentToolDefinition, ToolResult } from '../../../shared/types'
 import { join } from 'node:path'
 import { checkEgress } from '../learning'
+import { evaluateSkill, formatSkillEval } from '../skill-eval'
 import { EXPLORE, SUBAGENT, USE_SKILL, CREATE_SKILL, CREATE_MCP_SERVER, LEARNING_RESEARCH, LEARNING_LOG } from './spec'
 import type { ToolHost } from './spec'
 import { formatLearningSummary } from './host'
@@ -282,11 +283,14 @@ export async function runDelegateTool(
           ...(whenToUse ? { whenToUse } : {}),
           ...(args['overwrite'] === true ? { overwrite: true } : {}),
         })
+        // 自检结果直接跟着写盘结果返回：写的人当场就能看到缺什么，不用再调一次工具。
+        const selfCheck = formatSkillEval(evaluateSkill({ name, description, body, ...(whenToUse ? { whenToUse } : {}) }))
         return {
           ok: true,
           output: [
             `${created.overwritten ? '已更新' : '已创建'}技能 ${created.name}：${created.path}`,
             '本次会话已重新加载技能列表，可用 use_skill 读取全文；后续会话会在系统提示里列出它。',
+            selfCheck,
           ].join('\n'),
           risk: 'write',
           metadata: { name: created.name, path: created.path, overwritten: created.overwritten },

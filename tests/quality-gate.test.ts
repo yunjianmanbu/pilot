@@ -226,7 +226,7 @@ describe('evaluate', () => {
     expect(bell).toHaveLength(0)
   })
 
-  it('高质量评估 + 已有基线 → awaiting_user 并亮铃铛', async () => {
+  it('高质量评估 + 已有基线 → awaiting_user 并亮菜单角标', async () => {
     const first = harness({ judgeScore: 20 })
     const baselineState = await first.service.evaluate('/ws')
     const baseline = baselineState.baseline!

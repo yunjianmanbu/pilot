@@ -50,8 +50,26 @@ export function mediaUrlFromHttpPath(pathname: string): string | null {
 /**
  * `text` and `markdown` are read into memory and rendered by React; every other
  * kind is streamed by the protocol handler.
+ *
+ * `pdf`, `docx`, `xlsx` and `pptx` are parsed in the renderer after being
+ * streamed: the bytes are fetched from the same workspace-jailed URL, so a
+ * document outside the open workspace still cannot be reached. `document` is
+ * every other office/e-book format we recognise but cannot render in-app —
+ * those get an explanation and a "open with the system app" button instead of
+ * being misread as UTF-8 text.
  */
-export type PreviewKind = 'text' | 'markdown' | 'image' | 'video' | 'audio' | 'html'
+export type PreviewKind =
+  | 'text'
+  | 'markdown'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'html'
+  | 'pdf'
+  | 'docx'
+  | 'xlsx'
+  | 'pptx'
+  | 'document'
 
 const IMAGE_EXTENSIONS = new Set([
   'png',
@@ -72,6 +90,36 @@ const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opu
 const HTML_EXTENSIONS = new Set(['html', 'htm'])
 
 const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown', 'mdx'])
+
+const PDF_EXTENSIONS = new Set(['pdf'])
+
+const DOCX_EXTENSIONS = new Set(['docx'])
+
+const XLSX_EXTENSIONS = new Set(['xlsx', 'xlsm'])
+
+const PPTX_EXTENSIONS = new Set(['pptx', 'pptm'])
+
+/**
+ * Office and e-book formats we recognise but do not render in-app.
+ *
+ * The legacy binary Office formats (`doc`, `xls`, `ppt`) share the extension of
+ * nothing else, so misreading them as UTF-8 used to produce a screen of
+ * mojibake instead of an honest "cannot preview this here". The list matches
+ * `DOCUMENT_TYPES` in `pilot-link/lib/files.js`, so the phone and the desktop
+ * agree on what counts as a document.
+ */
+const OFFICE_EXTENSIONS = new Set([
+  'doc',
+  'xls',
+  'ppt',
+  'rtf',
+  'odt',
+  'ods',
+  'odp',
+  'pages',
+  'numbers',
+  'key',
+])
 
 const CONTENT_TYPES: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -105,6 +153,11 @@ const CONTENT_TYPES: Record<string, string> = {
   avif: 'image/avif',
   svg: 'image/svg+xml',
   pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  pptm: 'application/vnd.ms-powerpoint.presentation.macroEnabled.12',
 }
 
 function extensionOf(name: string): string {
@@ -120,12 +173,27 @@ export function previewKindOf(name: string): PreviewKind {
   if (AUDIO_EXTENSIONS.has(ext)) return 'audio'
   if (HTML_EXTENSIONS.has(ext)) return 'html'
   if (MARKDOWN_EXTENSIONS.has(ext)) return 'markdown'
+  if (PDF_EXTENSIONS.has(ext)) return 'pdf'
+  if (DOCX_EXTENSIONS.has(ext)) return 'docx'
+  if (XLSX_EXTENSIONS.has(ext)) return 'xlsx'
+  if (PPTX_EXTENSIONS.has(ext)) return 'pptx'
+  if (OFFICE_EXTENSIONS.has(ext)) return 'document'
   return 'text'
 }
 
 /** True when the main process has to read the file into memory as UTF-8. */
 export function isTextKind(kind: PreviewKind): boolean {
   return kind === 'text' || kind === 'markdown'
+}
+
+/** True for the document kinds the renderer parses itself. */
+export function isParsedDocumentKind(kind: PreviewKind): boolean {
+  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'pptx'
+}
+
+/** True for every kind that is shown as a document rather than as text. */
+export function isDocumentKind(kind: PreviewKind): boolean {
+  return isParsedDocumentKind(kind) || kind === 'document'
 }
 
 /** True when the file can be shown by an <img>, <video> or <audio> tag. */

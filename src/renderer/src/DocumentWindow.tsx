@@ -95,7 +95,13 @@ export function DocumentWindow({ workspace, path }: { workspace: string; path: s
       <main className="doc-window-body">
         {error ? <div className="doc-window-error">{error}</div> : null}
         {!error && preview ? (
-          <FilePreviewBody key={preview.path} preview={preview} />
+          <FilePreviewBody
+            key={preview.path}
+            preview={preview}
+            onOpenExternal={() => {
+              void window.pilot.openFile(workspace, path).catch(() => undefined)
+            }}
+          />
         ) : null}
         {!error && !preview && loading ? (
           <div className="preview-loading">

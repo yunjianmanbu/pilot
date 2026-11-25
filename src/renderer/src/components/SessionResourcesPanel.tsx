@@ -195,6 +195,10 @@ function FilePreviewPane({
               onOpenWindow: () => {
                 void window.pilot.openDocument(workspace.path, preview.path)
               },
+              onOpenExternal: () => {
+                // 服务器模式打开的是服务器那台机器的应用；失败就当没这个按钮。
+                void window.pilot.openFile(workspace.path, preview.path).catch(() => undefined)
+              },
             }
           : {})}
       />

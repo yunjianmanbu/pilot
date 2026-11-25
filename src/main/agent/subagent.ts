@@ -3,7 +3,7 @@ import type { AgentToolDefinition } from '../../shared/types'
 import { toolOutputCharsFor, truncateMiddle } from './context'
 import { runAgentLoop, type ModelClient } from './loop'
 import { evaluatePermission } from './permissions'
-import { reasoningLanguage } from './prompt'
+import { reasoningLanguage, thinkingLanguageGuard } from './prompt'
 import {
   loadScriptNames,
   MAX_CHECKS_PER_SUBAGENT,
@@ -139,7 +139,8 @@ export function parseVerificationSuggestions(summary: string): {
   return { checks, rejected }
 }
 
-function buildPrompt(
+/** Exported for the thinking-language assertions: it is the subagent's system prompt. */
+export function buildPrompt(
   mode: SubagentMode,
   root: string,
   task: string,
@@ -160,7 +161,7 @@ function buildPrompt(
     '- Read the smallest set of files that answers the task. Prefer search_files with a narrow glob and read_file slices over whole-file dumps.',
     '- Return concise findings with exact relative paths and line ranges. Separate verified facts from guesses, and say explicitly when something could not be determined.',
     "- Answer in the user's language.",
-    `- Write every reasoning/thinking block in ${reasoningLanguage(locale)}, the language the app UI and system use, even when the task, the files or the tool output are in another language. Keep paths, identifiers, commands and quoted text exactly as written.`,
+    `- Write every reasoning/thinking block in ${reasoningLanguage(locale)}, the language the app UI and system use, even when the task, the files or the tool output are in another language. ${thinkingLanguageGuard(locale)} Keep paths, identifiers, commands and quoted text exactly as written.`,
   ]
   if (mode === 'general') {
     common.push(

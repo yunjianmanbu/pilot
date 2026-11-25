@@ -38,21 +38,42 @@ function useNowTicker(active: boolean): number {
   return now
 }
 
-function renderReasoning(part: ProcessPart & { kind: 'reasoning' }) {
-  // The folded title carries the first line of the thinking, like the phone app.
-  return <ReasoningBlock key={part.key} text={part.text} at={part.at} />
+function renderReasoning(
+  part: ProcessPart & { kind: 'reasoning' },
+  live: boolean,
+  onEngage?: () => void,
+) {
+  // The folded line carries a line of the thinking, like the phone app; the step
+  // that is still streaming updates it to the newest line instead of opening
+  // itself — thinking stays background until the reader asks for it.
+  return (
+    <ReasoningBlock
+      key={part.key}
+      text={part.text}
+      at={part.at}
+      live={live}
+      onEngage={onEngage}
+    />
+  )
 }
 
 function ProcessBoxRow({
   process,
   onLoadSteps,
   initialExpanded = false,
+  onEngage,
 }: {
   process: ProcessMessage
   /** Fetch one run's steps when its page did not carry them. */
   onLoadSteps?: ((runId: string) => Promise<boolean>) | undefined
   /** Re-opens the box after its placeholder was replaced by the loaded run. */
   initialExpanded?: boolean
+  /**
+   * The reader started inspecting this box (opened it, or scrolled inside it).
+   * The transcript stops following the newest output: otherwise the next
+   * streamed token scrolls the box they are reading out of view.
+   */
+  onEngage?: (() => void) | undefined
 }) {
   const [expanded, setExpanded] = useState(initialExpanded)
   const [loading, setLoading] = useState(false)
@@ -156,7 +177,10 @@ function ProcessBoxRow({
       pinningRef.current = false
       return
     }
-    stickRef.current = atBottomOf(node)
+    const following = atBottomOf(node)
+    // Leaving the bottom means the reader is reading this box, not the answer.
+    if (!following && stickRef.current) onEngage?.()
+    stickRef.current = following
   }
 
   // Explicit user intent (wheel, touch, drag) releases the pin.
@@ -165,7 +189,10 @@ function ProcessBoxRow({
     pinningRef.current = false
     const node = bodyRef.current
     if (!node) return
-    if (!atBottomOf(node) || (event.deltaY ?? 0) < 0) stickRef.current = false
+    if (!atBottomOf(node) || (event.deltaY ?? 0) < 0) {
+      stickRef.current = false
+      onEngage?.()
+    }
   }
 
   // Steps carry no ordinal any more: the reader tracks the work by its content,
@@ -194,7 +221,8 @@ function ProcessBoxRow({
     }
     flushTools()
     if (part.kind === 'reasoning') {
-      nodes.push(renderReasoning(part))
+      // Only the newest step of a running box is still being written.
+      nodes.push(renderReasoning(part, Boolean(running) && part.key === lastKey, onEngage))
       continue
     }
     nodes.push(
@@ -214,6 +242,8 @@ function ProcessBoxRow({
         onClick={() => {
           // Re-opening the box starts from the newest step again.
           stickRef.current = true
+          // Inspecting the steps is a read: stop the transcript from scrolling.
+          onEngage?.()
           setExpanded((value) => !value)
           // A placeholder loads its steps only when the reader opens it.
           if (!expanded && pending && !loading) loadSteps()
@@ -248,7 +278,14 @@ function ProcessBoxRow({
 
       {hidden > 0 && !expanded ? (
         <div className="process-more-wrap">
-          <button type="button" className="process-more" onClick={() => setExpanded(true)}>
+          <button
+            type="button"
+            className="process-more"
+            onClick={() => {
+              onEngage?.()
+              setExpanded(true)
+            }}
+          >
             {t("更早的 {v1} 项执行过程 · 展开", { v1: hidden })}
           </button>
         </div>

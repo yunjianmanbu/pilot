@@ -55,6 +55,27 @@ describe('TopbarMenu trigger', () => {
     const open = renderToStaticMarkup(<TopbarMenu items={items()} label="会话操作" />)
     expect(open).toContain('class="topbar-icon is-active"')
   })
+
+  it('收起时也能看出菜单里有事等你：汇总各项角标', () => {
+    const html = renderToStaticMarkup(
+      <TopbarMenu
+        items={[
+          ...items({ active: false }),
+          { key: 'quality', label: '产出质量', icon: <DiffIcon />, badge: 2, onSelect: noop },
+        ]}
+        label="会话操作"
+      />,
+    )
+    expect(html).toContain('topbar-menu-trigger-badge')
+    expect(html).toContain('>2<')
+    expect(html).toContain('topbar-icon alert')
+  })
+
+  it('没有待办时不亮角标，避免菜单永远像有新东西', () => {
+    const html = renderToStaticMarkup(<TopbarMenu items={items({ active: false })} label="会话操作" />)
+    expect(html).not.toContain('topbar-menu-trigger-badge')
+    expect(html).not.toContain('topbar-icon alert')
+  })
 })
 
 describe('TopbarMenuPopup', () => {

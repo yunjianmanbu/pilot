@@ -3,6 +3,7 @@ import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RunEvent } from '../shared/types'
 import type { AppLogEntry } from './app-log'
+import { runInBackground } from './background'
 import {
   DEFAULT_MODULE_CHECK_SETTINGS,
   MODULE_CHECK_HISTORY_LIMIT,
@@ -699,19 +700,27 @@ export class ModuleCheckService {
     this.state.nextRunAt = next.toISOString()
     void this.persist().catch(() => undefined)
     this.timer = setTimeout(() => {
-      void this.run(undefined, 'schedule')
-        .catch((error: unknown) => {
-          this.deps.emit({
-            type: 'notice',
-            level: 'warn',
-            topic: 'module-check',
-            notifyEvent: 'module-check.completed',
-            message: `定期自检失败：${error instanceof Error ? error.message : String(error)}`,
-          })
-        })
-        .finally(() => {
-          this.restart()
-        })
+      // 定期自检要扫整个仓库：交给副线队列，会话进行中自动让路，跑完再排下一轮。
+      void runInBackground(
+        'module-check:schedule',
+        () =>
+          this.run(undefined, 'schedule').then(
+            () => undefined,
+            (error: unknown) => {
+              this.deps.emit({
+                type: 'notice',
+                level: 'warn',
+                topic: 'module-check',
+                notifyEvent: 'module-check.completed',
+                message: `定期自检失败：${error instanceof Error ? error.message : String(error)}`,
+              })
+              throw error
+            },
+          ),
+        { whenIdle: true, timeoutMs: 30 * 60_000 },
+      ).finally(() => {
+        this.restart()
+      })
     }, intervalMs)
     // 自检不该阻止应用退出。
     this.timer.unref?.()

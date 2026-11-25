@@ -3,6 +3,7 @@ import { appState } from './app-state'
 import type { ReviewSessionScope, RunEvent } from '../shared/types'
 import { log, benchmarkRows, broadcast, collectSelfCheck, toolRegistryFor } from './diagnostics'
 import { isDocumentWindowContents } from './document-window'
+import { isSuperWindowContents } from './super-window'
 import { localizeMain } from './localize'
 import { encodeMessageImage, uploadBytes, importUploadBatch } from './media-upload'
 import { personalService, resolveSelfSourceCached, forgetPersonalService, selfSourceContext, contributionEvidence } from './personal-branch'
@@ -25,8 +26,25 @@ import { ipcMain, session, IpcMainInvokeEvent } from 'electron'
  */
 const DOCUMENT_CHANNELS = new Set([
   'pilot:file-preview',
+  'pilot:file-open',
   'pilot:doc-state',
   'pilot:doc-close',
+  'pilot:open-link',
+])
+
+/**
+ * 超级 Pilot 窗口能调的通道：它自己的状态、发指令、取消、重开、抢救，外加打开
+ * 外链。刻意不包含 `pilot:file-preview` 与任何会话 / 设置通道：应急窗口只能修
+ * 自己，不能顺手改用户的业务数据。
+ */
+const SUPER_CHANNELS = new Set([
+  'pilot:super-status',
+  'pilot:super-messages',
+  'pilot:super-send',
+  'pilot:super-cancel',
+  'pilot:super-reset',
+  'pilot:super-rescue',
+  'pilot:super-open',
   'pilot:open-link',
 ])
 
@@ -45,6 +63,7 @@ function assertTrustedSender(event: IpcMainInvokeEvent, channel: string): void {
   if (isServerBridgeCall(event)) return
   if (appState.mainWindow && !appState.mainWindow.isDestroyed() && event.sender === appState.mainWindow.webContents) return
   if (DOCUMENT_CHANNELS.has(channel) && isDocumentWindowContents(event.sender.id)) return
+  if (SUPER_CHANNELS.has(channel) && isSuperWindowContents(event.sender.id)) return
   throw new Error('Rejected IPC call from an unknown page')
 }
 

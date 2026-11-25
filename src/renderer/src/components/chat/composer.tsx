@@ -201,7 +201,8 @@ export function Composer({
       }
     } catch (error) {
       // Surfacing the reason matters when an image is too large.
-      window.alert(errorText(error))
+      // 走 onNotice 而不是 window.alert：原生弹框关掉就没了，铃铛里查不到。
+      onNotice(errorText(error))
     } finally {
       setPicking(false)
     }
@@ -211,7 +212,7 @@ export function Composer({
     if (filing || running) return
     const workspacePath = session?.workspacePath || ''
     if (!workspacePath) {
-      window.alert(t("当前会话没有工作区，无法上传文件"))
+      onNotice(t("当前会话没有工作区，无法上传文件"))
       return
     }
     setFiling(true)
@@ -222,12 +223,12 @@ export function Composer({
           references,
           uploaded.map((file) => file.path).filter(Boolean),
         )
-        if (merged.dropped > 0) window.alert(t("最多参照 8 个项目"))
+        if (merged.dropped > 0) onNotice(t("最多参照 8 个项目"))
         changeReferences(merged.references)
       }
     } catch (error) {
       // A rejected file (too large, outside the workspace) has to say why.
-      window.alert(errorText(error))
+      onNotice(errorText(error))
     } finally {
       setFiling(false)
     }
@@ -236,7 +237,7 @@ export function Composer({
   const attachFiles = async (files: File[]) => {
     if (files.length === 0) return
     if (running) {
-      window.alert(t("任务结束后可添加文件"))
+      onNotice(t("任务结束后可添加文件"))
       return
     }
     const notices: string[] = []
@@ -294,7 +295,7 @@ export function Composer({
     } finally {
       setFiling(false)
     }
-    if (notices.length > 0) window.alert(notices.join('\n'))
+    if (notices.length > 0) onNotice(notices.join('\n'))
   }
 
   const draggedFiles = (event: ReactDragEvent<HTMLElement>): boolean =>

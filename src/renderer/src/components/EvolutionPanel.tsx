@@ -146,6 +146,9 @@ export function EvolutionPanel({
   const [personal, setPersonal] = useState<PersonalEvolutionState | null>(null)
   const profiles = detail?.profiles ?? []
   const active = detail?.activeProfile ?? null
+  // The ruler the benchmark currently measures against; a stored comparison
+  // from any other revision is stale evidence, not a tie.
+  const benchmarkSuiteVersion = detail?.evolution.benchmarkSuiteVersion
   const drafts = profiles.filter((profile) => profile.status === 'draft')
   const retired = profiles.filter((profile) => profile.status === 'retired')
   const globalProfiles = detail?.globalProfiles ?? []
@@ -1575,6 +1578,7 @@ export function EvolutionPanel({
                 baseline={activeGlobal}
                 runs={runs}
                 busy={busy}
+                suiteVersion={benchmarkSuiteVersion}
                 global
                 key={profile.id}
                 onReview={(item) => void reviewGlobal(item)}
@@ -1771,6 +1775,7 @@ export function EvolutionPanel({
                 baseline={active}
                 runs={runs}
                 busy={busy}
+                suiteVersion={benchmarkSuiteVersion}
                 key={profile.id}
                 onReview={(item) => void review(item)}
                 onBenchmark={(item) => void benchmark(item)}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildSystemPrompt } from '../src/main/agent/prompt'
+import { ADVICE_PROTOCOL_LINES, ADVICE_PROTOCOL_TITLE } from '../src/main/agent/prompt'
 import { summarizeLearning } from '../src/main/agent/learning'
 import type { ProfileVersion } from '../src/shared/types'
 
@@ -280,6 +281,56 @@ describe('buildSystemPrompt delegation', () => {
   })
 })
 
+describe('buildSystemPrompt recommendation protocol', () => {
+  const base = {
+    root: 'E:\\work\\acme',
+    topLevel: 'src',
+    memory: [],
+    profile: null,
+    plan: null,
+    selfUpdate: false,
+  }
+
+  it('ships the protocol on every turn, not only on a specific request kind', () => {
+    // The user adopts recommendations without asking for the reasoning, so the
+    // rules have to hold for a question answer, a review and a change request
+    // alike; gating this block on one branch would leave the others unguarded.
+    for (const text of [
+      buildSystemPrompt(base),
+      buildSystemPrompt({ ...base, analysis: true }),
+      buildSystemPrompt({ ...base, continuation: true }),
+      buildSystemPrompt({ ...base, approvalMode: 'auto' }),
+    ]) {
+      expect(text).toContain(ADVICE_PROTOCOL_TITLE)
+      for (const line of ADVICE_PROTOCOL_LINES) expect(text).toContain(line)
+    }
+  })
+
+  it('requires a landing point, a risk level and one proving command per item', () => {
+    const text = buildSystemPrompt(base)
+    expect(text).toContain('landing point (file:line)')
+    expect(text).toContain('one command that proves it')
+    // Naming the condition under which an item is dropped is what turns the rule
+    // from a style preference into a filter.
+    expect(text).toContain('Delete what you cannot place or cannot verify')
+  })
+
+  it('demands the withdrawal of an overturned claim and the list of what is skipped', () => {
+    const text = buildSystemPrompt(base)
+    expect(text).toContain('spend one line withdrawing or downgrading it')
+    expect(text).toContain('Never silently replace it')
+    expect(text).toContain('Also list what you deliberately do NOT do')
+    // The last gate: an item nobody can break down must become an observation.
+    expect(text).toContain('what breaks first')
+  })
+
+  it('ends on one decision point instead of several options', () => {
+    const text = buildSystemPrompt(base)
+    expect(text).toContain('end with one decision point')
+    expect(text).toContain('Separate what a tool proved in this run from what you inferred')
+  })
+})
+
 describe('buildSystemPrompt completion contract', () => {
   function prompt(): string {
     return buildSystemPrompt({
@@ -305,6 +356,33 @@ describe('buildSystemPrompt completion contract', () => {
     // A long operation that has not failed still owes the user progress.
     expect(text).toContain('still owes the user a sign of life')
     expect(text).toContain('do not sit silent through the whole stretch')
+  })
+
+  it('delivers one report per turn and makes anything after it a marked sentence', () => {
+    // The reader is shown one answer per turn, so the report itself has to carry
+    // the verification outcome and the risks. Anything written afterwards is a
+    // marked plain sentence shown with the execution steps: formatting is what
+    // turns an addition into a rival conclusion, and a bare sentence is
+    // unreadable next to tool output.
+    for (const text of [
+      prompt(),
+      buildSystemPrompt({
+        root: 'E:\\work\\acme',
+        topLevel: 'src',
+        memory: [],
+        profile: null,
+        plan: null,
+        selfUpdate: false,
+        analysis: true,
+      }),
+    ]) {
+      expect(text).toContain('Deliver a report once')
+      expect(text).toContain('the risk notes belong inside that same report')
+      expect(text).toContain('keep it to one or two plain sentences')
+      expect(text).toContain('补充：')
+      expect(text).toContain('never reopen the result heading')
+      expect(text).toContain('shown together with the execution steps')
+    }
   })
 
   it('keeps safety rules as invariants instead of a long rule list', () => {

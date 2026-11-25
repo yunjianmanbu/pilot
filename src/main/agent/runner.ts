@@ -54,7 +54,9 @@ import { collapseCompletedTurns, estimateTokens, summaryMessageContent, truncate
 import { EvolutionService, formatToolFailures, type ProfileJudge } from './evolution'
 import { QualityService } from './quality'
 import { HookService } from './hooks'
+import { extractContinueDirective } from './hook-rules'
 import { effectiveContextTokens, subagentContextTokens } from '../../shared/modelLimits'
+import { planStepBudget } from '../../shared/step-budget'
 import { McpService, saveMcpServer } from './mcp'
 import { runExploreSubagent } from './explore'
 import { runAgentLoop, type ApprovalRequest, type LoopEvent, type ToolPolicyResult } from './loop'
@@ -778,6 +780,32 @@ export class AgentRunner {
   }
 
   /**
+   * Continue a finished run with a specific instruction, used by the stop
+   * hook's `CONTINUE:` directive. Same guards as resumeSession; nothing has to
+   * be paused because the run completed and the hook decided it is not done.
+   */
+  private async continueWithInstruction(sessionId: string, instruction: string): Promise<void> {
+    const session = this.store.session(sessionId)
+    if (!session) throw new Error('Session not found')
+    if (!session.workspacePath) throw new Error('Session has no workspace')
+    if (this.active.has(sessionId) || session.queue.length > 0) return
+    this.ensureReady(sessionId)
+    await this.store.setPaused(sessionId, null)
+    const ctx = this.newContext(session, session.approvalMode, instruction)
+    this.active.set(sessionId, ctx)
+    try {
+      const stored = storedUser(instruction, ctx.runId, true)
+      await this.store.addMessage(sessionId, stored)
+      this.emit({ type: 'session.changed', sessionId })
+      void this.execute(ctx, instruction, stored)
+    } catch (error) {
+      this.active.delete(sessionId)
+      this.store.setRunning(sessionId, false)
+      throw error
+    }
+  }
+
+  /**
    * Continue a completed execution run that left plan items unfinished.
    * Unlike resumeSession this does not require a paused session: the run
    * finished normally, it simply stopped before completing the plan.
@@ -961,7 +989,7 @@ export class AgentRunner {
   private scheduleAutoContinue(
     sessionId: string,
     reason: string,
-    options: { planInstruction?: string } = {},
+    options: { planInstruction?: string; instruction?: string } = {},
   ): boolean {
     const settings = this.store.settings()
     if (!settings.autoContinue || !this.store.getApiKey()) return false
@@ -999,7 +1027,11 @@ export class AgentRunner {
       }
       const continuation = options.planInstruction
         ? this.continueFromPlan(sessionId, options.planInstruction)
-        : this.resumeSession(sessionId)
+        : options.instruction
+          ? // A stop-hook directive is a plain instruction for the same session,
+            // so it skips the generic resume prompt.
+            this.continueWithInstruction(sessionId, options.instruction)
+          : this.resumeSession(sessionId)
       void continuation.catch((error) => {
         this.emit({
           type: 'notice',
@@ -1147,8 +1179,9 @@ export class AgentRunner {
     label: string,
     trigger: CheckpointTrigger,
     messageCount: number,
-  ): Promise<void> {
-    if (!this.checkpoints) return
+  ): Promise<number> {
+    if (!this.checkpoints) return 0
+    const startedAt = Date.now()
     try {
       await this.checkpoints.create({
         sessionId: ctx.sessionId,
@@ -1167,6 +1200,9 @@ export class AgentRunner {
         message: `无法创建回退点：${error instanceof Error ? error.message : String(error)}`,
       })
     }
+    // 耗时由调用方记账：运行前快照现在与模型首轮并行，不能再拿「等待前后之差」
+    // 计时，否则会把模型往返时间算进回退点耗时。
+    return Date.now() - startedAt
   }
 
   private recordClassifierBlock(
@@ -1208,6 +1244,14 @@ export class AgentRunner {
     let cacheHitTokens = 0
     let cacheMissTokens = 0
     let checkpointMs = 0
+    /**
+     * 运行前快照的句柄。它与首轮模型请求并行跑，但任何工具执行前必须落定：
+     * 回退点要覆盖「这一轮改动之前」的状态，晚于第一个写操作就没有回退意义了。
+     * 之所以不在这里 await，是因为大工作区走一遍要几秒，而用户感知的「开始」
+     * 是模型先开口——把这段等待从首轮路径上挪走，模型思考与快照同时进行。
+     */
+    let baselineSnapshot: Promise<number> | null = null
+    let baselineWait: Promise<void> | null = null
     let delegations = 0
     let delegatedSteps = 0
     let delegatedSummaryChars = 0
@@ -1216,6 +1260,8 @@ export class AgentRunner {
     let finalError: string | undefined
     let finalContent = ''
     let messagesHandled = false
+    // Set from the stop hook's `CONTINUE:` line; consumed once the run settles.
+    let stopDirective: string | null = null
     let mcp: McpService | null = null
     // 插件工具桥：每个 run 重建，run 结束就释放；finally 里要读它，故在 try 外声明。
     let pluginTools: PluginToolBridge | null = null
@@ -1258,14 +1304,25 @@ export class AgentRunner {
         }
       }
       if (ctx.approvalMode !== 'plan' && !review) {
-        const checkpointStartedAt = Date.now()
-        await this.snapshot(
+        baselineSnapshot = this.snapshot(
           ctx,
           prompt.replace(/\s+/g, ' ').trim().slice(0, 60) || '运行前快照',
           'prompt',
           ctx.checkpointMessageCount,
         )
-        checkpointMs += Date.now() - checkpointStartedAt
+      }
+      /** 只在第一次需要时等待一次；之后复用同一个 promise。 */
+      const ensureBaseline = (): Promise<void> => {
+        if (!baselineSnapshot) return Promise.resolve()
+        if (!baselineWait) {
+          baselineWait = baselineSnapshot.then(
+            (ms) => {
+              checkpointMs += ms
+            },
+            () => undefined,
+          )
+        }
+        return baselineWait
       }
       const settings = this.store.settings()
       // Agent-written tools are scoped to this workspace and this run's abort
@@ -1930,15 +1987,24 @@ export class AgentRunner {
 
       // A read-only analysis should stop searching long before the normal
       // ceiling. Change requests keep the full budget.
-      const normalMaxSteps = Math.min(
-        settings.maxSteps,
-        profile?.strategy.maxSteps ?? settings.maxSteps,
-      )
-      const maxSteps = review
-        ? Math.min(settings.maxSteps, 120)
-        : analysisRun
-          ? Math.min(normalMaxSteps, 36)
-          : normalMaxSteps
+      //
+      // The ceiling is derived from the request itself instead of one global
+      // number: an instruction listing five tasks gets room for five tasks, a
+      // one-line fix does not. `stepBudget` then extends the allowance while the
+      // run keeps producing new evidence and asks for a close-out when it stalls,
+      // so a static cap no longer truncates work that is still making progress.
+      const profileSteps = profile?.strategy.maxSteps
+      const budget = planStepBudget({
+        prompt,
+        configured:
+          profileSteps && profileSteps > 0
+            ? Math.min(settings.maxSteps > 0 ? settings.maxSteps : profileSteps, profileSteps)
+            : settings.maxSteps,
+        analysis: analysisRun,
+        review: Boolean(review),
+        planItems: session.plan?.items.length ?? 0,
+      })
+      const maxSteps = budget.ceiling
       const temperature = review ? 0.1 : profile?.strategy.temperature ?? settings.temperature
       const client = review
         ? this.makeReviewClient()
@@ -2015,6 +2081,9 @@ export class AgentRunner {
         tools,
         pullTools,
         maxSteps,
+        // Start lower than the ceiling and grow with evidence. Review runs keep a
+        // fixed allowance (`extension: 0`), analysis keeps its early wrap-up.
+        stepBudget: budget,
         // A budget of 0 means "no cap". Review runs keep their own small step
         // ceiling, so no separate token budget is applied there. 完全自主档下
         // 0 会被 autonomyPolicy 换成一份兜底预算，所以这里用它的值。
@@ -2113,6 +2182,9 @@ export class AgentRunner {
             }
             return executeReviewTool(call.name, call.arguments, host, signal, reviewRuntime)
           }
+          // 第一个工具（含只读工具）执行前，运行前快照必须已经落定：这段等待通常
+          // 已被首轮模型往返覆盖，只有工作区特别大时才会真正等一会儿。
+          await ensureBaseline()
           if (
             call.name === RUN_SHELL &&
             settings.checkpointShell &&
@@ -2196,7 +2268,10 @@ export class AgentRunner {
         finalError = result.error?.message ?? 'Agent run failed'
       }
 
-      await this.settleSessionPlan(sessionId, finalStatus)
+      // A batch instruction is settled conservatively: an item still marked
+      // in_progress may be the one the model abandoned when it answered, and
+      // inferring done would report work that never happened.
+      await this.settleSessionPlan(sessionId, finalStatus, { inferDone: budget.taskCount < 2 })
 
       // Snapshot after settling so the stored answer shows the terminal state
       // (no lingering spinner) even if a later turn replaces session.plan.
@@ -2277,7 +2352,11 @@ export class AgentRunner {
       }
 
       if (!ctx.controller.signal.aborted) {
-        const stopOutput = await hooks.stop(ctx.controller.signal).catch(() => null)
+        // The stop hook sees the final assistant message so rules and hooks can
+        // judge the outcome. A `CONTINUE:` line asks for one more turn.
+        const stopOutput = await hooks
+          .stop(ctx.controller.signal, finalContent)
+          .catch(() => null)
         if (stopOutput) {
           this.emit({
             type: 'notice',
@@ -2285,6 +2364,7 @@ export class AgentRunner {
             message: `stop hook: ${stopOutput.slice(0, 400)}`,
           })
         }
+        stopDirective = extractContinueDirective(stopOutput)
       }
 
       // A user cancellation is not evidence of a bad approach; skip the
@@ -2294,7 +2374,15 @@ export class AgentRunner {
         this.autoReflect(workspacePath, ctx.runId, prompt, produced)
       }
       if (!review && settings.autoEvolve) {
-        void this.maybeAutoEvolve(workspacePath)
+        // 自我进化是纯副线：它要读这个工作区的全部运行记录并生成草稿。
+        // 抛出来的错只能记一条日志，不能变成未处理的 rejection 挂在收尾上。
+        void this.maybeAutoEvolve(workspacePath).catch((error) => {
+          this.emit({
+            type: 'notice',
+            level: 'warn',
+            message: `自我进化跳过：${error instanceof Error ? error.message : String(error)}`,
+          })
+        })
       }
 
       const pending = ctx.pendingSteering.filter((entry) => !entry.consumed)
@@ -2375,7 +2463,29 @@ export class AgentRunner {
               : '任务执行失败',
           planContinues ? { planInstruction: PLAN_CONTINUE_PROMPT } : {},
         )
-      if (finalStatus !== 'paused' && !autoScheduled) void this.promoteNext(sessionId)
+      // A stop hook that printed `CONTINUE: ...` gets one more turn, under the
+      // same auto-continue cap, and only when nothing else already scheduled a
+      // retry: two continuations on one run would double the token spend.
+      const stopScheduled =
+        !autoScheduled &&
+        stopDirective !== null &&
+        finalStatus === 'completed' &&
+        !fatalError &&
+        !ctx.controller.signal.aborted &&
+        this.scheduleAutoContinue(sessionId, 'stop hook 要求继续', {
+          instruction: stopDirective,
+        })
+      const continued = autoScheduled || stopScheduled
+      if (finalStatus !== 'paused' && !continued) {
+        // 推进队列属于收尾的副线：读不到队列只该记一条日志，不能让本轮收尾炸掉。
+        void this.promoteNext(sessionId).catch((error) => {
+          this.emit({
+            type: 'notice',
+            level: 'warn',
+            message: `队列推进失败：${error instanceof Error ? error.message : String(error)}`,
+          })
+        })
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       finalError = message
@@ -2458,7 +2568,15 @@ export class AgentRunner {
           message: `模型侧错误，重试不会改变结果，已停止自动继续：${message.slice(0, 200)} ${FAILURE_ACTION_TEXT[failureAction(message) ?? 'config']}`,
         })
       }
-      if (!ctx.paused && !autoScheduled) void this.promoteNext(sessionId)
+      if (!ctx.paused && !autoScheduled) {
+        void this.promoteNext(sessionId).catch((error) => {
+          this.emit({
+            type: 'notice',
+            level: 'warn',
+            message: `队列推进失败：${error instanceof Error ? error.message : String(error)}`,
+          })
+        })
+      }
     } finally {
       if (mcp) await mcp.dispose().catch(() => undefined)
       if (pluginTools) {
@@ -2555,10 +2673,14 @@ export class AgentRunner {
    * Settle it once the run reaches a terminal state so the UI cannot keep
    * showing a spinner for a finished task.
    */
-  private async settleSessionPlan(sessionId: string, status: RunStatus): Promise<void> {
+  private async settleSessionPlan(
+    sessionId: string,
+    status: RunStatus,
+    options: { inferDone?: boolean } = {},
+  ): Promise<void> {
     const current = this.store.session(sessionId)?.plan
     if (!current) return
-    const next = settlePlan(current, status, now())
+    const next = settlePlan(current, status, now(), options)
     if (!next) return
     try {
       await this.store.setPlan(sessionId, next)

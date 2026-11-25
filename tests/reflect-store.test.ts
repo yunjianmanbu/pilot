@@ -90,6 +90,23 @@ describe('Store reflection reports', () => {
     expect(reloaded.settings().reflectLastRunAt).toBe('2026-11-22T00:00:00.000Z')
   })
 
+  it('records the reflected app version as the next comparison baseline', async () => {
+    const store = await setup()
+    expect(store.settings().reflectLastVersion).toBe('')
+
+    await store.addReflectionReport({ ...report(), version: '1.2.4' })
+    expect(store.settings().reflectLastVersion).toBe('1.2.4')
+
+    // 重启后仍拿得到基线，否则 version 模式会把同一版反复当新版本触发。
+    const reloaded = new Store()
+    await reloaded.load()
+    expect(reloaded.settings().reflectLastVersion).toBe('1.2.4')
+
+    // 旧报告没有 version 字段：不能把已有基线抹成空。
+    await reloaded.addReflectionReport({ ...report(), id: 'reflect-2' })
+    expect(reloaded.settings().reflectLastVersion).toBe('1.2.4')
+  })
+
   it('clears stored reports', async () => {
     const store = await setup()
     await store.addReflectionReport(report())

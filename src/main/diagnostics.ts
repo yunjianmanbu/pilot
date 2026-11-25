@@ -1,6 +1,13 @@
 // 日志、审计与内视：崩溃记录、审批审计、基准对比与自检采样。
 import { appState, writeAppLog } from './app-state'
-import type { ProfileBenchmarkRow, RunEvent } from '../shared/types'
+import type {
+  AppLogView,
+  DiagnosticsGroupView,
+  DiagnosticsJobView,
+  DiagnosticsSnapshot,
+  ProfileBenchmarkRow,
+  RunEvent,
+} from '../shared/types'
 import { loadMcpConfig } from './agent/mcp'
 import type { BenchmarkRun } from './agent/profile-benchmark'
 import { DynamicToolRegistry } from './agent/toolsmith'
@@ -109,8 +116,7 @@ function auditEvent(event: RunEvent): void {
   }
 }
 
-/** 解析一个已存在的工作区目录，再建工具注册表；路径越界会被 `resolveExisting` 拒。 */
-export async function toolRegistryFor(path: string): Promise<DynamicToolRegistry> {
+/** 解析一个已存在的工作区目录，再建工具注册表；路径越界会被 `resolveExisting` 拒。 */export async function toolRegistryFor(path: string): Promise<DynamicToolRegistry> {
   await resolveExisting(path, '.')
   const settings = appState.store.settings()
   return new DynamicToolRegistry({
@@ -165,6 +171,104 @@ export async function collectSelfCheck() {
     },
   })
   return report
+}
+
+/**
+ * 客户端运行状态快照：设置页「运行日志」与 CLI 共用。
+ *
+ * 只读：不触发维护、不重扫日志文件之外的东西。四个字段分别回答四个问题：
+ * - `health`：主进程是不是被堵住了（堵住说明不是模型慢）；
+ * - `jobs`：副线队列此刻在跑什么、让路了几次、哪次超时；
+ * - `running`：哪些会话正在跑、跑了多久；
+ * - `groups` / `records`：最近日志的聚合与明细（已脱敏，不含正文）。
+ */
+export async function collectDiagnostics(limit = 200): Promise<DiagnosticsSnapshot> {
+  const capped = Math.max(1, Math.min(2_000, Math.round(limit || 200)))
+  // 旧日志文件没有 level 字段（早期只写了 area/event），统一补成 info 再聚合，
+  // 否则面板会把一批历史行当成 undefined 级别丢掉。
+  // 读日志失败不能连带把健康、队列、会话一起弄没：面板要回答的是
+  // 「主进程是不是被堵住了」，这部分数据都在内存里，日志只是附加证据。
+  let records: AppLogView[] = []
+  if (appState.appLog) {
+    try {
+      records = (await appState.appLog.recent(capped)).map((record) => ({
+        at: record.at,
+        area: record.area,
+        event: record.event,
+        level: record.level ?? 'info',
+        ...(record.detail ? { detail: record.detail } : {}),
+      }))
+    } catch {
+      records = []
+    }
+  }
+  const health = appState.lagMonitor?.snapshot() ?? {
+    startedAt: new Date().toISOString(),
+    uptimeMs: 0,
+    lagMs: 0,
+    worstLagMs: 0,
+    stallCount: 0,
+    stalls: [],
+  }
+  // 运行中的排在最前：面板首屏要直接回答「谁在占着主线程」。
+  const stateWeight: Record<string, number> = { running: 0, deferred: 1, queued: 2 }
+  const jobs: DiagnosticsJobView[] = (appState.background?.snapshot() ?? [])
+    .slice()
+    .sort((a, b) => {
+      const weight = (stateWeight[a.state] ?? 3) - (stateWeight[b.state] ?? 3)
+      if (weight !== 0) return weight
+      return b.queuedAt.localeCompare(a.queuedAt)
+    })
+    .map((job) => ({
+      name: job.name,
+      state: job.state,
+      queuedAt: job.queuedAt,
+      ...(job.startedAt ? { startedAt: job.startedAt } : {}),
+      ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
+      ...(job.durationMs === undefined ? {} : { durationMs: job.durationMs }),
+      deferrals: job.deferrals,
+      ...(job.error ? { error: job.error } : {}),
+    }))
+  const now = Date.now()
+  const running = (appState.store?.activeRuns?.() ?? []).map((entry) => ({
+    sessionId: entry.sessionId,
+    sessionTitle: entry.sessionTitle,
+    runId: entry.runId,
+    instruction: entry.instruction.slice(0, 120),
+    startedAt: entry.startedAt,
+    elapsedMs: Math.max(0, now - new Date(entry.startedAt).getTime()),
+  }))
+  // 聚合在内存里做：面板一次就能说「哪类事件刷屏」，不用逐行翻。
+  const groups = new Map<string, DiagnosticsGroupView>()
+  for (const record of records) {
+    const key = `${record.level}\u0000${record.area}\u0000${record.event}`
+    const current = groups.get(key)
+    if (current) {
+      current.count += 1
+      if (record.at > current.lastAt) {
+        current.lastAt = record.at
+        if (record.detail) current.lastDetail = record.detail
+      }
+      continue
+    }
+    groups.set(key, {
+      area: record.area,
+      event: record.event,
+      level: record.level,
+      count: 1,
+      lastAt: record.at,
+      ...(record.detail ? { lastDetail: record.detail } : {}),
+    })
+  }
+  return {
+    at: new Date(now).toISOString(),
+    health,
+    jobs,
+    running,
+    groups: [...groups.values()].sort((a, b) => b.count - a.count || b.lastAt.localeCompare(a.lastAt)),
+    records: records.slice().reverse(),
+    scanned: records.length,
+  }
 }
 
   /** One row per task for the benchmark dialog; the raw samples stay internal. */

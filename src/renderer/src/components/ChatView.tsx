@@ -25,7 +25,8 @@ import type {
 } from '../../../shared/types'
 import { artifactsFromCalls, collectArtifactsByRun } from '../../../shared/artifacts'
 import { ChevronIcon, InfoIcon, PilotMark } from '../icons'
-import { buildTranscript, liveProcess, withPendingProcesses, type LiveRun } from '../ui'
+import { buildTranscript, liveAnswerText, liveProcess, withPendingProcesses, type LiveRun } from '../ui'
+import { nextFollow } from '../scroll-follow'
 import { Markdown } from './Markdown'
 import { FileChangeBar } from './FileChangeBar'
 import type { TranscriptUsage } from '../tokens'
@@ -172,6 +173,16 @@ export function ChatView({
   const stickRef = useRef(true)
   const lastSessionRef = useRef<string | null>(null)
   const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
+  /** 刚由我们自己滚过：下一次 scroll 事件不是用户意图。 */
+  const pinRef = useRef(false)
+  /** smooth 滚动会连发多次 scroll 事件，用时间窗替代单次标记。 */
+  const pinUntilRef = useRef(0)
+  /** 已排队的「滚到底」帧；用户一往上滚就要能撤掉它。 */
+  const followFrameRef = useRef<number | null>(null)
+  /** 上一次 scroll 的 scrollTop，用来分辨滚动方向。 */
+  const lastTopRef = useRef(0)
+  /** 上一次 scroll 的 scrollHeight，用来分辨「内容变矮」与用户上滚。 */
+  const lastHeightRef = useRef(0)
   const [showJump, setShowJump] = useState(false)
   // 正文里滑动选中后弹出的「添加待办」菜单；null = 没有选中。
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(null)
@@ -252,6 +263,8 @@ export function ChatView({
     return latest?.status === 'completed'
   }, [running, runs, session])
   const process = liveProcess(live)
+  // The answer area shows the run's answer, never the text that followed it.
+  const answerText = liveAnswerText(live)
   const empty = transcript.length === 0 && !live
   const lastAssistantId = useMemo(() => {
     for (let index = transcript.length - 1; index >= 0; index -= 1) {
@@ -261,24 +274,73 @@ export function ChatView({
     return null
   }, [transcript])
 
-  const scrollToBottom = (smooth = false) => {
+  // ── 跟随最新 ────────────────────────────────────────────────────────
+  // 判定规则在 scroll-follow.ts 里（可单测），这里只负责把 DOM 事件喂进去。
+  // 两条硬要求：用户往上滚的当帧就要停（wheel 比 scroll 事件先到，能赶在已
+  // 排队的 rAF 之前）；排队的滚到底执行前必须复查一次，否则流式的下一帧还会
+  // 把人按回底部。
+  const cancelFollowFrame = useCallback(() => {
+    if (followFrameRef.current !== null) {
+      cancelAnimationFrame(followFrameRef.current)
+      followFrameRef.current = null
+    }
+  }, [])
+
+  const scrollToBottom = useCallback((smooth = false) => {
     const element = scrollRef.current
     if (!element) return
+    lastHeightRef.current = element.scrollHeight
+    if (smooth) {
+      pinUntilRef.current = performance.now() + 800
+    } else {
+      const bottom = element.scrollHeight - element.clientHeight
+      // 已经在底部：再设一次不产生 scroll 事件，pinRef 会一直赖着，把用户
+      // 下一次真实滚动误判成自己的。
+      if (Math.abs(element.scrollTop - bottom) < 1) return
+      pinUntilRef.current = performance.now() + 200
+      pinRef.current = true
+    }
     element.scrollTo({
       top: element.scrollHeight,
       behavior: smooth ? 'smooth' : 'auto',
     })
-  }
+    lastTopRef.current = element.scrollTop
+  }, [])
+
+  const followLatest = useCallback(() => {
+    if (!stickRef.current || followFrameRef.current !== null) return
+    followFrameRef.current = requestAnimationFrame(() => {
+      followFrameRef.current = null
+      // 这一帧里用户已经滚上去了，就什么都不要做。
+      if (!stickRef.current) return
+      scrollToBottom()
+    })
+  }, [scrollToBottom])
+
+  const stopFollowing = useCallback(() => {
+    // 已经停跟：不再重复取消，免得滚轮连发时每次都动一次 scrollTop。
+    if (!stickRef.current && followFrameRef.current === null) return
+    stickRef.current = false
+    pinRef.current = false
+    pinUntilRef.current = 0
+    cancelFollowFrame()
+    const element = scrollRef.current
+    // 中断可能还在播放的 smooth 滚动，否则动画会继续把人拖回底部。
+    if (element) element.scrollTo({ top: element.scrollTop, behavior: 'auto' })
+    setShowJump(true)
+  }, [cancelFollowFrame])
 
   useEffect(() => {
     const id = session?.id ?? null
     if (lastSessionRef.current !== id) {
       lastSessionRef.current = id
       stickRef.current = true
+      lastTopRef.current = scrollRef.current?.scrollTop ?? 0
+      lastHeightRef.current = scrollRef.current?.scrollHeight ?? 0
       setShowJump(false)
-      requestAnimationFrame(() => scrollToBottom())
+      followLatest()
     }
-  }, [session?.id])
+  }, [session?.id, followLatest])
 
   useEffect(() => {
     if (!focusMessageId) return
@@ -286,34 +348,87 @@ export function ChatView({
       `[data-message-id="${CSS.escape(focusMessageId)}"]`,
     )
     if (!element) return
-    stickRef.current = false
+    stopFollowing()
     element.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  }, [focusMessageId, session?.messages.length])
+  }, [focusMessageId, session?.messages.length, stopFollowing])
 
   useEffect(() => {
-    if (stickRef.current) {
-      requestAnimationFrame(() => scrollToBottom())
-    }
+    followLatest()
   }, [
     session?.messages.length,
     session?.plan?.updatedAt,
     live?.content.length,
+    live?.answer?.length,
     live?.reasoning.length,
     live?.tools.length,
     live?.step,
     approvals.length,
+    followLatest,
   ])
 
   const onScroll = () => {
     const element = scrollRef.current
     if (!element) return
-    const atBottom =
-      element.scrollHeight - element.scrollTop - element.clientHeight < 120
-    stickRef.current = atBottom
-    setShowJump(!atBottom)
+    const metrics = {
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+      clientHeight: element.clientHeight,
+    }
+    const previousTop = lastTopRef.current
+    const previousHeight = lastHeightRef.current
+    lastTopRef.current = metrics.scrollTop
+    lastHeightRef.current = metrics.scrollHeight
+    // 自己滚出来的事件不能当成用户意图，否则跟随状态会被自己的滚动续命。
+    const own = pinRef.current || performance.now() < pinUntilRef.current
+    pinRef.current = false
+    if (!own) {
+      const following = nextFollow(stickRef.current, {
+        kind: 'scroll',
+        metrics,
+        previousTop,
+        previousHeight,
+      })
+      stickRef.current = following
+      setShowJump(!following)
+    }
     // 菜单用的是视口坐标，正文一滚就错位了，直接收掉。
     setSelectionMenu((previous) => (previous ? null : previous))
   }
+
+  // wheel / 触摸 / 键盘的向上意图比 scroll 事件早一个任务，能在排队的 rAF
+  // 之前就把跟随关掉，这样流式输出不会再把人按回底部。
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) stopFollowing()
+    }
+    let touchY: number | null = null
+    const onTouchStart = (event: TouchEvent) => {
+      touchY = event.touches[0]?.clientY ?? null
+    }
+    const onTouchMove = (event: TouchEvent) => {
+      const y = event.touches[0]?.clientY ?? touchY
+      // 手指往下拖 = 内容往上翻，等价于滚轮的 deltaY < 0。
+      if (touchY !== null && y !== null && y > touchY + 2) stopFollowing()
+      if (y !== null) touchY = y
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') {
+        stopFollowing()
+      }
+    }
+    element.addEventListener('wheel', onWheel, { passive: true })
+    element.addEventListener('touchstart', onTouchStart, { passive: true })
+    element.addEventListener('touchmove', onTouchMove, { passive: true })
+    element.addEventListener('keydown', onKeyDown)
+    return () => {
+      element.removeEventListener('wheel', onWheel)
+      element.removeEventListener('touchstart', onTouchStart)
+      element.removeEventListener('touchmove', onTouchMove)
+      element.removeEventListener('keydown', onKeyDown)
+    }
+  }, [stopFollowing])
 
   const loadEarlier = () => {
     const element = scrollRef.current
@@ -512,6 +627,7 @@ export function ChatView({
               process={process}
               onLoadSteps={loadProcessSteps}
               initialExpanded={process.runId ? expandedRuns.has(process.runId) : false}
+              onEngage={stopFollowing}
             />
           ) : null}
 
@@ -529,7 +645,7 @@ export function ChatView({
             </div>
           ) : null}
 
-          {live?.content ? (
+          {live && answerText ? (
             <div className="message assistant-message live-message">
               <div className="assistant-avatar live">
                 <PilotMark width={18} height={18} />
@@ -542,9 +658,14 @@ export function ChatView({
                     {t("回复中")}</span>
                 </div>
                 {live.reasoning ? (
-                  <ReasoningBlock text={live.reasoning} className="answer-reasoning" />
+                  <ReasoningBlock
+                    text={live.reasoning}
+                    className="answer-reasoning"
+                    live={running}
+                    onEngage={stopFollowing}
+                  />
                 ) : null}
-                <Markdown content={live.content} />
+                <Markdown content={answerText} />
                 <span className="stream-caret" />
                 <FileChangeBar
                   files={liveFiles}
@@ -555,11 +676,23 @@ export function ChatView({
             </div>
           ) : null}
 
-          {running && !live?.content && !process ? (
+          {/* 思考先于回答到达：这一段还在写的时候也要看得到，而不是只有一个
+              转圈指示器。块默认收拢、标题行贴着最新一行滚动，读者自己展开后才
+              逐字追加；折叠或上滚后就停不再自动跟。 */}
+          {live?.reasoning && !answerText ? (
+            <ReasoningBlock
+              text={live.reasoning}
+              className="answer-reasoning live-reasoning"
+              live={running}
+              onEngage={stopFollowing}
+            />
+          ) : null}
+
+          {running && !answerText && !process ? (
             <ThinkingIndicator step={live?.step ?? 0} startedAt={live?.startedAt} />
           ) : null}
 
-          {running && live?.content && !process ? (
+          {running && answerText && !process ? (
             <div className="thinking-row subtle">
               <span className="typing-dots">
                 <i />
@@ -593,7 +726,8 @@ export function ChatView({
           type="button"
           className="jump-latest"
           onClick={() => {
-            stickRef.current = true
+            stickRef.current = nextFollow(stickRef.current, { kind: 'user-jump' })
+            setShowJump(false)
             scrollToBottom(true)
           }}
         >

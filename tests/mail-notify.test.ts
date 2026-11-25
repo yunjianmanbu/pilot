@@ -43,7 +43,7 @@ function harness(
   instruction: () => string = () => '把侧栏底部的模型连接标志删掉',
 ) {
   const sent: OutgoingMail[] = []
-  const logs: Array<{ area: string; event: string }> = []
+  const logs: Array<{ area: string; event: string; reason?: string }> = []
   let clock = now()
   const notifier = new MailNotifier({
     settings: () => settings,
@@ -58,7 +58,12 @@ function harness(
     },
     now: () => clock,
     log: (entry) => {
-      logs.push({ area: entry.area, event: entry.event })
+      const reason = entry.detail?.['reason']
+      logs.push({
+        area: entry.area,
+        event: entry.event,
+        ...(typeof reason === 'string' ? { reason } : {}),
+      })
     },
   })
   return {
@@ -195,12 +200,76 @@ describe('MailNotifier', () => {
     )
   })
 
-  it('stays silent when the mailbox is incomplete', async () => {
+  it('stays silent when the mailbox is incomplete, and says which field is missing', async () => {
     for (const settings of [settingsOf({ reflectEmailTo: '' }), settingsOf({ reflectEmailTo: ' , ' })]) {
-      const { notifier, sent } = harness(settings)
+      const { notifier, sent, logs } = harness(settings)
       notifier.handle(failed('run-1'))
       await settle()
       expect(sent).toHaveLength(0)
+      // 静默跳过是那次「没收到邮件却查不到原因」的直接原因：now 至少留下一行。
+      expect(logs.filter((entry) => entry.event === 'skipped')).toHaveLength(1)
     }
+  })
+
+  it('names the missing piece once, then clears the memory after a successful send', async () => {
+    // 只留「地址」这一项缺失，smtp 与授权码固定为可用。
+    const sent: OutgoingMail[] = []
+    const reasons: string[] = []
+    let to = ''
+    let clock = 1_000_000
+    const notifier = new MailNotifier({
+      settings: () => settingsOf({ reflectEmailTo: to }),
+      smtp: () => CONFIG,
+      hasPassword: () => true,
+      sessionTitle: () => '',
+      english: () => false,
+      send: async (_config: SmtpConfig, mail: OutgoingMail): Promise<MailResult> => {
+        sent.push(mail)
+        return { ok: true }
+      },
+      now: () => clock,
+      log: (entry) => {
+        const reason = entry.detail?.['reason']
+        if (entry.event === 'skipped' && typeof reason === 'string') reasons.push(reason)
+      },
+    })
+    notifier.handle(failed('run-1'))
+    clock += 30_000
+    notifier.handle(completed('run-2'))
+    await settle()
+    // 同一缺失项只报一次，别把每一封信的跳过都写进 app 日志。
+    expect(reasons).toEqual(['no-recipient'])
+    expect(sent).toHaveLength(0)
+    // 补上地址后能发出信，报警记忆被清掉，下次再缺会重新报。
+    to = 'me@example.com'
+    clock += 30_000
+    notifier.handle(completed('run-3'))
+    await settle()
+    expect(sent).toHaveLength(1)
+    to = ''
+    clock += 30_000
+    notifier.handle(completed('run-4'))
+    await settle()
+    expect(reasons).toEqual(['no-recipient', 'no-recipient'])
+  })
+
+  it('reports a missing SMTP host or password instead of staying silent', async () => {
+    const reasons: string[] = []
+    const notifier = new MailNotifier({
+      settings: () => settingsOf(),
+      smtp: () => null,
+      hasPassword: () => false,
+      sessionTitle: () => '',
+      english: () => false,
+      send: async () => ({ ok: true }),
+      now: () => 1_000_000,
+      log: (entry) => {
+        const reason = entry.detail?.['reason']
+        if (entry.event === 'skipped' && typeof reason === 'string') reasons.push(reason)
+      },
+    })
+    notifier.handle(failed('run-1'))
+    await settle()
+    expect(reasons).toEqual(['no-smtp-host'])
   })
 })

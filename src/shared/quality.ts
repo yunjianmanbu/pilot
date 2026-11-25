@@ -636,7 +636,7 @@ export function sanitizeQualityState(input: unknown): QualityState {
   }
 }
 
-/** 铃铛未读数：需要用户做决定的候选数。 */
+/** 质量角标数：需要用户做决定的候选数（现已由顶栏三点菜单的产出质量项承载）。 */
 export function bellCount(state: QualityState): number {
   return state.candidates.filter(
     (candidate) => candidate.status === 'awaiting_user' || candidate.status === 'approved',

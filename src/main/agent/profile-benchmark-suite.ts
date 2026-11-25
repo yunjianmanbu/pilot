@@ -71,6 +71,13 @@ export const BENCHMARK_SUITE_HISTORY: readonly SuiteRevision[] = [
     added: ['compose-refactor-and-contract'],
     retired: [],
   },
+  {
+    version: 5,
+    change:
+      '重测基线：v1–v4 的对比都在「写与执行工具一律被审批拒绝」的坏环境里跑过，两侧每个任务都失败，只在测运行环境，不足以说明版本优劣。修复基准运行的审批策略后，这些对比一律作废，必须重新实测；题库任务本身未变。',
+    added: [],
+    retired: [],
+  },
 ]
 
 export const BENCHMARK_SUITE_VERSION = BENCHMARK_SUITE_HISTORY.length

@@ -11,6 +11,7 @@ export const APPLY_PATCH = 'apply_patch'
 export const LIST_DIRECTORY = 'list_directory'
 export const PROJECT_MAP = 'project_map'
 export const SEARCH_FILES = 'search_files'
+export const CODE_INTEL = 'code_intel'
 export const GET_FILE_INFO = 'get_file_info'
 export const RUN_COMMAND = 'run_command'
 export const RUN_SHELL = 'run_shell'
@@ -291,6 +292,7 @@ export const REVIEW_READ_TOOLS = new Set([
   READ_FILE,
   GET_FILE_INFO,
   SEARCH_FILES,
+  CODE_INTEL,
   GIT_STATUS,
   GIT_DIFF,
   GIT_LOG,

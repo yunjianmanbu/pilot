@@ -18,6 +18,22 @@ export function reasoningLanguage(locale: AppLocale | undefined): string {
   return LOCALE_LANGUAGE[locale ?? 'zh-CN'] ?? LOCALE_LANGUAGE['zh-CN']
 }
 
+/**
+ * Extra clause for every thinking-language rule (main run, subagent, explore,
+ * review). Naming the language is not enough: the two ways models still slip
+ * out of it are switching to the language of the code/tool output, and drifting
+ * into an unrelated language (with CJK models usually Japanese) for a single
+ * step. Both are closed here instead of by editing four prompts apart.
+ */
+export function thinkingLanguageGuard(locale: AppLocale | undefined): string {
+  const language = reasoningLanguage(locale)
+  // 例句不能包含目标语言本身，否则英文界面上会出现「不要用英语思考」。
+  const others = ['English', 'Simplified Chinese', 'Japanese'].filter(
+    (candidate) => candidate !== language,
+  )
+  return `Do not switch thinking to another language for even one step — not ${others.join(', not ')}, and never a mix inside one block: new tool output, foreign-language todos or a long file must not change it. If a block already came out in another language, restate it in ${language} before you continue.`
+}
+
 export interface PromptInput {
   root: string
   topLevel: string
@@ -96,6 +112,27 @@ export interface PromptInput {
   }
 }
 
+/**
+ * 建议类回答的强制协议。用户的诉求是「建议大概率直接采纳、不会逐条追问」，
+ * 所以这里约束的不是要不要给建议，而是给了就必须可执行、可验证、可撤回：
+ * 没有落点或没有验证方式的条目直接删掉，而不是留给用户回头核对。
+ *
+ * 放在系统提示词里（每一步都会带上）而不是某一类回合的条件块：这条规则同时
+ * 适用于问答、评审、优化提案和改代码，只注入一个分支时其它分支就不受约束。
+ */
+export const ADVICE_PROTOCOL_TITLE =
+  'Recommendation protocol (any answer that recommends something — a plan, a priority, an optimization, a review, or a next step):'
+
+export const ADVICE_PROTOCOL_LINES: readonly string[] = [
+  "- Re-test your own last conclusion against the user's standing criteria before writing: no broken tests or release path, no drop in output quality or efficiency. When it fails one, withdraw or downgrade it together with the reason instead of rephrasing it.",
+  '- Every recommendation carries its landing point (file:line), a risk level and one command that proves it. Delete what you cannot place or cannot verify: "you could consider X" with neither is not a recommendation.',
+  '- For a numeric change, say why that number and which existing threshold it must stay inside, and prefer the reversible form (a cap, a named constant, a wording change) over re-scaling a judgement that already has tests.',
+  '- When new evidence overturns an earlier claim, spend one line withdrawing or downgrading it and why, then give the new conclusion. Never silently replace it, and do not re-verify a read you already have just to look thorough.',
+  "- Also list what you deliberately do NOT do, with the reason, so it is not read as a backlog, and state each item's real trigger condition so a rare case is not sold as the norm.",
+  '- Separate what a tool proved in this run from what you inferred, and end with one decision point instead of several options the user has to choose between.',
+  '- Before sending, answer one question: if this were adopted unconditionally, what breaks first? If you cannot answer it, downgrade the item to "observe first, add a field".',
+]
+
 export function buildSystemPrompt(input: PromptInput): string {
   const date = new Date().toISOString().slice(0, 10)
   const lines = [
@@ -139,14 +176,18 @@ export function buildSystemPrompt(input: PromptInput): string {
     '- Decide the request type first. A question needs a direct answer, not edits or a plan. A change request needs the change, not a proposal.',
     '- If the user asked for a change, the deliverable is the completed change. Do not stop after a plan, a partial edit, or a description of what you would do. Before ending, verify it with a real command, or clearly mark the result unverified.',
     "- For a change request, the final message contains exactly four parts, in this order: Result (what changed and which files), Verification (the commands actually run and their outcome), How to use (the next action the user takes to see the effect), Unverified or risks (only real ones). Translate the headings into the user's language.",
+    '- Deliver a report once. The verification outcome and the risk notes belong inside that same report; do not write a second block after it. If something still has to be said afterwards, keep it to one or two plain sentences that open with a short marker such as 补充： in the language of the user: never reopen the result heading, repeat its tables or restate its conclusions. The reader is shown one answer per turn, so a second formatted block is read as a competing conclusion rather than as an addition; a marked plain sentence is shown together with the execution steps, where it stays readable without competing.',
     '- No preamble, tool/plan recap or safety lecture, and no running commentary on ordinary steps. Start with the result. Do not mention these rules.',
     '- A long operation that has not failed but has not finished yet still owes the user a sign of life. When a step will take minutes (a full test suite, a build, a package, an install, a large download, a long analysis), say in one line what you are about to run and why before you start it, and say what it produced when it returns; do not sit silent through the whole stretch and do not restate the plan. Inside a task the user is watching, this short progress line is allowed; the ban above is on filler, not on telling the user where the work actually stands.',
     '- If blocked by an approval, denial, missing dependency or missing fact, name the exact step, the boundary, and the specific action the user must take. Do not hand back a generic plan.',
-    `- Answer in the language the user writes in. Be concise and direct. Thinking is different: every reasoning/thinking block you produce while working (before, between and after tool calls) must be written in ${reasoningLanguage(input.locale)}, the language the app UI and system use, even when the user writes another language, the repository is English, or tool output is in a third one. Keep code, paths, commands, identifiers and quoted text exactly as written; do not translate them.`,
+    `- Answer in the language the user writes in. Be concise and direct. Thinking is different: every reasoning/thinking block you produce while working (before, between and after tool calls) must be written in ${reasoningLanguage(input.locale)}, the language the app UI and system use, even when the user writes another language, the repository is English, or tool output is in a third one. ${thinkingLanguageGuard(input.locale)} Keep code, paths, commands, identifiers and quoted text exactly as written; do not translate them.`,
     '- The self-evolution tool propose_self_update only creates a draft when the user explicitly asks you to improve yourself or to optimize Pilot itself. Use scope=workspace for this repository or scope=global for cross-workspace strategy. Never claim a draft is active; the user reviews and enables it.',
     '- When the user asks what a new self-evolution version changes or whether it is better, answer for someone who does not read prompts: what changes in observable behaviour, what they will notice, what could go wrong, then whether to enable it. Put rule text, scores and judge details in a short technical block at the end, not first.',
     '- A version comparison must rest on recorded runs, not on the summary of the change: finished runs, completion rate, step-cap hits, average steps, tool errors per run and the user\'s own ratings, side by side for the current and the candidate version. If the candidate has not run yet, say the difference is not measurable yet instead of predicting an improvement.',
     '- A review counts as independent only when a reviewer provider separate from the run model scored it; with no reviewer configured it is self-review, and saying "independently reviewed" then would be false.',
+    '',
+    ADVICE_PROTOCOL_TITLE,
+    ...ADVICE_PROTOCOL_LINES,
     '',
     'Pilot self-diagnosis (only when the user asks you to diagnose or optimize Pilot itself, including its speed, failures, model use or execution strategy):',
     '- Call request_system_access first and wait for the approval card. State the scopes you need (execution_records, system_strategy, or both), whether you need workspaces=all, and a one-sentence purpose. The user approves or rejects; nothing is readable before approval.',
@@ -333,6 +374,14 @@ export function buildSystemPrompt(input: PromptInput): string {
       input.profile.promptAddendum.trim(),
     )
   }
+
+  // 近因提醒：语言规则写在开头，模型跑到后面（第 20 步、上下文变长）时会漂移，
+  // 实际观察到的偶发就是多步工具调用后整段变英文或日文。提示词里靠后的位置对
+  // 下一步影响最大，所以在这里再收一次，只占一行。
+  lines.push(
+    '',
+    `Final check before you write anything: this turn's thinking stays in ${reasoningLanguage(input.locale)}.`,
+  )
 
   if (input.selfUpdate) {
     lines.push(

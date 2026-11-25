@@ -28,6 +28,7 @@ import {
   matchesCheckpointIgnore,
   normalizeCheckpointIgnore,
 } from '../shared/checkpoint-ignore'
+import { appState } from './app-state'
 import { resolveForWrite, SKIP_DIRS } from './workspace'
 import type { Store } from './store'
 
@@ -135,7 +136,23 @@ const MAINTENANCE_INTERVAL_MS = 5 * 60_000
  * still means something for a follow-up task minutes later.
  */
 const CHECKPOINT_SHELL_REUSE_MS = 10 * 60_000
-const MAINTENANCE_MAX_ROUNDS = 100
+/**
+ * Eviction rounds per pass. Every round re-reads every snapshot manifest, so
+ * a store whose remaining snapshots share blobs (logical `bytes` says it freed
+ * space, the blob store says it did not) would otherwise grind through all 100
+ * rounds, re-parsing hundreds of megabytes each time.
+ */
+const MAINTENANCE_MAX_ROUNDS = 4
+/** A round that frees less than this is not making progress; stop. */
+const MIN_EVICT_PROGRESS_BYTES = 1024 * 1024
+/**
+ * After a maintenance pass ends over budget because the protected snapshots
+ * pin shared blobs, another full scan is pointless until the store grows or
+ * the weekly audit is due. Without this the estimate stays over the cap and
+ * every snapshot (and every launch) kicks off another multi-minute scan.
+ */
+const OVER_BUDGET_RETRY_MS = 6 * 60 * 60_000
+const OVER_BUDGET_GROWTH = 1.1
 
 interface ManifestEntry {
   path: string
@@ -268,6 +285,14 @@ interface MaintenanceState {
   lastMaintenanceAt: number
   lastAuditAt: number
   lastTrashSweepAt: number
+  /**
+   * Set when a pass finished still over budget (only possible when the newest
+   * snapshot of every session, which is never evicted, pins the blobs). The
+   * next automatic attempt waits for `OVER_BUDGET_RETRY_MS` unless the estimate
+   * has grown materially.
+   */
+  overBudgetAt?: number
+  overBudgetBytes?: number
 }
 
 type MetaState =
@@ -317,6 +342,9 @@ function refKey(ref: CheckpointRef): string {
   return `${ref.sessionId}/${ref.meta.id}`
 }
 
+/** Thrown inside a scan when a snapshot is waiting for the store-wide gate. */
+class MaintenanceDeferred extends Error {}
+
 function clampGlobalBytes(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return DEFAULT_GLOBAL_BYTES
   return Math.round(Math.max(MIN_GLOBAL_BYTES, Math.min(MAX_GLOBAL_BYTES, value)))
@@ -363,6 +391,8 @@ export class CheckpointService {
   // call (a restore creating its safety snapshot) runs inline instead of
   // queueing behind itself, while an unrelated concurrent caller still waits.
   private readonly lockContext = new AsyncLocalStorage<true>()
+  /** Keyed tasks waiting for the store-wide chain; a scan yields to them. */
+  private pendingSnapshotWaiters = 0
   private lastMaintenance = 0
   private maintenanceState: MaintenanceState | null = null
   private maintenanceStatePromise: Promise<MaintenanceState | null> | null = null
@@ -400,7 +430,11 @@ export class CheckpointService {
    * call `exclusive` again (a restore creates a safety snapshot), in which case
    * the nested work runs inline instead of queueing behind itself.
    */
-  private exclusive<T>(task: () => Promise<T>, key?: string): Promise<T> {
+  private exclusive<T>(
+    task: () => Promise<T>,
+    key?: string,
+    options?: { givesWay?: boolean },
+  ): Promise<T> {
     if (this.lockContext.getStore()) return task()
     const gate = this.storeChain
     const chainKey = key ?? ''
@@ -410,13 +444,25 @@ export class CheckpointService {
     const token = new Promise<void>((resolve) => {
       release = resolve
     })
+    // Keyed work is a run the user is watching (a snapshot, a restore, a file
+    // revert) queued for its workspace; it counts as a waiter so a maintenance
+    // scan gives way instead of holding the store-wide gate for a full walk.
+    const counts = key !== undefined
     const run = (async () => {
-      if (previous) await previous.catch(() => undefined)
-      await gate.catch(() => undefined)
-      // A sweep must not overlap a snapshot that is already writing blobs.
-      if (key === undefined) await this.drainRunning()
-      this.running.add(token)
+      if (counts) this.pendingSnapshotWaiters += 1
       try {
+        if (previous) await previous.catch(() => undefined)
+        await gate.catch(() => undefined)
+      } finally {
+        if (counts) this.pendingSnapshotWaiters -= 1
+      }
+      try {
+        // A sweep must not overlap a snapshot that is already writing blobs.
+        // `givesWay` only changes what happens when such a snapshot is also
+        // queued behind us: wait for the running ones, but abort instead of
+        // holding the gate for them.
+        if (key === undefined) await this.drainRunning(options?.givesWay === true)
+        this.running.add(token)
         return await this.lockContext.run(true, task)
       } finally {
         this.running.delete(token)
@@ -432,9 +478,19 @@ export class CheckpointService {
     return run
   }
 
-  /** Wait for every task that is already executing to settle. */
-  private async drainRunning(): Promise<void> {
+  /**
+   * Wait for every task that is already executing to settle.
+   *
+   * With `givesWay`, a task waiting for the store-wide gate is a run the user is
+   * watching start, so the pass aborts instead of holding the gate until every
+   * running snapshot finishes. The persisted state stays untouched, so the next
+   * idle moment retries. Store work the user is waiting on (a snapshot, a
+   * restore) never gives way: deferring it would fail the very operation the
+   * waiters are queued for.
+   */
+  private async drainRunning(givesWay = false): Promise<void> {
     for (;;) {
+      if (givesWay && this.pendingSnapshotWaiters > 0) throw new MaintenanceDeferred()
       const tokens = [...this.running]
       if (tokens.length === 0) return
       await Promise.allSettled(tokens)
@@ -639,6 +695,12 @@ export class CheckpointService {
         lastTrashSweepAt: isNonNegativeFinite(parsed.lastTrashSweepAt)
           ? parsed.lastTrashSweepAt
           : 0,
+        ...(isNonNegativeFinite(parsed.overBudgetAt)
+          ? { overBudgetAt: parsed.overBudgetAt }
+          : {}),
+        ...(isNonNegativeFinite(parsed.overBudgetBytes)
+          ? { overBudgetBytes: parsed.overBudgetBytes }
+          : {}),
       }
       return this.maintenanceState
     } catch {
@@ -756,13 +818,15 @@ export class CheckpointService {
     }
   }
 
+  /** @background-isolated 见 tests/background-isolation.test.ts：异常在本方法内收口。 */
   private async saveIndex(workspacePath: string, state: WorkspaceState): Promise<void> {
     const files: Record<string, IndexEntry> = {}
     for (const [rel, entry] of state.index) files[rel] = entry
     const path = this.indexFile(workspacePath)
-    await mkdir(dirname(path), { recursive: true })
     const temp = `${path}.${randomUUID()}.tmp`
     try {
+      // mkdir 也必须在这轮兜底里：调用点是 fire-and-forget，逸出的 rejection 会掀掉主进程。
+      await mkdir(dirname(path), { recursive: true })
       await writeFile(
         temp,
         JSON.stringify({ version: INDEX_VERSION, files, autoIgnore: state.autoIgnore }),
@@ -1565,8 +1629,22 @@ export class CheckpointService {
     // A pre-restore safety snapshot is different: the restore is waiting on it
     // and a full scan there would only delay the operation it protects.
     // A reused snapshot did not grow the store, so it needs no sweep either.
+    //
+    // 维护是副线，绝不在这条路径上 await：快照本身是对话的关键路径（`shell` 前
+    // 快照会挡住命令执行，运行前快照会挡住第一个工具），而一次维护可能走全盘扫描
+    // 几十秒。排进副线队列后，会话在跑时它自动让路，失败只记日志；没有队列
+    // （CLI / 测试）时维持原来的就地等待语义，避免改变调用方对磁盘占用的假设。
     if (input.trigger !== 'prerestore' && !reusedSnapshot) {
-      await this.maintain({ maxBytes }).catch(() => undefined)
+      const scheduler = appState.background
+      if (scheduler) {
+        void scheduler.schedule(
+          'checkpoint-maintenance',
+          () => this.maintain({ maxBytes }),
+          { whenIdle: true, delayMs: 500, timeoutMs: 10 * 60_000, retryDelayMs: 30_000 },
+        )
+      } else {
+        await this.maintain({ maxBytes }).catch(() => undefined)
+      }
     }
     return meta
   }
@@ -1748,66 +1826,140 @@ export class CheckpointService {
     const maxBytes = clampGlobalBytes(options.maxBytes)
     const force = options.force === true
     const startedAt = Date.now()
-    await this.exclusive(async () => {
-      const state = await this.loadMaintenanceState()
-      // Trash has its own budget and is independent from the snapshot store.
-      // Sweep it daily even when the blob gate below skips the full scan.
-      if (state && startedAt - state.lastTrashSweepAt >= TRASH_SWEEP_INTERVAL_MS) {
-        await this.sweepTrash().catch(() => undefined)
-        state.lastTrashSweepAt = startedAt
-        this.maintenanceStateDirty = true
+    // Every snapshot calls this when it finishes, but a pass is only due every
+    // five minutes. Deciding that before taking the store-wide gate is the
+    // difference between a no-op and a stall: a store-wide task waits for every
+    // running snapshot (`drainRunning`) *and* blocks the first snapshot of any
+    // new run in any workspace until it is done. Two scheduled runs snapshotting
+    // before each shell therefore kept a fresh no-op in that gate almost
+    // continuously, and a task typed by hand in another workspace waited for
+    // minutes before its own first snapshot started.
+    if (!force && !this.maintenanceDue(maxBytes, startedAt)) return
+    await this.exclusive(
+      async () => {
+        try {
+          await this.runMaintenance(maxBytes, startedAt, force)
+        } catch (error) {
+          // A queued snapshot wins: leave the persisted state untouched so the
+          // next idle moment retries instead of blocking the run.
+          if (!(error instanceof MaintenanceDeferred)) throw error
+        }
+      },
+      undefined,
+      { givesWay: true },
+    ).catch((error: unknown) => {
+      // `drainRunning` defers before the task body runs, so the deferral can
+      // surface from the gate itself.
+      if (!(error instanceof MaintenanceDeferred)) throw error
+    })
+  }
+
+  /**
+   * Lock-free version of the throttle at the top of `runMaintenance`: does a
+   * pass have anything to do?
+   *
+   * `true` while the persisted state is unloaded, because only a pass can load
+   * it (that happens once per launch). Both this and `runMaintenance` read the
+   * same fields, so a `false` here is exactly the early return there — with no
+   * gate, no `drainRunning` and no wait for the snapshots in flight.
+   */
+  private maintenanceDue(maxBytes: number, at: number): boolean {
+    const state = this.maintenanceState
+    if (!state) return true
+    if (at - state.lastTrashSweepAt >= TRASH_SWEEP_INTERVAL_MS) return true
+    const lastRun = Math.max(this.lastMaintenance, state.lastMaintenanceAt)
+    if (lastRun > 0 && at - lastRun < MAINTENANCE_INTERVAL_MS) return false
+    const usage = state.blobBytes + state.legacyBytes
+    const auditDue = at - state.lastAuditAt >= MAINTENANCE_AUDIT_INTERVAL_MS
+    if (usage <= maxBytes && !auditDue) return false
+    if (
+      usage > maxBytes &&
+      !auditDue &&
+      state.overBudgetAt !== undefined &&
+      at - state.overBudgetAt < OVER_BUDGET_RETRY_MS &&
+      state.blobBytes < (state.overBudgetBytes ?? 0) * OVER_BUDGET_GROWTH
+    ) {
+      return false
+    }
+    return true
+  }
+
+  /** The body of `maintain`, split out so a deferral can unwind cleanly. */
+  private async runMaintenance(maxBytes: number, startedAt: number, force: boolean): Promise<void> {
+    const state = await this.loadMaintenanceState()
+    // Trash has its own budget and is independent from the snapshot store.
+    // Sweep it daily even when the blob gate below skips the full scan.
+    if (state && startedAt - state.lastTrashSweepAt >= TRASH_SWEEP_INTERVAL_MS) {
+      await this.sweepTrash().catch(() => undefined)
+      state.lastTrashSweepAt = startedAt
+      this.maintenanceStateDirty = true
+      await this.saveMaintenanceState()
+    }
+    const lastRun = Math.max(this.lastMaintenance, state?.lastMaintenanceAt ?? 0)
+    if (!force && lastRun > 0 && startedAt - lastRun < MAINTENANCE_INTERVAL_MS) {
+      return
+    }
+    if (!force && state) {
+      const usage = state.blobBytes + state.legacyBytes
+      const auditDue = startedAt - state.lastAuditAt >= MAINTENANCE_AUDIT_INTERVAL_MS
+      if (usage <= maxBytes && !auditDue) return
+      // The never-evicted newest snapshots can pin the store over budget, in
+      // which case another scan frees nothing. Wait for the estimate to grow
+      // (or the audit) instead of rescanning every five minutes.
+      if (
+        usage > maxBytes &&
+        !auditDue &&
+        state.overBudgetAt !== undefined &&
+        startedAt - state.overBudgetAt < OVER_BUDGET_RETRY_MS &&
+        state.blobBytes < (state.overBudgetBytes ?? 0) * OVER_BUDGET_GROWTH
+      ) {
+        return
+      }
+    }
+    this.lastMaintenance = startedAt
+    if (!state) await this.sweepTrash().catch(() => undefined)
+    const scan = await this.scanAll()
+    if (!scan) {
+      // Keep the throttle so a corrupt manifest does not force a full scan on
+      // every launch; leave the byte estimate untouched until the next audit.
+      if (state) {
+        state.lastMaintenanceAt = startedAt
         await this.saveMaintenanceState()
       }
-      const lastRun = Math.max(this.lastMaintenance, state?.lastMaintenanceAt ?? 0)
-      if (!force && lastRun > 0 && startedAt - lastRun < MAINTENANCE_INTERVAL_MS) {
-        return
-      }
-      if (!force && state) {
-        const usage = state.blobBytes + state.legacyBytes
-        const auditDue = startedAt - state.lastAuditAt >= MAINTENANCE_AUDIT_INTERVAL_MS
-        if (usage <= maxBytes && !auditDue) return
-      }
-      this.lastMaintenance = startedAt
-      if (!state) await this.sweepTrash().catch(() => undefined)
-      const scan = await this.scanAll()
-      if (!scan) {
-        // Keep the throttle so a corrupt manifest does not force a full scan on
-        // every launch; leave the byte estimate untouched until the next audit.
-        if (state) {
-          state.lastMaintenanceAt = startedAt
-          await this.saveMaintenanceState()
-        }
-        return
-      }
-      let blobBytes = await this.sweepBlobs(scan.hashes)
-      let legacyBytes = scan.legacyBytes
-      if (blobBytes + legacyBytes > maxBytes) {
-        const capped = await this.enforceGlobalCap(maxBytes, scan, blobBytes, true)
-        blobBytes = capped.blobBytes
-        legacyBytes = capped.legacyBytes
-        if (capped.over) {
-          // Still over budget with baselines pinned: the hard limit wins.
-          const retry = await this.scanAll()
-          if (retry) {
-            const forced = await this.enforceGlobalCap(maxBytes, retry, blobBytes, false)
-            blobBytes = forced.blobBytes
-            legacyBytes = forced.legacyBytes
-          }
+      return
+    }
+    let blobBytes = await this.sweepBlobs(scan.hashes)
+    let legacyBytes = scan.legacyBytes
+    if (blobBytes + legacyBytes > maxBytes) {
+      const capped = await this.enforceGlobalCap(maxBytes, scan, blobBytes, true)
+      blobBytes = capped.blobBytes
+      legacyBytes = capped.legacyBytes
+      if (capped.over) {
+        // Still over budget with baselines pinned: the hard limit wins.
+        const retry = await this.scanAll()
+        if (retry) {
+          const forced = await this.enforceGlobalCap(maxBytes, retry, blobBytes, false)
+          blobBytes = forced.blobBytes
+          legacyBytes = forced.legacyBytes
         }
       }
-      this.maintenanceState = {
-        version: MAINTENANCE_STATE_VERSION,
-        blobBytes,
-        legacyBytes,
-        lastMaintenanceAt: startedAt,
-        lastAuditAt: startedAt,
-        lastTrashSweepAt: state?.lastTrashSweepAt ?? startedAt,
-      }
-      this.maintenanceStatePromise = Promise.resolve(this.maintenanceState)
-      this.maintenanceStateDirty = false
-      this.countedBlobs.clear()
-      await this.saveMaintenanceState()
-    })
+    }
+    const overBudget = blobBytes + legacyBytes > maxBytes
+    this.maintenanceState = {
+      version: MAINTENANCE_STATE_VERSION,
+      blobBytes,
+      legacyBytes,
+      lastMaintenanceAt: startedAt,
+      lastAuditAt: startedAt,
+      lastTrashSweepAt: state?.lastTrashSweepAt ?? startedAt,
+      ...(overBudget
+        ? { overBudgetAt: startedAt, overBudgetBytes: blobBytes }
+        : {}),
+    }
+    this.maintenanceStatePromise = Promise.resolve(this.maintenanceState)
+    this.maintenanceStateDirty = false
+    this.countedBlobs.clear()
+    await this.saveMaintenanceState()
   }
 
   private async scanAll(): Promise<ScanResult | null> {
@@ -1816,6 +1968,8 @@ export class CheckpointService {
     let legacyBytes = 0
     let steps = 0
     const yieldIfNeeded = async (): Promise<void> => {
+      // A run's first snapshot is queued behind this walk; let it through.
+      if (this.pendingSnapshotWaiters > 0) throw new MaintenanceDeferred()
       steps += 1
       if (steps % YIELD_EVERY === 0) await yieldEventLoop()
     }
@@ -1879,6 +2033,8 @@ export class CheckpointService {
     let bytes = 0
     let steps = 0
     const yieldIfNeeded = async (): Promise<void> => {
+      // A run's first snapshot is queued behind this walk; let it through.
+      if (this.pendingSnapshotWaiters > 0) throw new MaintenanceDeferred()
       steps += 1
       if (steps % YIELD_EVERY === 0) await yieldEventLoop()
     }
@@ -1952,14 +2108,15 @@ export class CheckpointService {
         return { over: usage > maxBytes, blobBytes, legacyBytes: scan.legacyBytes }
       }
 
-      // Delete a batch roughly half the overshoot before paying for another
-      // full scan; logical sizes over-count shared blobs, so overshooting on
-      // the small side risks another expensive round.
+      // Delete at least the overshoot before paying for another full scan.
+      // Logical sizes over-count shared blobs, so this still tends to free
+      // less than the target; the progress check below stops when it frees
+      // nothing at all rather than deleting history for another four rounds.
       const target = usage - maxBytes
       let freed = 0
       const doomed = new Set<string>()
       for (const ref of candidates) {
-        if (doomed.size > 0 && freed >= target / 2) break
+        if (doomed.size > 0 && freed >= target) break
         doomed.add(refKey(ref))
         freed += Math.max(0, ref.meta.bytes)
       }
@@ -1971,11 +2128,16 @@ export class CheckpointService {
         await rm(ref.dir, { recursive: true, force: true }).catch(() => undefined)
       }
 
+      const before = blobBytes
       const next = await this.scanAll()
       if (!next) return { over: usage > maxBytes, blobBytes, legacyBytes: scan.legacyBytes }
       blobBytes = await this.sweepBlobs(next.hashes)
       scan = next
       usage = blobBytes + scan.legacyBytes
+      // Shared blobs make `meta.bytes` promise far more than eviction can
+      // return. Once a whole round frees almost nothing, deleting more
+      // snapshots only loses history; report the store as over budget.
+      if (before - blobBytes < MIN_EVICT_PROGRESS_BYTES) break
     }
     return { over: usage > maxBytes, blobBytes, legacyBytes: scan.legacyBytes }
   }

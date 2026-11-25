@@ -22,6 +22,8 @@ export interface ReflectionPromptInput {
   evidence: string
   /** 报错触发时的错误原文（已脱敏、已截断）。 */
   errorText?: string
+  /** 版本变化触发时的上一版与当前版，告诉模型该对比哪一段行为。 */
+  versionChange?: { from: string; to: string }
   english: boolean
 }
 
@@ -85,6 +87,13 @@ export function buildReflectionUserPrompt(input: ReflectionPromptInput): string 
     : '{"summary": "不超过 400 字，概括整体在往哪漂", "findings": [{"topic": "<上面某个 id>", "severity": "high|medium|low", "observation": "证据显示的现象", "suggestion": "一条具体动作", "refs": ["src/路径/文件.ts:123"]}]}'
   const parts = [
     triggerLine,
+    ...(input.versionChange
+      ? [
+          english
+            ? `The app just changed from ${input.versionChange.from} to ${input.versionChange.to}: judge this version's runs first, and say plainly when the evidence cannot separate a regression from an old issue.`
+            : `应用刚从 ${input.versionChange.from} 升级到 ${input.versionChange.to}：先看这一版的运行，证据分不清是新回归还是旧问题时直接说明。`,
+        ]
+      : []),
     english ? 'Domains to question:' : '要自问的问题域：',
     topicLines,
     english ? 'Evidence:' : '证据：',

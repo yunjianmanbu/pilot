@@ -9,6 +9,123 @@ Chinese version: [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.5] - 2026-11-25
+
+1.2.5 brings all scheduled tasks to the phone. The phone home screen used to show only the current session's scheduled tasks, so looking at another session meant opening it one by one; the home screen now has an "All scheduled tasks" entry that lists every session's tasks at once, sorted by next run with paused tasks last, each row naming its session and project so one tap takes you back. Tasks whose session was deleted are still listed and marked "Session deleted", because seeing those uncleaned-up tasks is exactly what "all" is for; the desktop gains a read-only schedules.listAll method so it no longer drops them silently the way the old per-session call did. This release also carries the 1.2.4 reflection change: reflection runs once when the app version changes, with a seven-day fallback while the version stays the same. Windows and macOS (Intel and Apple Silicon) both move to 1.2.5, the source package ships with them, and the phone bundle hot-updates to 1.1.18 the same day; Linux stays on 0.1.82 and the CLI package on 0.1.76.
+
+- The phone home screen lists every session's scheduled tasks in one place
+- Sorted by next run with paused tasks last, each row names its session and project
+- Tasks whose session was deleted are listed and labelled instead of silently dropped
+- A read-only schedules.listAll method gives the phone and the desktop one shared grouping
+- Carries the 1.2.4 reflection change: one reflection per app version, seven days otherwise
+
+## [1.2.4] - 2026-11-25
+
+1.2.4 hands reflection scheduling to the app version. Reflection used to run on a daily or fixed-interval timer, so it often reviewed a build you had not touched. The default is now "reflect when the app version changes": after installing this build it records a first baseline within a minute, and each later upgrade reviews that build with both versions carried into the prompt (1.2.3 to 1.2.4), so the model decides first whether a finding is a new regression or an old problem. When the version stays the same it still runs once every seven days, so it never goes silent; when the host cannot report a version the seven-day fallback applies instead of a ten-minute retry loop that would keep burning quota. Settings can switch back to interval or daily scheduling at any time. This release ships Windows at 1.2.4 together with the source package; macOS (Intel and Apple Silicon) stays on 1.2.3 and Linux on 0.1.82 until the Mac build host is back, and the CLI package stays on 0.1.76.
+
+- Reflection now runs when the app version changes, not on a timer you never asked for
+- The prompt carries both versions, so the model first decides whether a finding is a new regression or an old problem
+- A version that never changes still gets one reflection every seven days, so silence stays bounded
+- Interval and daily scheduling stay one click away, and a host without a version falls back to seven days
+
+## [1.2.3] - 2026-11-25
+
+1.2.3 hands reasoning back to reading. The thinking block now starts folded and no longer opens itself while streaming, so it never takes the transcript over on its own — it opens only when you click it. Folded, the title line still carries information: a block that is still being written shows its newest line, a finished block shows its first, so you can tell the steps apart without opening each one. Once opened, the title line holds just the label and a "Collapse" hint that fades in on the right, instead of repeating the first line of the body underneath it, where the repetition only makes you read noise first. Opening a block that is still being written follows the newest line so you watch it land character by character; opening a finished block stays at the top, where reading starts. This release ships Windows and macOS (Intel and Apple Silicon) together, all at 1.2.3; Linux stays on 0.1.82, the CLI package stays on 0.1.76, and the source package follows this round.
+
+- Reasoning starts folded and no longer opens itself while streaming
+- Folded, the title line shows the newest line (the first line once finished), so steps stay distinct at a glance
+- An opened block no longer repeats the first line of its body in the title, leaving only the label and a collapse hint
+- Opening a finished block starts at its first line, while a live block follows the newest line
+
+## [1.2.2] - 2026-11-25
+
+1.2.2 clears out six places in the chat where things felt wrong, and folds the reminders into one entry point. Notification center: the bell at the top of the session area is now the notification entry, grouping session notices, background tasks, approval requests, updates, app messages and quality reminders — six sources — with an unread badge that also counts pending tool approvals, keeping the latest 200; Production quality moved out of the bell and became an item in the top-bar three-dot menu. Reasoning: opening a thinking block no longer scrolls its content away, it appends live while the model writes and stays collapsible; the occasional English or Japanese reasoning text in the Chinese UI is fixed too. Todos: text with line breaks keeps them instead of being squashed into one paragraph. Sidebar: switching workspaces replaces only that workspace's rows, so no other group re-sorts and the scroll position is no longer clamped back to the top; switching a session keeps the previous content on screen while loading and fades in, instead of a white flash or a whole-block blink. Updates: if 1.2.1 was already downloaded but not yet applied, a newer 1.2.2 replaces it instead of waiting on the old package. Model settings gained a model-name field and one shared model catalog, so the main and renderer processes fill defaults from the same list. This release ships Windows and macOS (Intel and Apple Silicon) together, all at 1.2.2; Linux stays on 0.1.82, the CLI package stays on 0.1.76, and the source package follows this round.
+
+- The bell is now a notification center covering six reminder sources, with unread and pending-approval counts
+- Opening the reasoning block no longer scrolls it away, and the text appends live as it streams
+- Reasoning follows the UI language, so the Chinese UI stops showing English or Japanese thinking text
+- Switching workspaces keeps the sidebar order and scroll position; switching a session no longer flashes white
+- A downloaded but unapplied update no longer blocks a newer version
+
+## [1.2.1] - 2026-11-25
+
+1.2.1 fixes an irritating feel problem in chat: while output was streaming, scrolling up to read earlier content kept pulling you back to the bottom. The old check treated "less than 120px from the bottom" as still being at the bottom, and one wheel notch is roughly 100px, so the scroll stayed inside the threshold and the next frame dragged you down again. It now judges by direction: a smaller scrollTop than the previous frame counts as leaving, following resumes only when you are genuinely back at the bottom (within 24px), and everything else keeps the current state, so content growing taller never looks like the user left. A connected defect is fixed too: when the streaming segment settles into a real message the total height drops sharply and the browser clamps scrollTop, which forged a "scrolled up" signal — clicking "back to latest" therefore brought the button back about three seconds later and broke following on the spot. When the content gets shorter the direction check is now skipped and only the bottom distance is used. A wheel notch, a touch drag upwards, PageUp and ArrowUp are explicit gestures that leave following in the same frame instead of waiting for the next scroll event. This release ships Windows and macOS (Intel and Apple Silicon) together, all at 1.2.1; Linux stays on 0.1.82, and the CLI and source packages stay on 0.1.76.
+
+- Scrolling up during streaming no longer snaps back to the bottom — you stay where you stopped
+- Following is judged by direction: a smaller scrollTop means you left, and only a real bottom restores it
+- Shrinking content (a streaming segment settling) no longer forges a scroll-up signal, so "back to latest" stops reappearing
+- A wheel notch, touch drag, PageUp or ArrowUp leaves following in the same frame instead of waiting for the next scroll event
+- Windows and macOS (Intel and Apple Silicon) both move to 1.2.1
+
+## [1.2.0] - 2026-11-25
+
+1.2.0 is about what happens when Pilot itself is stuck, plus two execution rules that moved from prose into code. Side-line isolation: maintenance, module self-check, index rescans and notifications — anything that does not serve the current conversation — now go through a single-concurrency queue that yields whenever a session is running, and any timeout or failure is recorded without being thrown at the conversation, so a broken side-line can no longer stall the main path. Runtime log: a new Runtime log section in settings filters by area and shows main-process event-loop lag and the side-line queue (who holds it, for how long). Turn trail: a new Conversation trail entry in the session menu folds a run's events into phases and shows which step it stopped on, how long it has been there, and what side-line load ran alongside, instead of inferring it from a timeline. Super Pilot: its own data plane (store and checkpoints), its own engine and its own window, assembled before the main engine and pinned to full-auto plus fully autonomous, so it is still reachable from the tray or settings when the main store is corrupt or startup assembly fails; rescue actions are accounted one by one. It cannot escape the JS single thread: if the main process event loop is blocked by a synchronous loop, a restart is still the way out. Two execution rules: plan items are now ordered by dependency — work another item must wait for comes first, independent work keeps the order the user wrote, and a different order has to be explained in goal (previously the model ordered by the numbering it received and ignored real prerequisites); and any recommendation must carry a file:line location, a risk level and one command that proves it, or be deleted. The plan item cap is now one shared constant (12 — still a runaway valve, while the advice to the model stays 2-8), and verification reminders are capped at 5. This round ships Windows only; macOS (Intel and Apple Silicon) stays on 1.0.8, Linux on 0.1.82, and the CLI and source packages on 0.1.76.
+
+- Side-line work runs through one single-concurrency queue that yields while a session runs, and failures are only recorded
+- Runtime log in settings: main-thread lag, the side-line queue, and events filtered by area
+- Conversation trail in the session menu: which step it stopped on, how long, and what side-line load ran alongside
+- Super Pilot has its own data plane and window, still reachable when the main store is corrupt or startup fails
+- Plans resolve dependencies before ordering, and a different order has to be explained in goal
+
+## [1.1.0] - 2026-11-25
+
+1.1.0 retires the one-size-fits-all step cap and the forced wrap-up just before it. A run's allowance is now sized from the request itself: an instruction listing five tasks gets room for five (about 55 steps each); the run starts with 60% of the ceiling and earns the rest — every step that brings a piece of new evidence (a file not read before, a command that returns a different output) extends the limit, and only eight steps in a row of the same action with byte-identical output asks the model to close out, so the reason becomes 'no new evidence' instead of 'the number ran out'. The ceiling moved to 4,000 steps and acts only as a runaway valve, which turns Max steps in settings into a soft limit: 0 means unlimited, and a run that keeps making progress extends up to 4,000. Batch instructions gained two more safeguards: when the steps left cannot cover finishing and verifying every open item, the model is asked to rotate early instead of discovering at the ceiling that the last items never started; and a multi-task run no longer infers done for the item still marked in_progress — the usual outcome when the model answers after two of five tasks. When compaction moves a tool result out of place, its content now moves back with it instead of leaving a mismatched pair. Fully autonomous mode is no longer blocked by a step cap of 0. This round ships Windows only; macOS (Intel and Apple Silicon) stays on 1.0.8, Linux on 0.1.82, and the CLI and source packages on 0.1.76.
+
+- Step budget is sized from the request: five tasks no longer share one task's allowance
+- Progress extends the limit; only eight repeats of the same action with identical output ask for a close-out
+- When the steps left cannot cover finishing and verifying every open item, the model is asked to rotate early
+- A multi-task run no longer infers done for the item still marked in progress
+
+## [1.0.11] - 2026-11-25
+
+1.0.11 fixes the stall where every session sits waiting once a few scheduled tasks are running. Before each run calls the model the desktop app stores a checkpoint, and the checkpoint store's maintenance pass (evicting old snapshots, verifying hashes) shares a single store-wide lock with every snapshot: once the store goes over its size budget, maintenance has to parse hundreds of manifests and walk tens of thousands of files, and the new run's first checkpoint simply queues behind it, so the user message is stored while the model request is never sent. Maintenance now decides whether it has real work before taking the lock, gives way as soon as a snapshot is queued behind it (that pass resumes at the next idle moment with its progress intact instead of losing it), and still waits for snapshots that are actually writing. Eviction also went from up to 100 rounds to 4, stops after a round frees less than 1 MB, and an over-budget store backs off for hours instead of re-scanning everything every round. This round Windows is at 1.0.11; macOS (Intel and Apple Silicon) stays on 1.0.8, Linux on 0.1.82, and the CLI and source packages on 0.1.76.
+
+- Maintenance no longer cuts ahead of snapshots: it gives way as soon as a snapshot is queued and resumes at the next idle moment
+- Snapshots that are still writing are still waited for, so cleanup never races a write on the same blob
+- Eviction went from 100 rounds to 4 and stops after a round frees less than 1 MB, instead of deleting history for nothing
+- An over-budget store backs off for hours instead of re-scanning everything on every round
+
+## [1.0.10] - 2026-11-25
+
+1.0.10 makes the mailbox survive an upgrade. Older builds treated the address that once shipped as a built-in default as "not configured" and wiped it every time the app started, while leaving the SMTP password in place, so task-finished mail silently stopped arriving even though the settings page looked configured. The address is now kept whenever a saved password proves it is really in use, and a store that an older build already emptied is restored once from that same evidence, so nobody has to retype it after updating. An empty mailbox or SMTP host submitted by an older phone build now means "keep what is stored" instead of "clear it", which is how the password already behaved; clearing still works, because the desktop and the phone send an explicit null when you empty the field yourself. The notification layer also stopped failing silently: a missing recipient, host or password writes one skipped entry with the reason instead of looking like nothing happened. This round Windows is at 1.0.10; macOS (Intel and Apple Silicon) stays on 1.0.8, Linux on 0.1.82, and the CLI and source packages on 0.1.76.
+
+- Updating no longer wipes the mailbox: the address stays whenever a saved SMTP password shows it is in use
+- A store that an older build already emptied is restored once, so the address does not have to be retyped
+- An empty field from an older phone build means "keep the stored value"; emptying it yourself still clears it
+- Mail that cannot be sent writes a skipped entry with the reason instead of failing silently
+
+## [1.0.9] - 2026-11-25
+
+1.0.9 ships alongside phone bundle 1.1.16 and only changes how the desktop talks to the phone. A reflection report used to send down which topics it asked about, so the phone could list the topics but never say why one of them produced no conclusion; topics skipped for lack of evidence now travel with what was missing, so the phone can tell you which evidence is still absent. The same place gains a three-state call for findings: once you read a finding on the phone you can mark it handled or not worth doing, and the next reflection treats it as a decision already taken instead of raising the same item again. The phone bundle 1.1.16 shipped the same day and carries all four items: the waiting row shows step N with a running timer, the reflection panel shows handling state and skip reasons, scheduled tasks can name a start date, and one tap on Older reaches the previous turn (desktop 1.0.8 already served that last one). This round Windows is at 1.0.9; macOS (Intel and Apple Silicon) stays on 1.0.8, Linux on 0.1.82, and the CLI and source packages on 0.1.76.
+
+- Reflection reports carry the topics skipped for lack of evidence together with what was missing, so the phone can say why an area has no conclusion
+- A finding can be marked handled or not worth doing on the phone, and the next reflection stops raising it
+- The waiting row shows step N with a running timer, so two seconds and two minutes no longer look the same
+- Scheduled tasks accept a start date, so from tomorrow, every day at 20:00 no longer fires today
+
+## [1.0.8] - 2026-11-24
+
+1.0.8 makes the evolution panel say what measured actually means, and lets the measurement produce a result. Old comparisons used to keep counting after the model mode or the task suite changed, so a candidate could show measured without ever having been compared against the current version; evidence that no longer holds now says which rule failed (candidate mismatch, baseline mismatch, suite version not recorded, suite version differs), the main process, the activation gate and the panel all use the same rule, and an invalidated comparison offers neither Activate nor Force activate — force overrides a score, never a broken comparison. The benchmark run itself used to be strangled by the approval policy: the comparison run asked for permission like any tool call, nobody answered, both sides failed, and with two failures the verdict stayed inconclusive forever; comparison runs now always use the auto policy, so a paired measurement can actually finish. The task suite moves to v5 — v1 through v4 were all measured in an environment where write and execute tools were rejected by approval, so every one of those comparisons is void and the next activation needs a fresh run. The same build makes reflection collect evidence first: findings must point at real code locations (oversized files past their timeout, undecided decision records) gathered before the model is asked anything, each finding carries a handling state, and long reports scroll in the UI. Three smaller items: the phone app shows the previous turn with a single tap on Older; hooks filter by command and by multi-tool so unrelated calls no longer spawn a process; the mail Date header uses the sending machine local time zone. This round Windows and macOS are both at 1.0.8 (Intel and Apple Silicon), Linux stays on 0.1.82, and the CLI and source packages stay on 0.1.76.
+
+- Expired evidence is reported under one of four cases: candidate mismatch, baseline mismatch, suite version not recorded, suite version differs
+- The main process, the activation gate and the panel share one rule; invalidated evidence offers neither Activate nor Force activate
+- Comparison runs always use the auto policy, so the approval gate can no longer kill both sides and leave the verdict inconclusive
+- The task suite moves to v5; every v1 through v4 comparison is void, and the next activation needs one fresh run
+- Reflection collects evidence before drawing conclusions, findings point at real code locations, and each one carries a handling state
+- One tap on Older in the phone app reaches the previous turn, and the built-in manual is regenerated
+- Hooks filter by command and by multi-tool so unrelated calls no longer spawn a process; the mail Date header uses local time
+
+## [1.0.7] - 2026-11-24
+
+1.0.7 changes one thing: you can tell what got done without opening the window. Notification and mail subjects used to come from the session name, which the model derives from the first sentence (New task, Fix build), so Pilot · Task complete · New task said nothing about which job had finished and you had to click through to find out. Desktop notification titles are now the instruction itself (first line, up to 40 characters), mail subjects take the first 60 characters, and the session name moves into the body as a locator; internal control messages and folded-history summaries (continue, compaction) never pose as task titles, and the fallback Current task appears only when no instruction exists. The same build rebuilds the mail: reflection reports and event notices share one HTML layout (table-based with inline styles, so Outlook stripping style does not break it; a dark-mode enhancement on top; the plain-text version is still sent alongside, both rendered from the same fields so they cannot disagree), times are local, and severity gets a colour bar. Two earlier fixes ship in this version as well: scheduled tasks accept a start date, so from tomorrow, every day at 20:00 no longer fires today, and the web service no longer depends on a bound mailbox — a browser page approves once and connects instead of asking again and again. This round Windows and macOS are both at 1.0.7 (Intel and Apple Silicon), Linux stays on 0.1.82, and the CLI and source packages stay on 0.1.76.
+
+- Desktop notification titles use the instruction itself; the session name moves to the body, and control messages or folded summaries never pose as task titles
+- Mail subjects take the first 60 characters, and an over-long instruction is repeated in full inside the body so nothing is lost
+- Reflection reports and event notices share one HTML layout: table-based, inline styles, dark-mode enhancement, with the plain-text version sent alongside
+- Mail times are local, and severity gets a colour bar so a phone inbox shows success or failure at a glance
+- Scheduled tasks accept a start date, so from tomorrow, every day at 20:00 no longer fires today
+- The web service no longer requires a bound mailbox, and a browser page approves once and connects
+
 ## [1.0.6] - 2026-11-24
 
 1.0.6 fixes one thing only: not being able to tell whether a long task is still working. A task that has been running for minutes used to show three blinking dots and the word running, with no way to tell a fresh start from a stuck run — it now reports on four fronts at once: the top-bar pill shows step N and a stopwatch counted from the start, the waiting row follows "working on step N" with the same clock, the clock stays once text has begun to stream but the run is still going, the running process box and each tool card carry their own seconds, and past 45 seconds the label gains "still working". All of these numbers tick in the renderer once per second: they never reach the main process, never issue a request and never cause a model call or cost a token; the prompt only loosens one line — say what a long action is going to do before it starts and what it returned afterwards — while the ban stays on filler chatter, not on that note. The pairing dialog is now accurate: its device row says in one place who is asking, from which address and how long is left, the countdown is its own chip that no longer jumps as the text changes, and the last 15 seconds turn urgent; a browser page reaches the app over the /bridge channel and can only act as the host, so the old client-user option, which left the page with no channel to the main process and an empty shell, is gone — the fixed role is stated instead and the button reads Allow access. The two permanent status lines at the bottom of the sidebar (model name, running count) are gone, because both already live in the bottom-left resource strip and the top-bar pill. This round Windows is at 1.0.6, macOS stays on 0.1.90, Linux stays on 0.1.82, and the CLI and source packages stay on 0.1.76.

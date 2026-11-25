@@ -76,7 +76,9 @@ describe('reflection settings normalization', () => {
 
   it('normalizes schedule mode and daily time', () => {
     expect(normalizeReflectionScheduleMode('interval')).toBe('interval')
-    expect(normalizeReflectionScheduleMode('weekly')).toBe('daily')
+    expect(normalizeReflectionScheduleMode('version')).toBe('version')
+    // 认不出来的值（含旧客户端可能发的旧默认 'weekly'）落到当前默认：按版本。
+    expect(normalizeReflectionScheduleMode('weekly')).toBe('version')
     expect(normalizeReflectionTime(' 07:05 ')).toBe('07:05')
     expect(normalizeReflectionTime('24:00')).toBe('09:00')
     expect(normalizeReflectionTime(7)).toBe('09:00')
@@ -153,6 +155,64 @@ describe('scheduled trigger', () => {
   it('computes the slot in local time and rejects bad input', () => {
     expect(dailySlot('09:30', local(2026, 5, 1, 18))).toBe(local(2026, 5, 1, 9, 30).getTime())
     expect(dailySlot('bad', local(2026, 5, 1, 18))).toBe(local(2026, 5, 1, 9, 0).getTime())
+  })
+})
+
+describe('version trigger', () => {
+  const base = {
+    mode: 'version' as const,
+    intervalMinutes: 720,
+    dailyTime: '09:00',
+    lastRunAt: null,
+    currentVersion: '1.2.4',
+  }
+
+  it('treats the first run as building the baseline', () => {
+    // 旧存档没有版本基线：必须马上跑一次把它落盘，否则永远等不到首次自问。
+    expect(reflectionScheduleDue(base, local(2026, 5, 1, 12))).toBe(true)
+  })
+
+  it('fires once the app version differs from the last reflected version', () => {
+    const anchored = {
+      ...base,
+      lastRunAt: local(2026, 5, 1, 10).toISOString(),
+      lastVersion: '1.2.3',
+    }
+    // 同一版本、刚跑过：不重复触发。
+    expect(
+      reflectionScheduleDue({ ...anchored, lastVersion: '1.2.4' }, local(2026, 5, 1, 10, 30)),
+    ).toBe(false)
+    // 升级到 1.2.4：立刻反思这一版。
+    expect(reflectionScheduleDue(anchored, local(2026, 5, 1, 10, 30))).toBe(true)
+  })
+
+  it('waits one retry window before firing again after a failed run', () => {
+    const changed = {
+      ...base,
+      lastRunAt: local(2026, 5, 1, 10).toISOString(),
+      lastVersion: '1.2.3',
+    }
+    // 版本变了但 10 分钟内刚试过一次（失败）：不追着每分钟重试。
+    expect(reflectionScheduleDue(changed, local(2026, 5, 1, 10, 5))).toBe(false)
+    expect(reflectionScheduleDue(changed, local(2026, 5, 1, 10, 11))).toBe(true)
+  })
+
+  it('falls back to a weekly self-check when the version never changes', () => {
+    const same = { ...base, lastVersion: '1.2.4' }
+    const lastRunAt = local(2026, 5, 1, 10).toISOString()
+    // 6 天 23 小时：不到兜底静默期。
+    expect(reflectionScheduleDue({ ...same, lastRunAt }, local(2026, 5, 8, 9, 59))).toBe(false)
+    // 满 7 天：不升级的用户也要自省一次。
+    expect(reflectionScheduleDue({ ...same, lastRunAt }, local(2026, 5, 8, 10, 1))).toBe(true)
+  })
+
+  it('does not fire when the host could not report a version', () => {
+    // 版本拿不到时不能退化成「每 10 分钟反思一次」，只保留 7 天的兜底自省。
+    const anchored = { ...base, currentVersion: '', lastVersion: '1.2.3' }
+    const lastRunAt = local(2026, 5, 1, 10).toISOString()
+    expect(reflectionScheduleDue({ ...anchored, lastRunAt }, local(2026, 5, 1, 10, 11))).toBe(false)
+    expect(reflectionScheduleDue({ ...anchored, lastRunAt }, local(2026, 5, 2, 10))).toBe(false)
+    expect(reflectionScheduleDue({ ...anchored, lastRunAt }, local(2026, 5, 8, 10, 1))).toBe(true)
   })
 })
 

@@ -665,8 +665,20 @@ export class CompanionServer {
     return saveNow(this)
   }
 
+  /** @background-isolated 见 tests/background-isolation.test.ts：委托层再兜一层，防收尾动作抛出。 */
   async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    return handleHttp(this, request, response)
+    try {
+      await handleHttp(this, request, response)
+    } catch {
+      // 委托函数内部已整体 try/catch；这里只防 writeHead/end 这些收尾动作本身抛出，
+      // 因为两个调用点都是 fire-and-forget，逸出的 rejection 会掀掉主进程。
+      try {
+        if (!response.headersSent) response.writeHead(500)
+        response.end()
+      } catch {
+        // 套接字已断开，没有可回复的对象了。
+      }
+    }
   }
 
   async handlePluginHttp(

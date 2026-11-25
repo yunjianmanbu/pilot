@@ -70,4 +70,21 @@ describe('settlePlan', () => {
     }
     expect(settlePlan(finished, 'completed', '2026-01-02T00:00:00.000Z')).toBeNull()
   })
+
+  it('keeps the active item pending when a batch run must not infer done', () => {
+    // Five tasks in one turn: answering after finishing two of them is a real
+    // outcome, and marking the third done would report work that never happened.
+    const result = settlePlan(plan(), 'completed', '2026-01-02T00:00:00.000Z', {
+      inferDone: false,
+    })
+
+    expect(result?.items.map((item) => item.status)).toEqual(['done', 'pending', 'pending'])
+  })
+
+  it('still infers done when inferDone is left at its default', () => {
+    const result = settlePlan(plan(), 'completed', '2026-01-02T00:00:00.000Z', {
+      inferDone: true,
+    })
+    expect(result?.items.map((item) => item.status)).toEqual(['done', 'done', 'pending'])
+  })
 })

@@ -4,6 +4,8 @@
 import { createAppLog } from './app-log'
 import type { AgentRunner } from './agent/runner'
 import type { AppLogEntry } from './app-log'
+import type { BackgroundScheduler } from './background'
+import type { LagMonitor } from './runtime-health'
 
 const EARLY_LOG_LIMIT = 50
 import type { BillingService } from './billing'
@@ -21,6 +23,7 @@ import type { ReflectService } from './reflect/service'
 import type { resolveSelfSource } from './self-source-git'
 import type { Store } from './store'
 import type { SupervisorService } from './supervisor'
+import type { SuperPilot } from './super-pilot'
 import type { UpdaterService } from './updater'
 import type { BrowserWindow, Tray } from 'electron'
 
@@ -53,6 +56,18 @@ export const appState = {
   appLog: undefined as unknown as ReturnType<typeof createAppLog>,
   earlyLogs: [] as AppLogEntry[],
   billing: undefined as unknown as BillingService,
+  /**
+   * 副线任务队列：维护、扫描、索引这类工作统一走它，保证同一时刻只跑一个，
+   * 且在会话进行中让路。见 `background.ts` 的三条硬约束。
+   */
+  background: null as BackgroundScheduler | null,
+  /** 主进程事件循环延迟采样；用来区分「模型慢」与「主进程被堵住」。 */
+  lagMonitor: null as LagMonitor | null,
+  /**
+   * 应急引擎（超级 Pilot）。它是**另一套** store / 回退点 / 运行器，与主引擎
+   * 互不影响；装配失败时这里为 null，界面会明确说「未能启动」而不是假装可用。
+   */
+  superPilot: null as SuperPilot | null,
   checkpointMaintenanceTimer: null as NodeJS.Timeout | null,
   pendingCheckpointMaintenance: false,
   personalResolve: null as {

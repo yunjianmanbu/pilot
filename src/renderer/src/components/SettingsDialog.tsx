@@ -26,13 +26,18 @@ import { copyText } from '../clipboard'
 import { t } from '../i18n'
 import { EvolutionHub, type EvolutionTab } from './EvolutionHub'
 import { Field, Toggle } from './form-fields'
+import { HookRulesPanel } from './HookRulesPanel'
 import {
   MailNotifySettings,
   mailSettingsDraftFrom,
   notifyToggleForSave,
   type MailSettingsDraft,
 } from './MailNotifySettings'
+import { HARD_CEILING_MAX } from '../../../shared/step-budget'
+import { RuntimeLogPanel } from './RuntimeLogPanel'
+import { SuperPilotSettings } from './SuperPilotSettings'
 import { SelectMenu } from './SelectMenu'
+import { STEP_LIMIT_MIN, StepLimitField } from './step-limit-field'
 import { useEscapeClose } from './useEscapeClose'
 
 /** 授权记录要带日期：只给时分的话，跨天之后就分不清哪条是今天的。 */
@@ -61,6 +66,8 @@ type SettingsSectionId =
   | 'evolution'
   | 'server'
   | 'notify'
+  | 'logs'
+  | 'super'
 
 /**
  * 进化是唯一入口：复盘评估、自动复盘、自动进化、探索学习与质量闸门
@@ -73,6 +80,8 @@ const SETTING_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'evolution', label: t("进化") },
   { id: 'server', label: t("网页服务") },
   { id: 'notify', label: t("通知") },
+  { id: 'logs', label: t("运行日志") },
+  { id: 'super', label: t("超级 Pilot") },
 ]
 
 /** 设置里的「进化」分节由 App 注入：它要拿运行状态和十几个回调，透传会撑大这个签名。 */
@@ -131,6 +140,7 @@ export function SettingsDialog({
   onOpenReview,
   reviewSessions,
   onOpenReviewSession,
+  onOpenSession,
 }: {
   settings: SettingsView
   /** Active workspace; only decides which volume the environment panel measures. */
@@ -154,6 +164,8 @@ export function SettingsDialog({
   /** 复盘页签的历史列表。 */
   reviewSessions: ReviewSessionEntry[]
   onOpenReviewSession: (sessionId: string) => void
+  /** 运行日志里点「查看卡点」：先关设置，再切到那个会话。 */
+  onOpenSession?: (sessionId: string) => void
 }) {
   const [maxSteps, setMaxSteps] = useState(String(settings.maxSteps))
   const [maxTokens, setMaxTokens] = useState(String(settings.maxTokens))
@@ -407,8 +419,16 @@ export function SettingsDialog({
       return
     }
 
-    if (!Number.isFinite(steps) || steps < 1 || steps > 1_000) {
-      setError(t("最大步数需要在 1 到 1,000 之间。"))
+    // 0 是「不限」，上限与循环里真正的硬天花板同源：以前这里卡 1,000，而
+    // `shared/step-budget.ts` 实际允许延展到 4,000，两边数字不一致时用户填的值
+    // 会被静默改掉。
+    if (!Number.isFinite(steps) || steps < STEP_LIMIT_MIN || steps > HARD_CEILING_MAX) {
+      setError(
+        t("最大步数需要在 {v1} 到 {v2} 之间（0 = 不限）。", {
+          v1: STEP_LIMIT_MIN.toLocaleString(),
+          v2: HARD_CEILING_MAX.toLocaleString(),
+        }),
+      )
       return
     }
     if (!Number.isFinite(budget) || budget < 0) {
@@ -518,8 +538,10 @@ export function SettingsDialog({
       notifyDesktop,
       notifyEmailEnabled: mailPlan.enabled,
       notifyEmailEvents: mail.notifyEmailEvents,
-      reflectEmailTo: mail.reflectEmailTo.trim(),
-      reflectSmtpHost: mail.reflectSmtpHost.trim(),
+      // 输入框被删空 = 用户要清掉这个邮箱：发 null 才算清除。发空串会被后端
+      // 当成「保持原值」，那次改动就静默丢了。
+      reflectEmailTo: mail.reflectEmailTo.trim() || null,
+      reflectSmtpHost: mail.reflectSmtpHost.trim() || null,
       reflectSmtpPort: Number.isFinite(Number(mail.reflectSmtpPort))
         ? Math.round(Number(mail.reflectSmtpPort))
         : settings.reflectSmtpPort,
@@ -635,7 +657,7 @@ export function SettingsDialog({
             checked={qualityGate}
             onChange={setQualityGate}
             label={t("产出质量闸门")}
-            description={t("让探索任务围绕可度量的产出质量展开：由你在下面配置的评估模型按可自动调优的指标给当前产出打分，分数高于现行基线时，在 App 顶部小铃铛和桌面通知里提醒你。它不会自己上线：只有你在铃铛里批准某个候选版本后，才会用固定脚本打包。评估模型不可用时仍记录客观指标，只是缺少评审分。")}
+            description={t("让探索任务围绕可度量的产出质量展开：由你在下面配置的评估模型按可自动调优的指标给当前产出打分，分数高于现行基线时，顶栏三个点菜单里的产出质量项会亮角标，并发一条桌面通知。它不会自己上线：只有你在产出质量面板里批准某个候选版本后，才会用固定脚本打包。评估模型不可用时仍记录客观指标，只是缺少评审分。")}
           />
           {qualityGate ? (
             <div className="field-grid">
@@ -660,7 +682,7 @@ export function SettingsDialog({
               </Field>
               <Field
                 label={t("指标重调频次")}
-                hint={t("每评估多少次重新计算一次指标权重（低分与无样本维度会被重新分配比重）。填 0 关闭自动调优，改为在铃铛里手动重调。")}
+                hint={t("每评估多少次重新计算一次指标权重（低分与无样本维度会被重新分配比重）。填 0 关闭自动调优，改为在产出质量面板里手动重调。")}
               >
                 <input
                   className="input"
@@ -731,16 +753,7 @@ export function SettingsDialog({
             </div>
 
             <div className="field-grid three">
-              <Field label={t("最大步数")}>
-                <input
-                  className="text-input mono"
-                  type="number"
-                  min={1}
-                  max={1000}
-                  value={maxSteps}
-                  onChange={(event) => setMaxSteps(event.target.value)}
-                />
-              </Field>
+              <StepLimitField value={maxSteps} onChange={setMaxSteps} />
               <Field label={t("上下文预算")} hint="tokens">
                 <input
                   className="text-input mono"
@@ -983,6 +996,8 @@ export function SettingsDialog({
                 </Field>
               ) : null}
             </div>
+
+            <HookRulesPanel workspacePath={workspacePath ?? ''} />
           </section>
 
           <section
@@ -1196,7 +1211,7 @@ export function SettingsDialog({
                           ? t("默认审批模式不是「全部自动」")
                           : blocker === 'token-budget'
                             ? t("token 总量上限低于 100000")
-                            : t("步数上限低于 20"),
+                            : t("步数上限低于 20 且不是「不限」"),
                       )
                       .join(t("；")),
                   })}
@@ -1414,6 +1429,31 @@ export function SettingsDialog({
               onChange={(patch) => setMail((current) => ({ ...current, ...patch }))}
               hasSmtpPassword={settings.hasSmtpPassword}
             />
+          </section>
+
+          <section
+            className="settings-section"
+            hidden={activeSection !== 'logs'}
+            ref={(element) => {
+              sectionRefs.current.logs = element
+            }}
+          >
+            <RuntimeLogPanel
+              onOpenSession={(sessionId) => {
+                onClose()
+                onOpenSession?.(sessionId)
+              }}
+            />
+          </section>
+
+          <section
+            className="settings-section"
+            hidden={activeSection !== 'super'}
+            ref={(element) => {
+              sectionRefs.current.super = element
+            }}
+          >
+            <SuperPilotSettings />
           </section>
 
           {error ? (

@@ -143,7 +143,15 @@ export function createBridge(rpc: BridgeRpc): PilotBridge {
     setReflectionFindingStatus: (reportId: string, findingId: string, status: string) =>
       invoke('pilot:reflection-finding-status', reportId, findingId, status),
     testReflectionMail: (to: string) => invoke('pilot:reflection-mail-test', to),
+    hookRules: (workspacePath: string) => invoke('pilot:hook-rules', workspacePath),
+    setHookRuleEnabled: (workspacePath: string, source: string, enabled: boolean) =>
+      invoke('pilot:hook-rule-enabled', workspacePath, source, enabled),
+    deleteHookRule: (workspacePath: string, source: string) =>
+      invoke('pilot:hook-rule-delete', workspacePath, source),
+    createHookRule: (workspacePath: string, input) =>
+      invoke('pilot:hook-rule-create', workspacePath, input),
     testConnection: (input) => invoke('pilot:test-connection', input),
+    discoverModels: (input) => invoke('pilot:models-discover', input),
     modelBilling: (refresh?: boolean) => invoke('pilot:model-billing', refresh),
     judgeBalance: (input) => invoke('pilot:judge-balance', input),
     setTheme: (theme: ThemeMode) => invoke('pilot:set-theme', theme),
@@ -169,6 +177,7 @@ export function createBridge(rpc: BridgeRpc): PilotBridge {
 
     pickFolder: (title?: string) => invoke('pilot:pick-folder', title),
     openWorkspace: (path: string) => invoke('pilot:workspace-open', path),
+    activateSession: (sessionId: string) => invoke('pilot:session-activate', sessionId),
     removeWorkspace: (path: string) => invoke('pilot:workspace-remove', path),
     setSessionModel: (sessionId: string, modelId: string) =>
       invoke('pilot:session-model', sessionId, modelId),
@@ -217,6 +226,8 @@ export function createBridge(rpc: BridgeRpc): PilotBridge {
       invoke('pilot:tools-catalog-workspace', workspacePath),
     getSessionTranscript: (sessionId: string) =>
       invoke('pilot:session-transcript', sessionId),
+    sessionReport: (sessionId: string) => invoke('pilot:session-report', sessionId),
+    saveSessionReport: (sessionId: string) => invoke('pilot:session-report-save', sessionId),
     writeClipboard: (text: string) => invoke('pilot:clipboard-write', text),
     createSession: (workspacePath: string) => invoke('pilot:session-create', workspacePath),
     createReviewSession: (input: ReviewSessionInput) =>
@@ -285,6 +296,7 @@ export function createBridge(rpc: BridgeRpc): PilotBridge {
     recentLogs: (limit?: number) => invoke('pilot:logs-recent', limit),
     logDir: () => invoke('pilot:logs-dir'),
     openLogs: () => invoke('pilot:logs-open'),
+    diagnosticsSnapshot: (limit?: number) => invoke('pilot:diagnostics-snapshot', limit),
     reportRendererError: (input: { summary: string; stack?: string; source?: string }) =>
       invoke('pilot:renderer-error', input),
     selfCheck: () => invoke('pilot:self-check-run'),
@@ -419,11 +431,29 @@ export function createBridge(rpc: BridgeRpc): PilotBridge {
       invoke('pilot:files-list', path, directory),
     previewFile: (path: string, file: string) => invoke('pilot:file-preview', path, file),
     revealFile: (path: string, file: string) => invoke('pilot:file-reveal', path, file),
+    openFile: (path: string, file: string) => invoke('pilot:file-open', path, file),
     openDocument: (workspace: string, file: string) =>
       invoke('pilot:doc-open', workspace, file),
     documentState: () => invoke('pilot:doc-state'),
     closeDocument: () => invoke('pilot:doc-close'),
     openLink: (url: string, external?: boolean) => invoke('pilot:open-link', url, external),
+
+    /**
+     * 超级 Pilot：主引擎出问题时的应急通道。它有自己的窗口、自己的数据面与
+     * 自己的运行器，所以不挂在 `bootstrap`/会话接口旁边，也不参与任何推送广播。
+     */
+    super: {
+      open: () => invoke('pilot:super-open'),
+      status: () => invoke('pilot:super-status'),
+      messages: () => invoke('pilot:super-messages'),
+      send: (prompt: string) => invoke('pilot:super-send', prompt),
+      cancel: () => invoke('pilot:super-cancel'),
+      reset: () => invoke('pilot:super-reset'),
+      rescue: () => invoke('pilot:super-rescue'),
+      onEvent: (listener: (event: RunEvent) => void) => {
+        return rpc.on('pilot:super-event', (payload) => listener(payload as RunEvent))
+      },
+    },
 
     updates: {
       state: () => invoke('pilot:update-state'),

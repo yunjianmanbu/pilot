@@ -39,6 +39,14 @@ export interface EngineHostOptions {
   getWindow?: () => BrowserWindow | null
   /** Root of the bundled quality baseline; empty when the host ships none. */
   packageRoot?: string
+  /**
+   * Checkpoint tuning for this engine's own service.
+   *
+   * The rescue engine (super Pilot) passes `watch: false`: it must never spend
+   * time on a workspace watcher or a full tree walk, because its whole purpose
+   * is to stay usable while the main engine is stuck.
+   */
+  checkpoint?: { watch?: boolean; fastPathMinFiles?: number }
 }
 
 export interface Engine {
@@ -59,7 +67,7 @@ export interface Engine {
 export function createEngine(options: EngineHostOptions): Engine {
   const { store, dataDir, publish } = options
   const billing = new BillingService({ store })
-  const checkpoints = new CheckpointService(dataDir, store)
+  const checkpoints = new CheckpointService(dataDir, store, options.checkpoint ?? {})
   // Reflection is created after the runner but has to see its failures. The
   // wrapper only forwards the event; the service is wired below.
   let reflect: ReflectService | null = null

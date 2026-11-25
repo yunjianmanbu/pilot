@@ -41,6 +41,7 @@ import {
   sanitizeJudgeUsage,
   unparsedResponseReason,
 } from './judge-runtime'
+import { comparisonVoidReason } from '../../shared/profile-evidence'
 import {
   BENCHMARK_SUITE_VERSION,
   assessCeiling,
@@ -194,7 +195,7 @@ export function toProfileComparison(
   run: BenchmarkRun,
   judges: string[],
   /** Ids of the two profiles, so a later review can verify what was compared. */
-  ids: { currentId?: string; candidateId?: string } = {},
+  ids: { currentId?: string | null; candidateId?: string } = {},
 ): ProfileComparison {
   const { comparison } = run
   return {
@@ -229,7 +230,9 @@ export function toProfileComparison(
     ...(run.ceiling?.ceilingTier ? { ceilingTier: run.ceiling.ceilingTier } : {}),
     ...(run.ceiling ? { ceilingPassRate: run.ceiling.ceilingPassRate } : {}),
     ...(run.ceiling ? { suiteSaturated: run.ceiling.saturated } : {}),
-    ...(ids.currentId ? { currentId: ids.currentId } : {}),
+    // Written even when there was no active profile: "no baseline" is a fact
+    // about the run, not a gap a later reader has to guess at.
+    currentId: ids.currentId ?? null,
     ...(ids.candidateId ? { candidateId: ids.candidateId } : {}),
     ...(judges.length > 0 ? { judges } : {}),
     ...(run.judgeErrors.length > 0 ? { judgeErrors: run.judgeErrors.slice(0, 6) } : {}),
@@ -245,8 +248,10 @@ export function toProfileComparison(
  *
  * The same holds for the task library: a verdict measured against an older,
  * easier revision cannot say whether the candidate clears the current one, and
- * is therefore not reusable as evidence. A comparison stored before revisions
- * were recorded has no version and stays valid.
+ * is therefore not reusable as evidence. That includes a comparison stored
+ * before revisions were recorded: with no version there is no way to know which
+ * ruler produced it, and treating it as valid is how a measurement taken in a
+ * broken environment kept gating every later candidate.
  */
 export function reusableComparison(
   comparison: ProfileComparison | undefined,
@@ -254,13 +259,14 @@ export function reusableComparison(
   activeProfileId: string | null,
   suiteVersion: number = BENCHMARK_SUITE_VERSION,
 ): ProfileComparison | undefined {
-  if (!comparison) return undefined
-  if (comparison.candidateId && comparison.candidateId !== candidateId) return undefined
-  const compared = comparison.currentId ?? null
-  if (compared !== activeProfileId) return undefined
-  if (!comparison.candidateId) return undefined
-  if (comparison.suiteVersion !== undefined && comparison.suiteVersion !== suiteVersion) return undefined
-  return comparison
+  // The rule itself lives in `shared/profile-evidence` so the activation gate
+  // can apply exactly the same judgement to a review that is already on disk.
+  const voided = comparisonVoidReason(comparison, {
+    candidateId,
+    activeProfileId,
+    suiteVersion,
+  })
+  return voided ? undefined : comparison
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
@@ -318,7 +324,27 @@ export function sanitizeProfileComparison(value: unknown): ProfileComparison | u
     candidate: sanitizeVariant(raw['candidate']),
     reasons: strings(raw['reasons'], 6),
     at: typeof raw['at'] === 'string' ? raw['at'] : new Date(0).toISOString(),
-    ...(typeof raw['currentId'] === 'string' && raw['currentId'] ? { currentId: raw['currentId'] } : {}),
+    // Dropping these on the way back in made every stored verdict look like it
+    // came from an unknown ruler, so the suite-version check could never fire.
+    ...(typeof raw['suiteVersion'] === 'number' && Number.isFinite(raw['suiteVersion'])
+      ? { suiteVersion: raw['suiteVersion'] }
+      : {}),
+    ...(typeof raw['ceilingTier'] === 'string' && raw['ceilingTier']
+      ? { ceilingTier: raw['ceilingTier'] }
+      : {}),
+    ...(typeof raw['ceilingPassRate'] === 'number' || raw['ceilingPassRate'] === null
+      ? { ceilingPassRate: raw['ceilingPassRate'] as number | null }
+      : {}),
+    ...(typeof raw['suiteSaturated'] === 'boolean'
+      ? { suiteSaturated: raw['suiteSaturated'] }
+      : {}),
+    // A stored null means "measured with no active profile"; keep it distinct
+    // from a legacy record that never wrote the field at all.
+    ...(typeof raw['currentId'] === 'string' && raw['currentId']
+      ? { currentId: raw['currentId'] }
+      : raw['currentId'] === null
+        ? { currentId: null }
+        : {}),
     ...(typeof raw['candidateId'] === 'string' && raw['candidateId']
       ? { candidateId: raw['candidateId'] }
       : {}),

@@ -6,6 +6,16 @@ import type { AccessLevel } from '../access-level'
 import type { CompanionServer } from '../server'
 import type { StoredPhone } from '../types'
 
+/** schedules.listAll 的分组形状：与桌面端 ScheduledTaskGroup 一致，外加 missing 标记。 */
+interface ScheduledTaskGroupPayload {
+  sessionId: string
+  sessionTitle: string
+  workspacePath: string
+  sessionUpdatedAt: string
+  missing: boolean
+  tasks: ReturnType<CompanionServer['options']['store']['allScheduledTasks']>
+}
+
 export async function handleWorkRequest(
   host: CompanionServer,
   method: string,
@@ -17,6 +27,38 @@ export async function handleWorkRequest(
     case 'schedules.list': {
       const sessionId = requireString(params['sessionId'], '会话', 80)
       return { tasks: host.options.store.scheduledTasks(sessionId) }
+    }
+    case 'schedules.listAll': {
+      // 手机首页「全部定时任务」：一次拿回所有会话的定时任务。
+      // 不复用 store.allScheduledTaskGroups()，因为它会静默丢掉会话已删除的任务，
+      // 而「查看全部」恰恰要让人看到这些没人清理的任务。会话查不到时标题留空，
+      // 由手机端显示成「已删除的会话」，并禁止点进会话。
+      const store = host.options.store
+      const sessions = new Map<string, { title: string; workspacePath: string; updatedAt: string }>()
+      for (const workspace of store.workspaces()) {
+        for (const session of store.sessions(workspace.path)) {
+          sessions.set(session.id, {
+            title: session.title,
+            workspacePath: session.workspacePath,
+            updatedAt: session.updatedAt,
+          })
+        }
+      }
+      const groups = new Map<string, ScheduledTaskGroupPayload>()
+      for (const task of store.allScheduledTasks()) {
+        const session = sessions.get(task.sessionId)
+        const group = groups.get(task.sessionId) ?? {
+          sessionId: task.sessionId,
+          sessionTitle: session?.title ?? '',
+          workspacePath: session?.workspacePath ?? '',
+          sessionUpdatedAt: session?.updatedAt ?? '',
+          missing: !session,
+          tasks: [],
+        }
+        group.tasks.push(task)
+        groups.set(task.sessionId, group)
+      }
+      return { groups: [...groups.values()] }
     }
     case 'schedules.add': {
       const sessionId = requireString(params['sessionId'], '会话', 80)
@@ -30,6 +72,7 @@ export async function handleWorkRequest(
           ? { intervalMinutes: input.intervalMinutes }
           : {}),
         ...(input.timeOfDay !== undefined ? { timeOfDay: input.timeOfDay } : {}),
+        ...(input.startDate !== undefined ? { startDate: input.startDate } : {}),
       })
       host.emitScheduled(sessionId)
       return { task }
@@ -154,6 +197,7 @@ export async function handleWorkRequest(
           ? { intervalMinutes: input.intervalMinutes }
           : {}),
         ...(input.timeOfDay !== undefined ? { timeOfDay: input.timeOfDay } : {}),
+        ...(input.startDate !== undefined ? { startDate: input.startDate } : {}),
       })
       host.emitTodos(sessionId)
       host.emitScheduled(sessionId)

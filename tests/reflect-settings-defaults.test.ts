@@ -52,6 +52,64 @@ describe('reflection mail defaults', () => {
     })
   })
 
+  it('restores a mailbox that an older build wiped while keeping the password', () => {
+    // 真实故障（1.0.9 及更早）：旧逻辑把预置地址当「未配置」清掉，授权码却留着。
+    // 于是「有授权码 + 邮箱与主机都空」就是被清掉的硬证据，升级时还原一次，
+    // 用户不必打开设置重填。
+    const state = sanitize({
+      settings: {
+        notifyEmailEnabled: true,
+        reflectEmailTo: '',
+        reflectSmtpHost: '',
+        reflectSmtpPasswordCipher: 'cipher-blob',
+      },
+    })
+
+    expect(state.settings.reflectEmailTo).toBe('embeddedmeng@163.com')
+    expect(state.settings.reflectSmtpHost).toBe('smtp.163.com')
+    expect(state.settings.reflectMailboxRestored).toBe(true)
+  })
+
+  it('only restores once, so a deliberate clear later sticks', () => {
+    const state = sanitize({
+      settings: {
+        reflectEmailTo: '',
+        reflectSmtpHost: '',
+        reflectSmtpPasswordCipher: 'cipher-blob',
+        reflectMailboxRestored: true,
+      },
+    })
+
+    expect(state.settings.reflectEmailTo).toBe('')
+    expect(state.settings.reflectSmtpHost).toBe('')
+  })
+
+  it('does not invent a mailbox when no password proves the config was real', () => {
+    const state = sanitize({ settings: { reflectEmailTo: '', reflectSmtpHost: '' } })
+
+    expect(state.settings.reflectEmailTo).toBe('')
+    expect(state.settings.reflectMailboxRestored).toBe(false)
+  })
+
+  it('keeps a saved mailbox when an old client submits an empty form', () => {
+    // 旧手机端 / 未同步完的界面会把空表单原样提交（空串），那不是「用户想清空」。
+    // 若当真清掉，换一台设备就得重填一次邮箱。只有显式 null 才清除。
+    const settings = defaults().settings
+    applySettingsUpdate(settings, { reflectEmailTo: 'me@example.com' }, hooks)
+    applySettingsUpdate(settings, { reflectSmtpHost: 'smtp.example.com' }, hooks)
+
+    applySettingsUpdate(settings, { reflectEmailTo: '', reflectSmtpHost: '' }, hooks)
+    expect(settings.reflectEmailTo).toBe('me@example.com')
+    expect(settings.reflectSmtpHost).toBe('smtp.example.com')
+
+    applySettingsUpdate(settings, { reflectSmtpUser: '', reflectEmailFrom: '' }, hooks)
+    expect(settings.reflectEmailTo).toBe('me@example.com')
+
+    applySettingsUpdate(settings, { reflectEmailTo: null, reflectSmtpHost: null }, hooks)
+    expect(settings.reflectEmailTo).toBe('')
+    expect(settings.reflectSmtpHost).toBe('')
+  })
+
   it('does not refill an address the user deliberately cleared', () => {
     const state = sanitize({ settings: { reflectEmailTo: '', reflectSmtpHost: '' } })
 
@@ -90,6 +148,23 @@ describe('reflection mail defaults', () => {
     // 其它字段不动：用户改过的端口与加密方式原样保留。
     expect(state.settings.reflectSmtpPort).toBe(465)
     expect(state.settings.reflectSmtpSecurity).toBe('tls')
+  })
+
+  it('keeps the legacy preset address when a saved SMTP password proves it is in use', () => {
+    // 真实故障（1.0.9）：这个地址恰好也是作者本人在用的地址。只要它被当成
+    // 「旧版预置」清掉，任务完成通知就一封也发不出去，而界面里授权码还在、
+    // 总开关也是开的，看着完全像「已经配置好」。有授权码就说明这是用户的配置。
+    const state = sanitize({
+      settings: {
+        notifyEmailEnabled: true,
+        reflectEmailTo: 'embeddedmeng@163.com',
+        reflectSmtpHost: 'smtp.163.com',
+        reflectSmtpPasswordCipher: 'cipher-blob',
+      },
+    })
+
+    expect(state.settings.reflectEmailTo).toBe('embeddedmeng@163.com')
+    expect(state.settings.reflectSmtpHost).toBe('smtp.163.com')
   })
 
   it('keeps a user-supplied mailbox even when it sits on 163', () => {
@@ -146,12 +221,63 @@ describe('reflection mail defaults', () => {
     expect(settings.reflectEmailTo).toBe('to@example.com')
   })
 
-  it('clears the mailbox when the user empties the only field', () => {
+  it('clears the mailbox only when the caller sends an explicit null', () => {    // 空串现在与授权码同义（保持原值），否则旧客户端把没同步好的空表单原样
+    // 提交一次，用户的邮箱就要重填一次。真正要清空时传 null：桌面设置弹框
+    // 在用户把输入框删空后就是这么发的。
     const settings = defaults().settings
     settings.reflectEmailTo = 'ops@example.com'
 
     applySettingsUpdate(settings, { reflectEmailTo: '' }, hooks)
+    expect(settings.reflectEmailTo).toBe('ops@example.com')
 
+    applySettingsUpdate(settings, { reflectEmailTo: null }, hooks)
     expect(settings.reflectEmailTo).toBe('')
+  })
+})
+
+/**
+ * 反思自动触发的默认粒度：高速迭代期一版一个行为，默认按「版本变化」切分。
+ * 老存档里的 daily/interval 是旧默认值而不是用户的选择，必须跟着迁移；
+ * 用户亲手选过的（`reflectScheduleModePinned`）一律保留。
+ */
+describe('reflection schedule mode defaults', () => {
+  it('defaults to the version trigger', () => {
+    expect(defaults().settings.reflectScheduleMode).toBe('version')
+    expect(sanitize({ settings: {} }).settings.reflectScheduleMode).toBe('version')
+    expect(sanitize({ settings: {} }).settings.reflectLastVersion).toBe('')
+  })
+
+  it('migrates the old default away from daily', () => {
+    // 旧版默认是 daily，存进存档后与「用户主动选每天」无法区分；没有 pinned 标记就是旧默认。
+    expect(
+      sanitize({ settings: { reflectScheduleMode: 'daily' } }).settings.reflectScheduleMode,
+    ).toBe('version')
+    expect(
+      sanitize({ settings: { reflectScheduleMode: 'interval' } }).settings.reflectScheduleMode,
+    ).toBe('version')
+  })
+
+  it('keeps a mode the user picked themselves', () => {
+    expect(
+      sanitize({ settings: { reflectScheduleMode: 'daily', reflectScheduleModePinned: true } })
+        .settings.reflectScheduleMode,
+    ).toBe('daily')
+  })
+
+  it('pins the mode as soon as the user changes it', () => {
+    const settings = defaults().settings
+    applySettingsUpdate(settings, { reflectScheduleMode: 'interval' }, hooks)
+    expect(settings.reflectScheduleMode).toBe('interval')
+    expect(settings.reflectScheduleModePinned).toBe(true)
+
+    // 钉住后再一次迁移（例如再次 sanitize 存档）不能把它拖回默认。
+    expect(
+      sanitize({ settings: { ...settings } }).settings.reflectScheduleMode,
+    ).toBe('interval')
+  })
+
+  it('keeps the version baseline such a round trip survives', () => {
+    const state = sanitize({ settings: { reflectLastVersion: '1.2.4' } })
+    expect(state.settings.reflectLastVersion).toBe('1.2.4')
   })
 })

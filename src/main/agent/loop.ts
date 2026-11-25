@@ -1,4 +1,5 @@
 import { detectEntryPoints, isVerificationCommand, looksLikeTestOutput } from './checks'
+import { isDeliverableText } from '../../shared/deliverable'
 import {
   COMPACTED_MARKER,
   CURRENT_TASK_HEADER,
@@ -31,6 +32,17 @@ import type {
   ToolPolicyResult,
 } from './loop/types'
 import { MAX_USAGE_SAMPLES } from './loop/types'
+import {
+  MAX_VERIFICATION_REMINDERS,
+  canExtend,
+  createProgressState,
+  extendLimit,
+  needsItemRotation,
+  noteStepObservations,
+  shouldStallCloseOut,
+  type StepBudget,
+  type StepObservation,
+} from '../../shared/step-budget'
 
 export type {
   AgentTimings,  ApprovalDecision,
@@ -204,7 +216,21 @@ async function mapLimit<T, R>(
  * The loop is transport- and UI-agnostic; callers supply the model and tools.
  */
 export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
-  const maxSteps = Math.max(1, options.maxSteps ?? 200)
+  // A dynamic budget replaces the static cap: `maxSteps` here is the *current*
+  // allowance, which grows as the run keeps producing new evidence. `stepCeiling`
+  // is the real stop. Without a budget the old fixed behaviour is unchanged.
+  const stepBudget: StepBudget | undefined = options.stepBudget
+  const stepCeiling = Math.max(
+    1,
+    stepBudget ? stepBudget.ceiling : (options.maxSteps ?? 200),
+  )
+  let maxSteps = Math.max(
+    1,
+    stepBudget ? Math.min(stepBudget.initial, stepCeiling) : stepCeiling,
+  )
+  const progress = createProgressState()
+  let stallCloseOutSent = false
+  let stepObservations: StepObservation[] = []
   const maxTokens = options.maxTokens ?? 0
   const maxToolOutputChars = Math.max(1_000, options.maxToolOutputChars ?? 48_000)
   const emit = options.emit ?? (() => undefined)
@@ -227,6 +253,28 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
   )
 
   let messages: AgentMessage[] = [...options.messages]
+  // A multi-task instruction gets the discipline that splitting it into several
+  // turns would have imposed: one item at a time, each closed out with its own
+  // evidence before the next starts. Without this, a five-task prompt tends to
+  // be worked on in five interleaved threads, and none of them finishes.
+  if (stepBudget && stepBudget.taskCount >= 2) {
+    messages.push({
+      role: 'user',
+      internal: true,
+      content:
+        `[分批执行] 本轮指令包含约 ${stepBudget.taskCount} 个独立任务。按拆分执行的同一套纪律处理：` +
+        '用 update_plan 为每一项列一条（不要合并，也不要额外扩张）；' +
+        // 一次发给五条时，顺序是模型自己定的：拆分执行时这份顺序由用户在每一轮里
+        // 给出，单轮批量没有这个输入。不写这一条，模型会按收到的编号排（实测见
+        // tests/plan-order.test.ts 注释），于是「先改依赖、再改被它影响的」这种
+        // 真实前置关系被忽略。默认保序是故意的：用户编号常自带优先级，重排只在
+        // 依赖确定时发生，且必须说明原因。
+        '顺序按依赖而不是按收到的编号：别的项要等它的放前面，互不依赖的保持原顺序，顺序与指令不同就在 goal 里说明原因；' +
+        '一次只推进一项，当前项验证通过就标记 done 再进入下一项；' +
+        '不要在不同任务之间来回切换上下文。' +
+        '全部任务都处理完后，收尾报告里逐项给出「已完成（怎么验证的）/ 未完成（缺什么）」。',
+    })
+  }
   const produced: AgentMessage[] = []
   const priorReads = new Map<string, { callId: string; mutationSeq: number }>()
   const decisionCache = new Map<string, ToolPolicyDecision | ToolPolicyResult>()
@@ -263,6 +311,10 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
   let answer = ''
   let answerReasoning = ''
   let answerMessage: AgentMessage | null = null
+  // Set once the model has delivered a report-shaped answer. The verification
+  // gate reads it: past that point asking for a check no longer prevents an
+  // unverified claim, it only makes the model re-open finished work.
+  let deliveredReport = false
   let continuations = 0
   let step = 0
   let planSeen = options.hasPlan === true
@@ -273,7 +325,37 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
   let closeOutSent = false
   let dirty = false
   let checkRan = false
-  let verificationGateUsed = false
+  // One reminder per task item, not one per run: a batch that edits for task 1,
+  // checks it, then edits for task 2 must be asked again, exactly as five
+  // separate turns would have been. A single request keeps the old behaviour.
+  // Capped: every reminder is an extra model request, and a write re-arms the
+  // gate, so an unchecked batch of twelve items would otherwise spend a tenth
+  // of its steps on the same question. Past the cap the close-out still reports
+  // the run as unverified, so the gap stays visible instead of being dropped.
+  let verificationReminders = 0
+  const verificationReminderLimit =
+    options.stepBudget && options.stepBudget.taskCount >= 2
+      ? Math.min(options.stepBudget.taskCount, MAX_VERIFICATION_REMINDERS)
+      : 1
+  // A multi-task instruction relies on the plan having one item per task: the
+  // per-item verification reminders and the close-out check below both count
+  // plan items. Track the plan the model actually submitted instead of trusting
+  // the first "list every task" instruction to have been followed.
+  const batchTaskCount = stepBudget && stepBudget.taskCount >= 2 ? stepBudget.taskCount : 0
+  // A split batch produces one final answer per task, so a single run is allowed
+  // the same number of close-out attempts instead of one. Capped at three: a
+  // model that refuses to update its plan gets a few chances, not a loop.
+  const itemCloseOutLimit = Math.min(batchTaskCount, 3)
+  let plannedItems: { text: string; status: string }[] = []
+  let planCoverageAsked = false
+  // Nudging for rotation is not a one-shot: with five tasks the third can still
+  // eat the pool after the second was rotated to. The allowance matches the
+  // close-out asks, and a repeat is only allowed once the open-item count has
+  // actually dropped — otherwise the notice would fire on every step.
+  const itemRotationLimit = Math.min(batchTaskCount, 3)
+  let itemRotationAsks = 0
+  let itemRotationOpenAtAsk = Number.POSITIVE_INFINITY
+  let itemCloseOutAsks = 0
   let lastSummaryStep = 0
   let lastSummaryLength = 0
   let lastSummaryText: string | undefined
@@ -528,10 +610,41 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
   }
 
   const noteResult = (call: ToolCall, result: ToolResult): void => {
+    // Every tool outcome is evidence for the progress detector: a repeated read
+    // of an unchanged file yields the same signature, while a retry that fails
+    // differently does not. Collected per step and folded in once, so one step
+    // with eight parallel reads counts as one step, not eight stalls.
+    if (stepBudget) {
+      let args = ''
+      try {
+        args = JSON.stringify(call.arguments ?? {})
+      } catch {
+        args = ''
+      }
+      stepObservations.push({
+        name: call.name,
+        args,
+        output: result.ok ? result.output : (result.error ?? ''),
+      })
+    }
     if (!result.ok) return
     if (call.name === planTool) {
       planSeen = true
       lastPlanStep = step
+      const rawItems = Array.isArray(call.arguments['items']) ? call.arguments['items'] : []
+      const parsed: { text: string; status: string }[] = []
+      for (const item of rawItems) {
+        if (!item || typeof item !== 'object') continue
+        const record = item as Record<string, unknown>
+        const text = typeof record['text'] === 'string' ? record['text'].trim() : ''
+        if (!text) continue
+        const status = record['status']
+        parsed.push({
+          text,
+          status: status === 'done' || status === 'in_progress' ? status : 'pending',
+        })
+      }
+      if (parsed.length > 0) plannedItems = parsed
     }
     if (result.risk === 'write' || result.risk === 'exec') {
       const path = call.arguments['path']
@@ -543,6 +656,10 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
       if (tools.get(call.name)?.noVerification === true) return
       dirty = true
       checkRan = false
+      // A new edit after a delivered report is a new unverified change: the
+      // gate has to speak again, otherwise "report, then keep editing" would
+      // end as verified just because something was reported earlier.
+      deliveredReport = false
     } else if (result.risk === 'exec' && dirty && !checkRan) {
       if (result.metadata?.['verification'] === true) {
         checkRan = true
@@ -997,6 +1114,10 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
       }
 
       await emit({ type: 'step.started', step })
+      // Observations are folded at the end of the step; reset here so a step that
+      // ends with `continue` (output continuation, empty response) cannot leak
+      // its results into the next step's progress verdict.
+      stepObservations = []
       if (options.pullMessages) {
         try {
           for (const message of await options.pullMessages()) messages.push(message)
@@ -1255,6 +1376,8 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         }
       }
 
+        if (answerMessage && isDeliverableText(answerMessage.content)) deliveredReport = true
+
       const willContinue =
         toolCalls.length === 0 &&
         response.finishReason === 'length' &&
@@ -1299,13 +1422,23 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
           })
           continue
         }
+        // Verification runs before the per-item close-out. Closing out a batch
+        // while the current edit is still unverified would invite the model to
+        // report an item as done on work nobody checked.
+        // A run that already put its report on screen is not asked again. The
+        // reminder exists so a change is never announced as done before it is
+        // checked; once the answer is delivered, asking makes the model reopen
+        // the work and write a second answer, and the reader cannot tell which
+        // of the two is the conclusion. The gap stays visible instead: the
+        // close-out below still reports the run as unverified.
         if (
           options.verificationGate !== false &&
           dirty &&
           !checkRan &&
-          !verificationGateUsed
+          !deliveredReport &&
+          verificationReminders < verificationReminderLimit
         ) {
-          verificationGateUsed = true
+          verificationReminders += 1
           const paths = [...changedPaths].slice(0, 6)
           const hint = options.verificationHint
             ? `\n建议运行的检查：${options.verificationHint}`
@@ -1323,6 +1456,64 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
             message: '改动尚未验证，已提醒模型运行检查。',
           })
           continue
+        }
+        // Batch close-out. Splitting a five-task instruction into five turns
+        // gives every item its own final answer; a single batch run must not
+        // report once at the end and silently drop the rest. When the plan
+        // still shows unfinished items — or no per-item plan exists at all —
+        // ask for a per-item close-out before the run can finish. Several asks
+        // are allowed (one per task, capped) because splitting into turns gives
+        // every task its own chance to be reported.
+        if (batchTaskCount >= 2 && itemCloseOutAsks < itemCloseOutLimit && step < maxSteps) {
+          const open = plannedItems.filter((item) => item.status !== 'done')
+          const missingPlan = plannedItems.length === 0
+          if (missingPlan || open.length > 0) {
+            itemCloseOutAsks += 1
+            // Name both counts, not just the open ones: a plan that listed two
+            // of five tasks also has three items nobody is tracking, and that
+            // gap used to stay invisible.
+            const listed = missingPlan
+              ? `本轮指令包含 ${batchTaskCount} 个独立任务，但还没有用 update_plan 逐项列出（当前计划 0/${batchTaskCount} 项）。`
+              : `本轮共 ${batchTaskCount} 项任务，计划列了 ${plannedItems.length} 项，其中 ${open.length} 项没有标记 done：${open
+                  .map((item) => item.text)
+                  .slice(0, 6)
+                  .join('；')}。`
+            messages.push({
+              role: 'user',
+              internal: true,
+              content:
+                `[分项收口] ${listed}` +
+                '按拆分执行的同一套标准收尾：' +
+                '1) 先用 update_plan 把每一项的真实状态写出来（已完成 done / 仍在做 in_progress / 没开始 pending），不要把没有验证过的项标成 done；' +
+                '2) 对每一项各给一句结论——已完成的写清怎么验证的，未完成的写清缺什么、卡在哪；' +
+                '3) 某一项如果还能在当前这一轮内做完并验证，先做完它再回答，不要先回答再补。',
+            })
+            await emit({
+              type: 'notice',
+              level: 'warn',
+              message: missingPlan
+                ? '批量任务还没有分项计划，已请模型先逐项列出并交代进度。'
+                : `批量任务还有 ${open.length} 项未收口，已请模型逐项交代后再结束。`,
+            })
+            continue
+          }
+        }
+        // Out of close-out asks and items are still open. A split run would have
+        // a separate answer for each of them; here the gap must at least be
+        // visible instead of the run ending as if everything were done.
+        if (batchTaskCount >= 2) {
+          const stillOpen = plannedItems.filter((item) => item.status !== 'done')
+          if (stillOpen.length > 0) {
+            await emit({
+              type: 'notice',
+              level: 'warn',
+              message:
+                `批量任务的 ${stillOpen.length} 项仍未收口：${stillOpen
+                  .map((item) => item.text)
+                  .slice(0, 6)
+                  .join('；')}——最终回答可能只覆盖已完成部分。`,
+            })
+          }
         }
         if (options.verificationGate !== false && dirty && !checkRan) {
           // The gate already asked once. Never end silently as if the change
@@ -1446,9 +1637,10 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
       // follows has a concrete first action to resume from. Separate from the
       // analysis `wrapUpAt` above: that one says "stop searching", this one says
       // "finish what you are verifying and report".
-      const budgetMargin = options.budgetWrapUp
-        ? Math.max(1, Math.min(10, Math.round(maxSteps * 0.08)))
-        : 0
+      const budgetMargin =
+        options.budgetWrapUp && !stepBudget
+          ? Math.max(1, Math.min(10, Math.round(maxSteps * 0.08)))
+          : 0
       const budgetWrapAt = budgetMargin > 0 ? maxSteps - budgetMargin : 0
       if (
         budgetWrapAt >= 3 &&
@@ -1489,6 +1681,111 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
           content:
             '[计划检查] 任务已执行多步。请确认 update_plan 中的条目是否仍然准确，把已完成项标记为 done、当前项标记为 in_progress；如计划已不适用，请更新它。',
         })
+      }
+
+      // Plan coverage. Batching only stands in for splitting when the plan has
+      // one item per task: a three-item plan for a five-task instruction makes
+      // every per-item mechanism (verification reminders, close-out) undercount
+      // and lets two tasks finish without ever being reported.
+      if (batchTaskCount >= 2 && !planCoverageAsked && plannedItems.length > 0 && step < maxSteps) {
+        planCoverageAsked = true
+        if (plannedItems.length < batchTaskCount) {
+          const shown = plannedItems
+            .map((item, index) => `${index + 1}. ${item.text}（${item.status}）`)
+            .join('\n')
+          messages.push({
+            role: 'user',
+            internal: true,
+            content:
+              `[分项计划] 本轮指令包含 ${batchTaskCount} 个独立任务，但计划里只有 ${plannedItems.length} 条：\n${shown}\n` +
+              '请补齐为每一项一条（不要合并两项为一条，也不要为了凑数拆出子步骤）；' +
+              '已经完成的保持 done，正在做的标 in_progress，其余 pending。',
+          })
+          await emit({
+            type: 'notice',
+            level: 'warn',
+            message: `计划条目（${plannedItems.length}）少于指令里的任务数（${batchTaskCount}），已请模型补齐分项。`,
+          })
+        }
+      }
+      // Item rotation. Splitting a five-task instruction into five turns gives
+      // every task its own allowance; one run has a single pool, so the first
+      // task can consume all of it and leave the rest untouched. When the rest
+      // of the ceiling no longer covers one floor per unfinished item, say so —
+      // early enough to act on, late enough not to nag, and again after each
+      // item that really did finish, because the remaining pool then has to
+      // cover one fewer item but a still-untouched one.
+      if (
+        batchTaskCount >= 2 &&
+        itemRotationAsks < itemRotationLimit &&
+        plannedItems.length >= 2 &&
+        step < maxSteps
+      ) {
+        const open = plannedItems.filter((item) => item.status !== 'done')
+        const progressed = open.length < itemRotationOpenAtAsk
+        if (progressed && needsItemRotation({ openItems: open.length, stepsLeft: maxSteps - step })) {
+          itemRotationAsks += 1
+          itemRotationOpenAtAsk = open.length
+          const listed = open
+            .map((item, index) => `${index + 1}. ${item.text}（${item.status}）`)
+            .join('\n')
+          messages.push({
+            role: 'user',
+            internal: true,
+            content:
+              `[分项轮转] 计划里还有 ${open.length} 项未完成，而剩余步数已不够每一项都做完并验证：\n${listed}\n` +
+              '拆分执行时每一项都有自己的一份预算，单轮只能共用同一份，所以要主动分配：\n' +
+              '1) 不要再在已经做完的那一项上追加打磨；\n' +
+              '2) 把当前正在做的那一项做到可验证的状态就停手，先把它的结论与证据写下来；\n' +
+              '3) 立即转向下一项，哪怕只能在剩余步数里完成一部分，也比一步不动强；\n' +
+              '4) 确实做不完的项，在最终回答里写清「没开始 / 做到哪一步 / 还差什么」。',
+          })
+          await emit({
+            type: 'notice',
+            level: 'warn',
+            message: `还有 ${open.length} 项未完成，剩余步数不足每项做完，已请模型立即轮转到下一项。`,
+          })
+        }
+      }
+      // Dynamic budget: extend only when the step produced new evidence. A run
+      // that keeps finding things is never cut by an arbitrary number; a run
+      // that repeats itself is asked to close out instead of burning the cap.
+      if (stepBudget) {
+        const noted = noteStepObservations(progress, stepObservations)
+        stepObservations = []
+        if (stallCloseOutSent && noted.progress) stallCloseOutSent = false
+        if (
+          !stallCloseOutSent &&
+          shouldStallCloseOut(progress, stepBudget) &&
+          step < maxSteps
+        ) {
+          stallCloseOutSent = true
+          messages.push({
+            role: 'user',
+            internal: true,
+            content:
+              `[停滞检测] 最近 ${noted.streak} 步没有产生新证据（反复读到相同内容或重复执行同一动作）。` +
+              '拆分执行时，这种时候你会换一轮重新提问；这里改用同一条规则：' +
+              '1) 立刻给出当前子任务的结论（含已确认的事实与证据位置）；' +
+              '2) 明确这一项是完成、被阻塞、还是需要你先回答一个问题；' +
+              '3) 若还有未开始的任务项，直接进入下一项，不要留在原地重试。',
+          })
+          await emit({
+            type: 'notice',
+            level: 'warn',
+            message: `连续 ${noted.streak} 步没有新证据，已请模型收尾并推进下一项。`,
+          })
+        }
+        if (step >= maxSteps && canExtend(progress, stepBudget, maxSteps)) {
+          const next = extendLimit(maxSteps, stepBudget)
+          progress.extensions += 1
+          maxSteps = next
+          await emit({
+            type: 'notice',
+            level: 'info',
+            message: `本步有新证据，步数预算自动延展到 ${next}/${stepCeiling} 步。`,
+          })
+        }
       }
     }
 

@@ -10,6 +10,8 @@
  */
 import type { ProfileVersion } from '../shared/types'
 import { diffAddendum, isProtectedRule } from '../shared/profile-diff'
+import { comparisonVoidReason } from '../shared/profile-evidence'
+import { BENCHMARK_SUITE_VERSION } from '../main/agent/profile-benchmark-suite'
 
 export function assertActivatable(
   current: ProfileVersion | null,
@@ -35,6 +37,19 @@ export function assertActivatable(
   }
   if (!review.comparison) {
     throw new Error('缺少实测对比，不能启用：请先跑一次基准对比（这一项 force 不能跳过）。')
+  }
+  // The review is stored with the verdict it earned at the time. Once the pair
+  // or the task library changes, those numbers describe a measurement that no
+  // longer applies — re-checking here is what stops a stored "better" from
+  // activating a candidate the old baseline never measured. `force` covers a
+  // rubric score, never evidence.
+  const voided = comparisonVoidReason(review.comparison, {
+    candidateId: candidate.id,
+    activeProfileId: current?.id ?? null,
+    suiteVersion: BENCHMARK_SUITE_VERSION,
+  })
+  if (voided) {
+    throw new Error(`旧实测已失效：${voided}。请重新跑一次实测对比（这一项 force 不能跳过）。`)
   }
   const blocking = (review.activation?.reasons ?? []).filter(
     (reason) => reason !== '独立评审未通过',

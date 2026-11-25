@@ -19,6 +19,7 @@ import { hostname, release } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import { appIconPath } from './app-icon'
 import { stopSharedPluginHosts } from './plugins/shared'
+import { createStartupFallback } from './startup-fallback'
 import { appUserModelId, foreignShortcuts, type ShortcutIdentity } from './win-identity'
 import { trayClickAction } from './window-action'
 import type {
@@ -115,6 +116,9 @@ import { AgentScheduler } from './scheduler'
 import { ModuleCheckService } from './module-check'
 import { codeFactsFromModuleCheck } from './reflect/evidence'
 import { SupervisorService } from './supervisor'
+import { SuperPilot } from './super-pilot'
+import { sendToSuperWindow, closeSuperWindow, openSuperWindow } from './super-window'
+import { registerSuperIpc } from './ipc/super'
 import type { SupervisorReflectionSample, SupervisorRunSample } from '../shared/supervisor'
 import { REFLECTION_TOPICS } from '../shared/reflect'
 import { createAppLog, type AppLogEntry } from './app-log'
@@ -139,6 +143,8 @@ import { safeUrl, windowPalette, healWindowsShortcuts } from './window-platform'
 import { pathKey, resolveReviewRoots, transcriptText, sessionPage, sessionPageAround } from './session-view'
 import { encodeMessageImage, uploadBytes, importUploadBatch } from './media-upload'
 import { appState } from './app-state'
+import { BackgroundScheduler } from './background'
+import { LagMonitor } from './runtime-health'
 import { scheduleCheckpointMaintenance } from './checkpoint-maintenance'
 import { personalService, contributionEvidence, selfSourceOptions, selfSourcePath, startPersonalChat } from './personal-branch'
 import { log, installCrashLogging, broadcast, collectSelfCheck } from './diagnostics'
@@ -206,6 +212,25 @@ function registerIpc(): void {
   registerAllIpc()
 }
 
+/**
+ * 启动装配失败时的最后一道保险：主引擎起不来，应急通道必须还在。
+ *
+ * 走到这里说明 `whenReady` 的某一步抛了（主 store 损坏、回退点目录不可写、
+ * 网关端口被占……）。此时既没有主窗口也没有托盘，重新抛只会得到一个静默退出的
+ * 应用。具体动作在 `startup-fallback.ts` 里（可单测）：写日志、记到超级 Pilot 状态、
+ * 补注册应急通道、建托盘、直接打开超级 Pilot 窗口。
+ */
+function reportStartupFailure(error: unknown): void {
+  createStartupFallback({
+    log: (entry) => log(entry),
+    noteHostFailure: (message) => appState.superPilot?.noteHostFailure(message),
+    registerSuperIpc,
+    createTray,
+    openSuperWindow: (options) => openSuperWindow(options),
+    theme: () => appState.store?.settings?.().theme ?? 'dark',
+  })(error)
+}
+
 app.on('second-instance', () => {
   // 从开始菜单/快捷方式再启动一次时，窗口可能只是藏到托盘里：`focus()` 不会把
   // 隐藏窗口显示出来，用户会以为没反应，所以走同一条「显示并置前」路径。
@@ -226,6 +251,52 @@ app.whenReady().then(async () => {
   // The handler reads the active workspace lazily: the store loads below.
   installMediaProtocol(() => appState.store?.activeWorkspace() ?? null)
   if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
+  // 超级 Pilot 的通道先于主引擎装配：`createEngine` 自己抛错时（主 store 损坏、
+  // 回退点目录不可写等），这条应急通道已经能打开窗口、看到原因、动手修。它读
+  // 主 store 只为了复制模型通道，读不出来就用自己上次存下的那份。
+  appState.superPilot = new SuperPilot({
+    userDataDir: app.getPath('userData'),
+    selfSource: async () => (await prepareSelfSource(selfSourceOptions())).path,
+    sourceStore: () => appState.store,
+    log: (entry) => log(entry),
+    // 只给应急窗口，不广播：它的事件不该出现在主界面或手机上。
+    emit: (event) => sendToSuperWindow('pilot:super-event', event),
+    packageRoot: app.isPackaged
+      ? join(app.getPath('userData'), 'self-src')
+      : app.getAppPath(),
+    // 主引擎上的「放开卡住的东西」只能由宿主提供：本模块刻意不 import 宿主状态。
+    hostActions: () => [
+      {
+        label: '取消主引擎所有运行',
+        run: async () => {
+          const running = appState.store?.activeRuns() ?? []
+          if (running.length === 0) return '没有正在运行的对话'
+          for (const entry of running) {
+            await appState.runner?.cancelRun(entry.sessionId).catch(() => undefined)
+          }
+          return `已取消 ${running.length} 个运行`
+        },
+      },
+      {
+        label: '放掉等待中的审批',
+        run: async () => {
+          const pending = appState.runner?.pendingApprovalList() ?? []
+          if (pending.length === 0) return '没有待批请求'
+          for (const request of pending) {
+            await appState.runner
+              ?.decideApproval(request.callId, false, '超级 Pilot 抢救')
+              .catch(() => undefined)
+          }
+          return `已拒绝 ${pending.length} 个待批请求`
+        },
+      },
+    ],
+  })
+  // 注册早于 `registerIpc()`：`createIpcContext().handle` 写的是与主 IPC 表同一份
+  // `ipcMain` 处理器，先后顺序无关，但早注册能保证主引擎初始化失败时窗口仍可调。
+  registerSuperIpc()
+  // 主 store 放在应急通道之后：`load()` 抛错（core.json 损坏、目录不可写）时，
+  // 上面的超级 Pilot 已经能打开窗口、看到原因、动手修，而不是整个应用静默退出。
   appState.store = new Store()
   await appState.store.load()
   // One assembly path for both hosts: `src/core/engine.ts`. What stays here is
@@ -273,6 +344,15 @@ app.whenReady().then(async () => {
     isPackaged: app.isPackaged,
     onState: broadcastUpdate,
   })
+  // 副线队列与主进程健康监测：必须在第一次 `scheduleCheckpointMaintenance()` 之前
+  // 装配好，否则维护会退回各自管定时器的旧路径，也看不到「当时谁在占主线程」。
+  appState.background = new BackgroundScheduler({
+    // 只要有一轮对话在跑，副线就让路：这正是「副线不得影响对话」的执行点。
+    isBusy: () => Boolean(appState.store?.anyRunning()),
+    log: (entry) => log(entry),
+  })
+  appState.lagMonitor = new LagMonitor({ log: (entry) => log(entry) })
+  appState.lagMonitor.start()
   scheduleCheckpointMaintenance()
   appState.appLog = createAppLog({ dir: join(app.getPath('userData'), 'logs') })
   // 启动早期排队的日志在这里补写：崩溃记录不能因为初始化顺序丢掉。
@@ -297,6 +377,9 @@ app.whenReady().then(async () => {
   appState.reflect?.useCodeFacts(() =>
     appState.moduleCheck ? codeFactsFromModuleCheck(appState.moduleCheck.summary()) : null,
   )
+  // 版本模式靠它判断「这一版反思过没」：没有注入时只能等兜底静默期，
+  // 所以必须由宿主（而不是 reflect 自己去 import electron）提供。
+  appState.reflect?.useAppVersion(() => app.getVersion())
   // 自主优化闭环：只读采样 + 护栏内开普通会话，与自检/反思共用同一条改动路径。
   appState.supervisor = new SupervisorService({
     userDataDir: app.getPath('userData'),
@@ -552,7 +635,7 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
-})
+}).catch(reportStartupFailure)
 
 /**
  * 真正的退出路径都会先经过这里：托盘菜单直接置位，更新器与系统关机走
@@ -560,6 +643,14 @@ app.whenReady().then(async () => {
  */
 app.on('before-quit', () => {
   appState.quitting = true
+  // 超级 Pilot 自己的引擎与窗口也要收尾：它不在主引擎的夹具里。
+  if (appState.superPilot) {
+    void appState.superPilot.dispose().catch(() => undefined)
+    appState.superPilot = null
+  }
+  closeSuperWindow()
+  appState.lagMonitor?.stop()
+  appState.background?.dispose()
   if (appState.checkpointMaintenanceTimer) clearTimeout(appState.checkpointMaintenanceTimer)
   appState.scheduler?.stop()
   appState.checkpoints?.dispose()

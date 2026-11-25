@@ -42,6 +42,8 @@ export interface ReflectOptions {
   trigger: ReflectionTrigger
   /** 报错触发时的错误原文。 */
   error?: string
+  /** 版本变化触发时的上一版与当前版。 */
+  versionChange?: { from: string; to: string }
 }
 
 /**
@@ -82,6 +84,8 @@ export class ReflectService {
   private lastErrorRunAt = 0
   /** 宿主注入的代码事实来源：与自检报告、拆分决策同源，避免两套结论打架。 */
   private codeFactsProvider: (() => ReflectionCodeFacts | null) | null = null
+  /** 宿主注入的应用版本：`version` 模式拿它和上次反思的版本比较。 */
+  private versionProvider: (() => string) | null = null
 
   constructor(
     private readonly store: Store,
@@ -94,6 +98,22 @@ export class ReflectService {
    */
   useCodeFacts(provider: () => ReflectionCodeFacts | null): void {
     this.codeFactsProvider = provider
+  }
+
+  /**
+   * 注入应用版本。没有注入时反思只按定时/报错触发，版本模式拿不到锚点就不会因升级而跑。
+   */
+  useAppVersion(provider: () => string): void {
+    this.versionProvider = provider
+  }
+
+  /** 当前应用版本；宿主没注入时返回空串。 */
+  currentVersion(): string {
+    try {
+      return (this.versionProvider?.() ?? '').trim()
+    } catch {
+      return ''
+    }
   }
 
   start(): void {
@@ -121,26 +141,37 @@ export class ReflectService {
   }
 
   /** 定时触发的入口，由 interval 调用；一分钟一次，命中判定交给共享纯函数。 */
+  /** @background-isolated 见 tests/background-isolation.test.ts：异常在本方法内收口。 */
   async tick(now = new Date()): Promise<void> {
-    const settings = this.store.settings()
-    if (!settings.reflectEnabled || !settings.reflectTriggers.onSchedule) return
-    const due = reflectionScheduleDue(
-      {
-        mode: settings.reflectScheduleMode,
-        intervalMinutes: settings.reflectIntervalMinutes,
-        dailyTime: settings.reflectDailyTime,
-        lastRunAt: settings.reflectLastRunAt || null,
-        lastScheduledAt: this.store.reflectLastScheduledAt(),
-      },
-      now,
-    )
-    if (!due) return
-    // 先记下这次排定，即使随后反思失败也不会在同一分钟内反复重试。
-    await this.store.noteReflectionScheduled(now.toISOString())
     try {
-      await this.run({ trigger: 'schedule' })
+      const settings = this.store.settings()
+      if (!settings.reflectEnabled || !settings.reflectTriggers.onSchedule) return
+      const due = reflectionScheduleDue(
+        {
+          mode: settings.reflectScheduleMode,
+          intervalMinutes: settings.reflectIntervalMinutes,
+          dailyTime: settings.reflectDailyTime,
+          lastRunAt: settings.reflectLastRunAt || null,
+          lastScheduledAt: this.store.reflectLastScheduledAt(),
+          currentVersion: this.currentVersion(),
+          lastVersion: settings.reflectLastVersion,
+        },
+        now,
+      )
+      if (!due) return
+      // 版本变化触发时把前后版本带进提示词：模型该看的是「这一版改坏了什么」，
+      // 而不是把历史遗留问题重新罗列一遍。
+      const current = this.currentVersion()
+      const previous = settings.reflectLastVersion.trim()
+      const versionChange =
+        settings.reflectScheduleMode === 'version' && previous && current && previous !== current
+          ? { from: previous, to: current }
+          : undefined
+      // 先记下这次排定，即使随后反思失败也不会在同一分钟内反复重试。
+      await this.store.noteReflectionScheduled(now.toISOString())
+      await this.run({ trigger: 'schedule', ...(versionChange ? { versionChange } : {}) })
     } catch (error) {
-      // 后台触发不能上抛，但也不能静默：用户需要知道这次反思没跑成。
+      // 后台触发不能上抛（未处理的 rejection 会掀掉主进程），但也不能静默：用户需要知道这次反思没跑成。
       this.notifyFailure(error)
     }
   }
@@ -224,6 +255,7 @@ export class ReflectService {
                 topics: gated.usable.map((topic) => topic.id),
                 evidence: evidenceText,
                 errorText: errorText || undefined,
+                versionChange: options.versionChange,
                 english,
               }),
             },
@@ -244,6 +276,8 @@ export class ReflectService {
 
     const createdAt = new Date().toISOString()
     const id = randomUUID()
+    // 本轮反思对应的应用版本：既是报告的可核对标记，也是 version 模式的锚点。
+    const version = this.currentVersion()
     // 落库的只是 2k 预览；这一轮真正喂给模型的全文另存，回查时才知道它是看着什么下结论的。
     const saved = this.writeEvidence(id, redactSecrets(evidenceText))
     const draft: ReflectionReport = {
@@ -251,6 +285,7 @@ export class ReflectService {
       createdAt,
       trigger: options.trigger,
       model: gated.usable.length === 0 ? '' : target.model,
+      ...(version ? { version } : {}),
       topics: gated.usable.map((topic) => topic.id),
       skipped: gated.skipped,
       summary,

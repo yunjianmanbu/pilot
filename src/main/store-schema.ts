@@ -12,7 +12,7 @@ import { normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
 import { MODEL_TAG_MAX_LENGTH, modelTagLength, normalizeModelTag } from '../shared/model-label'
 import { isLocaleSetting, LocaleSetting } from '../shared/i18n'
 import { isFontSizePreference, isThemeMode } from '../shared/theme'
-import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionStage, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResourceInput, PermissionRules, Plan, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileVersion, QualityPublishTarget, QualityState, QuickCommand, ReviewEvidenceRef, ReviewFinding, ReviewReport, ReviewScope, ReviewScores, ReviewSessionScope, RunRecord, SandboxMode, ScheduleKind, ScheduledTask, SelfSourceMode, Session, SessionKind, ShellInterpreter, StoredMessage, TestCaptchaMode, ThemeMode, FontSizePreference } from '../shared/types'
+import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionStage, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResourceInput, PermissionRules, Plan, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileVersion, QualityPublishTarget, QualityState, QuickCommand, ReviewEvidenceRef, ReviewFinding, ReviewReport, ReviewScope, ReviewScores, ReviewSessionScope, RunRecord, SandboxMode, ScheduleKind, ScheduledRunEntry, ScheduledTask, SelfSourceMode, Session, SessionKind, ShellInterpreter, StoredMessage, TestCaptchaMode, ThemeMode, FontSizePreference } from '../shared/types'
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, SETTING_CONTEXT_MAX, SETTING_CONTEXT_MIN, SETTING_OUTPUT_MAX, SETTING_OUTPUT_MIN } from '../shared/modelLimits'
 import { normalizeRelayUrl } from '../shared/relay'
 import {
@@ -21,6 +21,7 @@ import {
   type NotifyEventId,
 } from '../shared/notify-events'
 import { DEFAULT_SERVER_PORT, normalizeServerPort } from '../shared/server-mode'
+import { normalizeConfiguredSteps } from '../shared/step-budget'
 import { DEFAULT_EVOLUTION_POLICY, normalizeEvolutionPolicy } from '../shared/evolution'
 import { emptyQualityState, normalizeQualityPublishTarget, sanitizeQualityState } from '../shared/quality'
 import {
@@ -45,6 +46,7 @@ import { normalizeSelfSourceSettings } from './self-source-git'
 import { sanitizeProfileComparison } from './agent/profile-benchmark'
 import { sanitizeJudgeUsage } from './agent/judge-runtime'
 import { settlePlan } from './agent/plan'
+import { PLAN_ITEM_LIMIT } from '../shared/plan-limits'
 import { pruneProfiles } from '../core/profile-archive'
 export interface JudgeTarget {
   id: string
@@ -179,12 +181,17 @@ export interface PersistedSettings {
   /** 反思用的模型资源 id；空串表示跟随会话模型。 */
   reflectModelId: string
   reflectTriggers: ReflectionTriggers
+  /** 自动触发粒度：版本变化 / 间隔 / 每天固定时刻。 */
   reflectScheduleMode: ReflectionScheduleMode
+  /** 用户是否亲眼选过粒度；手选过后默认值迁移不再动它。 */
+  reflectScheduleModePinned: boolean
   reflectIntervalMinutes: number
   reflectDailyTime: string
   reflectTopics: ReflectionTopicId[]
   /** 上一次成功反思完成的时间（ISO），用于定时判定。 */
   reflectLastRunAt: string
+  /** 上一次成功反思对应的应用版本；`version` 模式据此判断是否到点。 */
+  reflectLastVersion: string
   /** 邮件收件开关；等价于邮件通知里勾选了「反思报告」。 */
   reflectEmailEnabled: boolean
   /**
@@ -205,6 +212,12 @@ export interface PersistedSettings {
   reflectSmtpSecurity: 'tls' | 'starttls' | 'none'
   reflectSmtpPasswordCipher: string | null
   reflectSmtpPasswordPlain: boolean
+  /**
+   * 邮箱救援只做一次：旧版把出厂预置地址当成「未配置」清空时，授权码还留着，
+   * 于是「有授权码但邮箱与主机都空」就是被清掉的证据。还原一次后置为 true，
+   * 之后即使两个字段再次为空也不再回填，避免把用户的主动清空反复填回来。
+   */
+  reflectMailboxRestored: boolean
   hooksEnabled: boolean
   mcpEnabled: boolean
   relayUrl: string
@@ -355,11 +368,13 @@ export function defaults(): PersistedState {
       reflectEnabled: false,
       reflectModelId: '',
       reflectTriggers: { onError: true, onSchedule: true },
-      reflectScheduleMode: 'daily',
+      reflectScheduleMode: 'version',
+      reflectScheduleModePinned: false,
       reflectIntervalMinutes: REFLECTION_INTERVAL_DEFAULT_MINUTES,
       reflectDailyTime: REFLECTION_DAILY_DEFAULT,
       reflectTopics: [...DEFAULT_REFLECTION_TOPICS],
       reflectLastRunAt: '',
+      reflectLastVersion: '',
       reflectEmailEnabled: true,
       // 新装不自动往邮箱发信：先把总开关关着，用户填完邮箱再自己打开。
       // 事件清单按推荐优先级预勾选，打开开关就能直接生效。
@@ -373,6 +388,7 @@ export function defaults(): PersistedState {
       reflectSmtpSecurity: 'tls',
       reflectSmtpPasswordCipher: null,
       reflectSmtpPasswordPlain: false,
+      reflectMailboxRestored: false,
       hooksEnabled: false,
       mcpEnabled: false,
       // 官方不提供公共中继；默认只走局域网，用户自行部署后填写地址。
@@ -444,9 +460,22 @@ const LEGACY_PRODUCT_MAILBOX = 'embeddedmeng@163.com'
 /** 与那个邮箱一起预置的 163 主机（当时是 defaults 里的第三项）。 */
 const LEGACY_PRODUCT_SMTP_HOST = 'smtp.163.com'
 
-/** 该邮箱只作为历史预置值存在，用户自己不可能故意填它。 */
+/** 该邮箱只作为历史预置值存在；用户自己的配置一定有授权码。 */
 export function isLegacyProductMailbox(value: string): boolean {
   return value.trim().toLowerCase() === LEGACY_PRODUCT_MAILBOX
+}
+
+/**
+ * 存档里是否已经存过 SMTP 授权码。
+ *
+ * 它是「这个邮箱是用户自己在用」的硬证据：真正发出过信的人必然填过授权码。
+ * 清理旧版预置邮箱时必须带上这个条件——产品预置的地址恰好也是作者本人在用的
+ * 地址，只按地址比对会把他自己的配置当成「没配置」清掉，于是任务完成通知一封
+ * 都发不出去，而授权码还在，界面上看着像已经配置好了。
+ */
+function hasSavedSmtpPassword(settingsRaw: Record<string, unknown>): boolean {
+  const cipher = settingsRaw['reflectSmtpPasswordCipher']
+  return typeof cipher === 'string' && cipher.length > 0
 }
 
 /** 动态工具只能访问用户显式登记的 http/https 测试目标。 */
@@ -527,6 +556,19 @@ export function normalizeApprovalMode(value: unknown): ApprovalMode {
   }
   if (value === 'ask') return 'ask'
   return 'auto'
+}
+
+/**
+ * 反思自动触发的粒度。v1.2.4 起默认改为「版本变化触发」：高速迭代期一版一个行为，
+ * 反思按版本切分才能看清这版改了什么。老存档里的 daily/interval 只是旧默认值，
+ * 不是用户的选择，所以统一迁到新默认；用户亲手选过（`reflectScheduleModePinned`）后
+ * 一律尊重原值，不再被迁移覆盖。
+ */
+function resolveReflectionScheduleMode(settingsRaw: Record<string, unknown>): ReflectionScheduleMode {
+  if (settingsRaw['reflectScheduleModePinned'] === true) {
+    return normalizeReflectionScheduleMode(settingsRaw['reflectScheduleMode'])
+  }
+  return 'version'
 }
 
 export function sanitizeRuleList(value: unknown): string[] {
@@ -1076,7 +1118,7 @@ export function sanitizePlan(value: unknown): Plan | null {
   const items = (record['items'] as unknown[])
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
     .filter((item) => typeof item['text'] === 'string' && item['text'].trim())
-    .slice(0, 12)
+    .slice(0, PLAN_ITEM_LIMIT)
     .map((item, index) => ({
       id: typeof item['id'] === 'string' ? item['id'] : `plan-${index + 1}`,
       text: String(item['text']).slice(0, 2_000),
@@ -1299,6 +1341,30 @@ export function sanitizeQuickCommand(value: unknown): QuickCommand | null {
   return { id, content: content.slice(0, MAX_QUICK_COMMAND_CHARS) }
 }
 
+function sanitizeScheduledRuns(value: unknown): ScheduledRunEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const runs: ScheduledRunEntry[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue
+    const record = entry as Record<string, unknown>
+    if (record['status'] !== 'queued' && record['status'] !== 'failed') continue
+    const at =
+      typeof record['at'] === 'string' && Number.isFinite(Date.parse(record['at']))
+        ? record['at']
+        : null
+    if (!at) continue
+    const detail =
+      typeof record['detail'] === 'string' ? record['detail'].slice(0, 400) : undefined
+    runs.push({
+      at,
+      status: record['status'],
+      ...(detail ? { detail } : {}),
+    })
+    if (runs.length >= MAX_SCHEDULED_RUNS) break
+  }
+  return runs.length > 0 ? runs : undefined
+}
+
 export function sanitizeScheduledTask(value: unknown): ScheduledTask | null {
   if (!value || typeof value !== 'object') return null
   const record = value as Record<string, unknown>
@@ -1320,6 +1386,7 @@ export function sanitizeScheduledTask(value: unknown): ScheduledTask | null {
   const timeOfDay = kind === 'daily' ? cleanTimeOfDay(record['timeOfDay']) : null
   if (kind === 'daily' && !timeOfDay) return null
   const startDate = kind === 'daily' ? cleanStartDate(record['startDate']) : null
+  const runs = sanitizeScheduledRuns(record['runs'])
   return {
     id: record['id'],
     sessionId: record['sessionId'],
@@ -1341,6 +1408,7 @@ export function sanitizeScheduledTask(value: unknown): ScheduledTask | null {
     ...(typeof record['lastError'] === 'string'
       ? { lastError: record['lastError'].slice(0, 1_000) }
       : {}),
+    ...(runs ? { runs } : {}),
   }
 }
 
@@ -1361,6 +1429,9 @@ export function settleStalePlans(workspaces: PersistedWorkspace[], sessions: Ses
 }
 
 export const MAX_JUDGE_PROVIDERS = 6
+
+/** 每条定时任务保留的触发次数：够看出「是不是每次都挂」，又不会让状态文件无界增长。 */
+export const MAX_SCHEDULED_RUNS = 10
 /** Model resources are cheap to list; evaluation slots are the expensive part. */
 export const MAX_MODEL_RESOURCES = 12
 export const MAX_EVALUATION_MODELS = 6
@@ -1491,7 +1562,16 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     200,
     fallback.settings.reflectSmtpHost,
   )
-  const legacyProductMail = isLegacyProductMailbox(mergedMailbox)
+  const savedSmtpPassword = hasSavedSmtpPassword(settingsRaw)
+  const legacyProductMail = isLegacyProductMailbox(mergedMailbox) && !savedSmtpPassword
+  // 一次性救援：旧版把预置邮箱（连同它的 163 主机）当「未配置」清掉，却保留了授权码。
+  // 于是「授权码在 + 邮箱与主机都空」只可能来自那次清理，按历史预置值还原，
+  // 用户升级后不用再重填一遍。`reflectMailboxRestored` 落盘后不再重试。
+  const rescueMailbox =
+    savedSmtpPassword &&
+    settingsRaw['reflectMailboxRestored'] !== true &&
+    mergedMailbox === '' &&
+    mergedSmtpHost === ''
   const modelResources = sanitizeModelResources(settingsRaw['modelResources'])
   if (modelResources.length === 0) {
     modelResources.push({
@@ -1559,7 +1639,8 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     // Migrate the old 30-step / 200K-token defaults once. Anything else was a
     // deliberate choice and is preserved.
     maxSteps: migrateLimit(
-      clampNumber(settingsRaw['maxSteps'], fallback.settings.maxSteps, 4, 1_000),
+      // 0 = 不限，上限跟循环里的硬天花板一致。
+      normalizeConfiguredSteps(settingsRaw['maxSteps'], fallback.settings.maxSteps),
       30,
       fallback.settings.maxSteps,
     ),
@@ -1603,11 +1684,13 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     reflectEnabled: settingsRaw['reflectEnabled'] === true,
     reflectModelId: normalizeOptionalText(settingsRaw['reflectModelId'], 120),
     reflectTriggers: normalizeReflectionTriggers(settingsRaw['reflectTriggers']),
-    reflectScheduleMode: normalizeReflectionScheduleMode(settingsRaw['reflectScheduleMode']),
+    reflectScheduleMode: resolveReflectionScheduleMode(settingsRaw),
+    reflectScheduleModePinned: settingsRaw['reflectScheduleModePinned'] === true,
     reflectIntervalMinutes: clampReflectionInterval(settingsRaw['reflectIntervalMinutes']),
     reflectDailyTime: normalizeReflectionTime(settingsRaw['reflectDailyTime']),
     reflectTopics: normalizeReflectionTopics(settingsRaw['reflectTopics']),
     reflectLastRunAt: normalizeOptionalText(settingsRaw['reflectLastRunAt'], 40),
+    reflectLastVersion: normalizeOptionalText(settingsRaw['reflectLastVersion'], 40),
     // 反思发信字段是「用户自己填」的：出厂既没有邮箱地址也没有 SMTP 主机。
     // 老存档把邮箱拆在 reflectEmailTo / reflectSmtpUser / reflectEmailFrom 三个键里，
     // 合并成一个字段时按这个顺序取第一个非空值；否则升级后用户的邮箱会凭空消失。
@@ -1632,11 +1715,17 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
             ? ['reflect.report']
             : []
           : fallback.settings.notifyEmailEvents,
-    reflectEmailTo: legacyProductMail ? '' : mergedMailbox,
-    reflectSmtpHost:
-      legacyProductMail && mergedSmtpHost.toLowerCase() === LEGACY_PRODUCT_SMTP_HOST
+    reflectEmailTo: rescueMailbox
+      ? LEGACY_PRODUCT_MAILBOX
+      : legacyProductMail
+        ? ''
+        : mergedMailbox,
+    reflectSmtpHost: rescueMailbox
+      ? LEGACY_PRODUCT_SMTP_HOST
+      : legacyProductMail && mergedSmtpHost.toLowerCase() === LEGACY_PRODUCT_SMTP_HOST
         ? ''
         : mergedSmtpHost,
+    reflectMailboxRestored: rescueMailbox || settingsRaw['reflectMailboxRestored'] === true,
     reflectSmtpPort: clampSmtpPort(settingsRaw['reflectSmtpPort'] ?? fallback.settings.reflectSmtpPort),
     reflectSmtpSecurity:
       settingsRaw['reflectSmtpSecurity'] === undefined || settingsRaw['reflectSmtpSecurity'] === null

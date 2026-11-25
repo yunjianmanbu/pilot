@@ -5,6 +5,7 @@ import type {
   ProfileReview,
   ProfileVersion,
 } from '../../../../shared/types'
+import { comparisonVoidReason } from '../../../../shared/profile-evidence'
 
 import { t } from '../../i18n'
 
@@ -40,12 +41,32 @@ export function isReady(review: ProfileReview | undefined): boolean {
   return review.pass && Boolean(review.comparison)
 }
 
+/**
+ * Why the recorded measurement can no longer gate this candidate, or undefined
+ * when it still can. A review is stored with the numbers of the moment, so the
+ * panel has to re-check them against the pair and the task library that are in
+ * force *now*; otherwise it shows an enable button the gate will refuse.
+ */
+export function evidenceVoided(
+  review: ProfileReview | undefined,
+  context: { candidateId: string; activeProfileId: string | null; suiteVersion?: number },
+): string | undefined {
+  if (!review?.comparison) return undefined
+  return comparisonVoidReason(review.comparison, {
+    candidateId: context.candidateId,
+    activeProfileId: context.activeProfileId,
+    // An unknown current revision cannot void anything: the caller simply did
+    // not load it, which is not the same fact as "measured with another one".
+    suiteVersion: context.suiteVersion ?? review.comparison.suiteVersion ?? 0,
+  })
+}
+
 /** `force` only overrides the rubric verdict; it never replaces a measurement. */
 export function canForce(review: ProfileReview | undefined): boolean {
   return Boolean(review?.comparison && !review.pass && gateReasons(review).length === 0)
 }
 
-/** True when activation is blocked only because nothing was measured yet. */
+/** True when activation is blocked only because nothing usable was measured. */
 export function needsMeasurement(review: ProfileReview | undefined): boolean {
   return !review?.comparison
 }

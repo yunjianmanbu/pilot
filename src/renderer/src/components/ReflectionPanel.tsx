@@ -211,7 +211,7 @@ export function ReflectionPanel({
           <h1>{t("反思")}</h1>
           <p>
             {t(
-              "Pilot 按报错或固定时间对自己提问：会话压缩、存储、页面设计、项目结构、代码、执行效率、输出质量和交互体验哪里还能更好。",
+              "Pilot 按升级、报错或你选的时刻对自己提问：会话压缩、存储、页面设计、项目结构、代码、执行效率、输出质量和交互体验哪里还能更好。",
             )}
           </p>
         </div>
@@ -252,8 +252,8 @@ export function ReflectionPanel({
           <Toggle
             checked={reflectOnSchedule}
             onChange={setReflectOnSchedule}
-            label={t("固定时间触发")}
-            description={t("按间隔或每天固定时刻自动反思；到点后一分钟内开始。")}
+            label={t("自动触发反思")}
+            description={t("按版本变化、间隔或每天固定时刻自动反思；到点后一分钟内开始。")}
           />
         </div>
 
@@ -270,19 +270,40 @@ export function ReflectionPanel({
               maxListWidth={360}
             />
           </Field>
-          <Field label={t("定时方式")}>
+          <Field
+            label={t("触发方式")}
+            hint={
+              reflectScheduleMode === 'version'
+                ? t("升级到新版本后自动反思一次：高速迭代期一版一个行为，按版本切分才看得清这版改了什么。版本长期不变时每 7 天兜底一次。")
+                : undefined
+            }
+          >
             <SelectMenu
               value={reflectScheduleMode}
               options={[
+                { value: 'version', label: t("版本变化时") },
                 { value: 'interval', label: t("按间隔") },
                 { value: 'daily', label: t("每天固定时刻") },
               ]}
               onChange={(value) =>
-                setReflectScheduleMode(value === 'interval' ? 'interval' : 'daily')
+                setReflectScheduleMode(
+                  value === 'interval' || value === 'daily' ? value : 'version',
+                )
               }
-              ariaLabel={t("定时方式")}
+              ariaLabel={t("触发方式")}
             />
           </Field>
+          {reflectScheduleMode === 'version' ? (
+            <Field label={t("版本基线")} hint={t("上一次反思记录的应用版本")}>
+              <div className="settings-note">
+                {settings.reflectLastVersion
+                  ? t("上次反思：v{v1}；升级后会自动再反思一次。", {
+                      v1: settings.reflectLastVersion,
+                    })
+                  : t("还没有版本基线；下次自动触发时会记下当前版本。")}
+              </div>
+            </Field>
+          ) : null}
           {reflectScheduleMode === 'interval' ? (
             <Field label={t("间隔分钟")} hint={t("30 到 10,080 分钟")}>
               <input
@@ -292,7 +313,7 @@ export function ReflectionPanel({
                 onChange={(event) => setReflectIntervalMinutes(event.target.value)}
               />
             </Field>
-          ) : (
+          ) : reflectScheduleMode === 'daily' ? (
             <Field label={t("每天时刻")} hint={t("24 小时制，例如 09:00")}>
               <input
                 className="text-input"
@@ -302,7 +323,7 @@ export function ReflectionPanel({
                 spellCheck={false}
               />
             </Field>
-          )}
+          ) : null}
         </div>
 
         <div className="reflect-topics" role="group" aria-label={t("问题域")}>
