@@ -10,6 +10,7 @@ import {
 } from '../src/shared/media'
 import { FilePreviewBody } from '../src/renderer/src/components/FilePreviewBody'
 import { tidyParserMessage } from '../src/renderer/src/components/DocumentPreview'
+import { setLocale } from '../src/renderer/src/i18n'
 import { columnLabel, formatCell, XLSX_LIMITS } from '../src/renderer/src/preview/xlsx'
 import {
   decodeXmlText,
@@ -21,6 +22,10 @@ import {
 import { docxFrameDocument, safeColor } from '../src/renderer/src/preview/docx'
 import type { PreviewKind } from '../src/shared/media'
 import type { FilePreview } from '../src/shared/types'
+
+// The UI strings below are Chinese; the CI runner defaults to en-US, so pin the
+// effective locale before rendering instead of asserting whatever the host uses.
+setLocale('zh-CN')
 
 function preview(partial: Partial<FilePreview>): FilePreview {
   return {
