@@ -67,9 +67,9 @@ Pilot 是一个**本地优先**、可自我学习迭代的桌面编程智能体�
   提供项目指令。它们都不能放宽权限、审批或工作区边界。
 - **模块自检**：按工作区顶层目录只读扫描（超大文件、TODO 积压、调试输出、缺测试、硬编码绝对路径、
   疑似凭据、重复文件、缺验证脚本），给出文件与行号证据。扫描绝不改文件；勾选后的条目会变成一个
-  普通会话的首条指令。
-- **服务器模式**：`pilot serve` 启动 HTTP + WebSocket 控制台，同一个智能体可以跑在服务器上，
-  用浏览器或手机「添加到主屏幕」当应用用。
+  普通会话的首条指令。内视、自主优化和反思也都在 **进化** 的页签里，侧栏只有一个入口。
+- **服务器模式**：`pilot serve` 启动 HTTP + WebSocket 控制台。电脑浏览器打开就是与 Electron 窗口
+  同一份渲染构建（同样的界面与功能），手机「添加到主屏幕」得到的是更轻的手机面板。
 - **手机连接**：扫码配对（自建盲中继跨网络，或局域网直连），在手机上查看会话、观察执行过程、
   审批工具调用、管理队列、停止运行。手机与电脑端到端加密，中继只转发密文。
 - **安全边界**：realpath 工作区牢笼、拒绝符号链接写入、命令以 argv 执行（`shell: false`）、
@@ -124,25 +124,52 @@ Pilot 自带手机 PWA，可用自建中继跨网络连接，也可在同一局�
 ## 服务器模式
 
 ```bash
-pnpm build:server
+pnpm build:server && pnpm build:web
 pilot serve --port 8080 --workspace /srv/app --public-url https://pilot.example.com/
 ```
 
-在浏览器打开终端打印的地址即进入完整控制台（会话、对话、审批、文件、设置、余额）。端口被占用会直接
+在浏览器打开终端打印的地址即进入完整控制台（会话、对话、审批、文件、设置、余额）。本机浏览器拿到的
+是**与 Electron 窗口同一份渲染构建**（`out/web`，通过 `/bridge` WebSocket 接到主进程 IPC 表）。
+`/pwa/` 既是手机面板，也是远端浏览器的身份接入页（主机用户 / 客户机用户，带审批与数据隔离），
+手机打开带 `#p=` 的配对链接一定会落到那里。端口被占用会直接
 报错退出，`--host 127.0.0.1` 可只允许本机反向代理访问。模型密钥不在这里填，用环境变量或终端命令
 （`apikey sk-xxx` / `apikey clear`）配置。
 
 不同宿主能做什么由启动方声明：没有桌面会话就没有截图类工具；应用内更新可用但要重启服务；
 个人版本需要安装包自带的官方源码。
 
+### 桌面客户端的网页服务
+
+桌面端也能起同一个服务：设置 → 网页服务，打开开关并填端口（默认 46,831），保存后浏览器访问
+`http://<本机 IP>:<端口>/` 就是当前窗口这套界面——同一个 `CompanionServer`、同一个 `/bridge`、
+同一份 `out/web` 构建，会话、审批、设置、余额都跟窗口里一致。关掉开关即停止监听；端口被占用时
+错误会显示在设置页，不会静默换端口。
+
+这里托管的静态文件来自 `out/web`，所以 `pnpm build` 会同时构建它（`build:all` 与各 `package:*`
+本来就含这一步）；只跑 `electron-vite build` 时 `out/web` 会停留在上一次的内容，改了渲染层却不
+重建，浏览器里看到的就是旧界面。
+
+手机连接开关与它共用同一个实例：任一开关打开就监听，端口以网页服务的设置为准。
+
 ## CLI
 
 `bin/pilot.js` 是构建后服务端的入口（`out/server/main.js`）：
 
 ```bash
-pnpm build:all        # typecheck + electron-vite build + server build
+pnpm build:all        # typecheck + electron-vite build + server build + browser build
 npm pack              # 生成 pilot-agent-<version>.tgz（会先跑 prepack）
 ```
+
+脚本、cron、CI 用 `pilot run`：给一句任务，进程退出，退出码就是结果（`0` 完成 / `1` 失败 /
+`2` 用法或配置错误 / `3` 未完成 / `4` 超时）。
+
+```bash
+PILOT_API_KEY=sk-xxx pilot run "把测试跑一遍，失败就修" \
+  --workspace /srv/app --approval acceptEdits --max-steps 30 --timeout 900 --json
+```
+
+它走与桌面窗口、服务器控制台同一条组装路径（同一套沙箱、检查点、审批策略与审计）；`PILOT_API_KEY`
+的值经 safeStorage 加密后才写入数据目录，明文不进磁盘也不进日志。
 
 ## 目录
 
@@ -153,10 +180,10 @@ src/
 │  └─ agent/    模型/工具循环、运行调度、工具、子智能体、造工具、提示词、检查
 ├─ preload/     context bridge
 ├─ renderer/    React 界面（会话侧栏、对话、面板、设置、主题体系）
-├─ server/      无界面 HTTP/WS 控制台
+├─ server/      无界面 HTTP/WS 服务（浏览器里跑桌面界面）
 ├─ core/        共享运行时部件
 └─ shared/      两端共用的类型、能力声明、媒体处理
-companion/      主进程托管的手机 PWA
+companion/      中继连接、手机面板与远端浏览器的身份接入页（/pwa/）
 builtin-tools/  随包分发的示例工具
 bin/pilot.js    CLI 入口
 tests/          vitest 套件（Agent 循环、工作区牢笼、审批、主题等）

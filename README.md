@@ -83,7 +83,8 @@ three extra surfaces onto that same loop, not three separate agents.
   verification script) that produces evidence with file and line numbers. The scan never edits files;
   selected items become the first instruction of an ordinary session.
 - **Headless server mode** — `pilot serve` starts an HTTP + WebSocket console, so the same agent runs
-  on a server and is driven from a browser or a phone home-screen app.
+  on a server: a desktop browser gets the same renderer build (and therefore the same UI and
+  features) as the Electron window, while a phone home-screen app stays the lighter companion panel.
 - **Phone connection** — pair your phone by QR code over a self-hosted blind relay or LAN, then read
   sessions, watch runs, approve tool calls, manage the queue and stop runs. End-to-end encrypted
   between phone and desktop; the relay only forwards ciphertext.
@@ -145,12 +146,16 @@ yourself: <https://github.com/yunjianmanbu/pilot-connector>.
 ## Headless server mode
 
 ```bash
-pnpm build:server
+pnpm build:server && pnpm build:web
 pilot serve --port 8080 --workspace /srv/app --public-url https://pilot.example.com/
 ```
 
 Open the printed URL in a browser to get the full console (sessions, chat, approvals, files,
-settings, balance). Ports already in use fail fast; `--host 127.0.0.1` restricts it to a local
+settings, balance): a browser on the host machine gets the same renderer build the Electron
+window uses (`out/web`), bridged to the main-process IPC table over a `/bridge` WebSocket.
+`/pwa/` hosts the phone shell and the identity page for remote browsers (host user / client
+user, with approval and per-user data separation); a phone opening a pairing link (`#p=`)
+always lands there. Ports already in use fail fast; `--host 127.0.0.1` restricts it to a local
 reverse proxy. Model keys are configured with environment variables or the terminal command
 (`apikey sk-xxx` / `apikey clear`), not in the browser.
 
@@ -158,14 +163,42 @@ Capabilities differ by host and are declared by whoever starts the server: scree
 unavailable without a desktop session, in-app updates work but need a service restart, personal
 versions need the official source that ships with the installer.
 
+### Web service in the desktop app
+
+The desktop app can start the same service from Settings → Web service: switch it on, pick a port
+(default 46,831), save, then open `http://<host-ip>:<port>/` in a browser. It is the window you are
+looking at — the same `CompanionServer`, the same `/bridge`, the same `out/web` build — so sessions,
+approvals, settings and balance behave identically. Switching it off stops the listener; a busy port
+shows the error in Settings instead of silently moving to another port.
+
+The static files come from `out/web`, so `pnpm build` builds it too (`build:all` and the `package:*`
+scripts already did). Running only `electron-vite build` leaves `out/web` at its previous contents:
+change the renderer without rebuilding it and the browser will show the old UI.
+
+The phone-connection switch shares that instance: either switch being on starts the listener, and the
+port comes from the web-service setting.
+
 ## CLI
 
 `bin/pilot.js` exposes the built server (`out/server/main.js`):
 
 ```bash
-pnpm build:all        # typecheck + electron-vite build + server build
+pnpm build:all        # typecheck + electron-vite build + server build + browser build
 npm pack              # produces pilot-agent-<version>.tgz (runs prepack)
 ```
+
+For a script, a cron job or CI, `pilot run` takes one prompt and exits. The exit code is the
+result: `0` completed, `1` failed, `2` usage or configuration error, `3` unfinished (step or token
+cap, pause, cancel), `4` timeout.
+
+```bash
+PILOT_API_KEY=sk-xxx pilot run "run the tests and fix what fails" \
+  --workspace /srv/app --approval acceptEdits --max-steps 30 --timeout 900 --json
+```
+
+The run goes through the same assembly path as the window and the server console (same sandbox,
+checkpoints, approval policy and audit trail), and the key from `PILOT_API_KEY` is sealed with
+safeStorage before it is written — the plaintext never reaches the data directory or the logs.
 
 ## Repository layout
 
@@ -177,10 +210,10 @@ src/
 │  └─ agent/    model/tool loop, runner, tools, subagents, toolsmith, prompts, checks
 ├─ preload/     context bridge
 ├─ renderer/    React UI (sessions sidebar, chat, panels, settings, theme system)
-├─ server/      headless HTTP/WS console
+├─ server/      headless HTTP/WS server (runs the desktop UI in a browser)
 ├─ core/        shared runtime pieces
 └─ shared/      types, capabilities, media helpers used by both sides
-companion/      mobile PWA served by the main process
+companion/      relay client, hosted phone shell and remote-browser identity page (/pwa/)
 builtin-tools/  packaged example tools
 bin/pilot.js    CLI entry
 tests/          vitest suites (agent loop, workspace jail, approvals, theme, ...)
