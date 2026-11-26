@@ -1163,6 +1163,11 @@ export function sanitizeSession(value: unknown): Session | null {
       ...(typeof message['toolCallId'] === 'string' ? { toolCallId: message['toolCallId'] } : {}),
       ...(typeof message['name'] === 'string' ? { name: message['name'] } : {}),
       ...(message['isError'] === true ? { isError: true } : {}),
+      // 每步耗时：缺了它，重开会话后执行过程框每行只剩工具名。这条是字段白名单，
+      // 不在这里放行的话，落盘的值读回来时会被卸掉。
+      ...(typeof message['durationMs'] === 'number' && Number.isFinite(message['durationMs'])
+        ? { durationMs: Math.max(0, Math.round(message['durationMs'])) }
+        : {}),
       ...(typeof message['reasoning'] === 'string' ? { reasoning: message['reasoning'] } : {}),
       ...(typeof message['runId'] === 'string' ? { runId: message['runId'] } : {}),
       ...(message['control'] === true ? { control: true } : {}),

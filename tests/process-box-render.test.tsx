@@ -5,7 +5,7 @@ import { ProcessBox } from '../src/renderer/src/components/ProcessBox'
 import { reasoningPeek } from '../src/renderer/src/components/ReasoningBlock'
 import { ProcessNoteRow, noteStep, reasoningStep, toolStep } from '../src/renderer/src/components/StepDialog'
 import { ToolCard, ToolDetail } from '../src/renderer/src/components/ToolCard'
-import { buildTranscript, formatClock, type UIMessage, type ToolView } from '../src/renderer/src/ui'
+import { buildTranscript, formatClock, formatDuration, type UIMessage, type ToolView } from '../src/renderer/src/ui'
 import type { StoredMessage } from '../src/shared/types'
 
 function step(id: string, content: string, reasoning: string, toolIds: string[]): StoredMessage {
@@ -96,11 +96,11 @@ describe('ProcessBox collapsed rendering', () => {
     ])
 
     const html = renderToStaticMarkup(<ProcessBox process={process} />)
-    // The window holds the newest five parts; every row is titled
-    // 「思考过程」 with no run-wide index after it.
+    // The window holds the newest five parts; every row carries the same short
+    // 「思考」 tag with no run-wide index after it.
     expect(countSteps(html)).toBe(5)
-    expect(html).toContain('思考过程')
-    expect(html).not.toMatch(/思考过程\s*\d/)
+    expect(html).toContain('step-tag tag-think')
+    expect(html).not.toMatch(/思考\s*\d/)
     // The title carries the first line of that step's thinking instead.
     expect(html).toContain('思考五')
     expect(html).toContain('思考六')
@@ -113,6 +113,33 @@ describe('ProcessBox collapsed rendering', () => {
     // 折叠行只给一行预览：完整正文和任何执行时刻都不在框里，框的高度才不会跳。
     expect(html).not.toContain('执行时间')
     expect(html).not.toContain('tool-args')
+  })
+
+  /**
+   * 思考行与说明行用跟工具行（只读 / 写入）同一套胶囊标签。
+   *
+   * 锁的是「标签就在图标后面」和「两个字」：原来写的是「思考过程」四个字
+   * 且没有底色，跟下一行的「只读」看起来是两种不同的东西。
+   */
+  it('labels a thought and a note with the same pill a tool row uses', () => {
+    const process = processOf([step('m1', '一句说明', '先看目录', ['t1'])])
+    const html = renderToStaticMarkup(<ProcessBox process={process} />)
+
+    expect(html).toContain('step-tag tag-think')
+    expect(html).toContain('>思考<')
+    expect(html).toContain('step-tag tag-note')
+
+    // 标签紧跟在图标后面：图标 → 标签 → 首行预览。
+    const think = html.indexOf('step-glyph glyph-think')
+    const thinkTag = html.indexOf('step-tag tag-think')
+    const peek = html.indexOf('reasoning-peek')
+    expect(think).toBeGreaterThan(-1)
+    expect(thinkTag).toBeGreaterThan(think)
+    expect(peek).toBeGreaterThan(thinkTag)
+
+    const note = html.indexOf('step-glyph glyph-note')
+    const noteTag = html.indexOf('step-tag tag-note')
+    expect(noteTag).toBeGreaterThan(note)
   })
 })
 
@@ -179,6 +206,42 @@ describe('step dialog content', () => {
     expect(html).toContain('boom')
   })
 
+  /**
+   * 回放的历史里也要有每步耗时。
+   *
+   * 存盘时 `createdAt` 写的是落盘时刻（同一轮里几条消息往往是同一毫秒），
+   * 所以时间戳差算不出执行时长；耗时必须自己随 tool 消息存进去，否则重开会话
+   * 后执行过程框每行只剩工具名、没有耗时。
+   */
+  it('shows the stored per-step duration when replaying a finished run', () => {
+    const messages: StoredMessage[] = [
+      {
+        id: 'm1',
+        role: 'assistant',
+        content: '',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        runId: 'run-1',
+        toolCalls: [{ id: 't1', name: 'run_shell', arguments: { command: 'npm test' } }],
+      },
+      {
+        id: 't-1',
+        role: 'tool',
+        toolCallId: 't1',
+        name: 'run_shell',
+        content: 'ok',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        runId: 'run-1',
+        durationMs: 12_600,
+      },
+    ]
+    const process = processOf(messages)
+    expect(process.tools[0]?.durationMs).toBe(12_600)
+
+    const html = renderToStaticMarkup(<ProcessBox process={process} />)
+    expect(html).toContain('tool-duration')
+    expect(html).toContain(formatDuration(12_600))
+  })
+
   it('folds a note the same way a thought is folded', () => {
     const html = renderToStaticMarkup(<ProcessNoteRow text={'第一行说明\n第二行'} onOpen={() => {}} />)
     expect(html).toContain('<button')
@@ -201,6 +264,42 @@ describe('step dialog content', () => {
     expect(html).toContain('tool-head')
     expect(html).not.toContain('tool-body')
     expect(html).not.toContain('contents')
+  })
+
+  /**
+   * 动作标签（只读 / 写入 / 命令 / 控制）跟着图标走，不排在行尾。
+   *
+   * 原先它排在时长、状态之前的最末段，扫完一整行才知道这次是读还是写；
+   * 挪到图标紧后面之后，一眼就是「哪类动作 + 读/写 + 具体工具」。这条断言
+   * 锁的是顺序，不是样式，防止以后又把它挪回去。
+   */
+  it('puts the action label right behind the glyph, not at the end of the row', () => {
+    const base: ToolView = {
+      id: 't1',
+      name: 'write_file',
+      args: { path: 'a.ts', content: 'x' },
+      risk: 'write',
+      status: 'ok',
+      at: '2026-01-01T00:00:00.000Z',
+      durationMs: 1200,
+      result: { ok: true, output: 'written' },
+    }
+    const html = renderToStaticMarkup(<ToolCard tool={base} onOpen={() => {}} />)
+
+    // 图标 → 标签 → 工具名 → 摘要：中间不能夹别的元素。
+    const glyph = html.indexOf('tool-glyph')
+    const risk = html.indexOf('tool-risk')
+    const name = html.indexOf('tool-name')
+    const summary = html.indexOf('tool-summary')
+    expect(glyph).toBeGreaterThan(-1)
+    expect(risk).toBeGreaterThan(glyph)
+    expect(name).toBeGreaterThan(risk)
+    expect(summary).toBeGreaterThan(name)
+
+    // 标签在工具名之前，也就一定在时长与状态之前（它们都排在名字后面）。
+    expect(html.indexOf('tool-duration')).toBeGreaterThan(risk)
+    expect(html.indexOf('tool-status')).toBeGreaterThan(risk)
+    expect(html).toContain('tool-lead')
   })
 })
 

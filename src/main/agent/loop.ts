@@ -167,6 +167,10 @@ function toolMessage(
     // Appended after truncation so a long log cannot push the hint out.
     content: hint ? `${content}\n\n${hint}` : content,
     isError: !result.ok,
+    // Persisted with the message: the stored `createdAt` is the write time, so
+    // the execution box would otherwise have no per-step duration to show when
+    // it replays a finished run.
+    ...(typeof result.durationMs === 'number' ? { durationMs: result.durationMs } : {}),
   }
 }
 

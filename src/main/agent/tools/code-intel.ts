@@ -1,5 +1,7 @@
-// code_intel 工具：definition / references / symbols / diagnostics。
-// 执行逻辑在 ../code-intel.ts，这里只做参数解析、根目录解析与路径边界。
+// code_intel 工具：definition / references / symbols / diagnostics，支持 TS/JS 与
+// Python / Go / Java / Rust / C / C++ / Ruby / PHP / C#。
+// 执行逻辑在 ../code-intel.ts（路由）与 ../lsp/*（language server + 降级），
+// 这里只做参数解析、根目录解析与路径边界。
 import type { AgentToolDefinition, ToolResult } from '../../../shared/types'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { CODE_INTEL } from './spec'
@@ -29,7 +31,7 @@ export const codeIntelTools: AgentToolDefinition[] = [
   {
     name: CODE_INTEL,
     description:
-      'Resolve code structure through the TypeScript language service instead of text search: where a symbol is declared (definition), every place a symbol is used (references), every declaration matching a name (symbols), and type errors (diagnostics) without spawning tsc. Prefer this over search_files when you need an exact answer about TS/JS code: it returns precise file:line:column plus the source line, and diagnostics are incremental (a few hundred ms) while tsc cold start takes tens of seconds. Requires a `typescript` package resolvable from the workspace; when it is missing the tool says so and you should fall back to search_files.',
+      'Resolve code structure instead of text search: where a symbol is declared (definition), every place a symbol is used (references), every declaration matching a name (symbols), and type errors (diagnostics). TypeScript/JavaScript is answered in-process by the TS language service, so prefer it over search_files for exact file:line:column answers on TS/JS and for incremental diagnostics (tsc cold start takes tens of seconds). Python, Go, Java, Rust, C, C++, Ruby, PHP and C# are answered by a language server when one is installed in the workspace (node_modules/.bin) or on PATH; without a server the tool degrades to a language-aware structural search and says so in its output — diagnostics need a real server. Pass `language` to force an engine when the extension is ambiguous or no path is given.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -56,6 +58,11 @@ export const codeIntelTools: AgentToolDefinition[] = [
           type: 'string',
           enum: ['file', 'workspace'],
           description: 'action=diagnostics: check one file (default) or the whole workspace.',
+        },
+        language: {
+          type: 'string',
+          description:
+            'Force an engine instead of inferring it from the file extension: typescript, python, go, java, rust, c, cpp, ruby, php, csharp.',
         },
         root: { type: 'string', description: 'Referenced workspace alias. Omit to use the current workspace.' },
       },
@@ -93,6 +100,7 @@ export async function runCodeIntelTool(
     ...(args['scope'] === 'workspace' || args['scope'] === 'file'
       ? { scope: args['scope'] as 'file' | 'workspace' }
       : {}),
+    ...(typeof args['language'] === 'string' ? { language: args['language'] } : {}),
   })
   return { ok: result.ok, output: result.output, metadata: result.metadata }
 }

@@ -200,6 +200,29 @@ describe('agent loop parallel reads', () => {
     ])
   })
 
+  it('stamps each tool message with how long that call took', async () => {
+    // 执行过程框靠这个字段显示每步耗时。落盘的 `createdAt` 是写入时刻（同一轮
+    // 多条消息常在同一毫秒），所以耗时不能靠时间戳差算，必须随消息本身存下。
+    const model = scripted([
+      response('', [call('r1', 'read_file', { path: 'a.ts' })]),
+      response('done'),
+    ])
+    const result = await runAgentLoop({
+      model,
+      messages: [{ role: 'user', content: 'read one file' }],
+      tools,
+      maxSteps: 5,
+      policy: () => 'auto',
+      executeTool: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 15))
+        return { ok: true, output: 'content' }
+      },
+    })
+
+    const toolMessage = result.produced.find((message) => message.role === 'tool')
+    expect(toolMessage?.durationMs).toBeGreaterThanOrEqual(10)
+  })
+
   it('keeps mutations in order instead of parallelizing across them', async () => {
     const model = scripted([
       response('', [

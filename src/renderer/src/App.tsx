@@ -96,6 +96,7 @@ import {
   applyLiveDelta,
   createToolView,
   emptyLiveRun,
+  hidesSessionTopbar,
   inferRisk,
   settleLiveAnswer,
   insertProcessMessages,
@@ -3038,6 +3039,9 @@ export function App() {
   )
   const activeRunError = activeSessionId ? runErrors[activeSessionId] : undefined
   const draftProfileCount = detail?.profiles.filter((profile) => profile.status === 'draft').length ?? 0
+  // 知识 / 链接 / 办公文档这三个全局资源页占用右侧整块区域：它们的标题、统计与筛选都在页面
+  // 自己身上，会话顶栏在这里只剩和全局页无关的控件，所以整条不渲染（见 hidesSessionTopbar）。
+  const fullBleed = hidesSessionTopbar(view)
 
   // Context usage is estimated locally from the transcript (and the answer
   // currently streaming), so the readout never costs a model request and never
@@ -3221,176 +3225,178 @@ export function App() {
         />
 
         <main className="main-area">
-          <header className="topbar">
-            <div className="topbar-left">
-              <button
-                type="button"
-                className="topbar-workspace"
-                onClick={() => setWorkspaceDialogOpen(true)}
-                title={t("{v1} · 点击管理工作区", { v1: workspace?.path ?? t("未选择工作区") })}
-              >
-                <FolderIcon width={14} height={14} />
-                {workspace?.name ?? t("未选择工作区")}
-              </button>
-              <span className="topbar-divider" />
-              {view === 'chat' ? (
-                <SessionTitleEditor session={session} onRename={(id, title) => void renameSession(id, title)} />
-              ) : (
-                <span className="header-title static">
-                  {view === 'memory'
-                    ? t("项目记忆")
-                    : view === 'tools'
-                      ? t("系统工具")
-                      : view === 'todos'
-                        ? t("全部待办")
-                        : view === 'scheduled'
-                          ? t("全部定时任务")
-                          : view === 'knowledge'
-                            ? t("全局知识")
-                            : view === 'links'
-                              ? t("全局链接")
-                              : view === 'documents'
-                                ? t("全局文档")
-                                : view === 'plugins'
-                                  ? t("插件")
-                                  : view === 'models'
-                                    ? t("模型")
-                                    : t("偏好")}
-                </span>
-              )}
-            </div>
-
-            <div className="topbar-right">
-              {view === 'chat' && session && session.kind !== 'review' ? (
-                <SelectMenu
-                  className="approval-menu session-model-menu"
-                  value={sessionModelValue}
-                  options={sessionModelOptions}
-                  onChange={(value) => void changeSessionModel(value)}
-                  ariaLabel={t("这个任务使用的会话模型")}
-                  title={t("会话模型只影响这个任务，不会改统一设置")}
-                  align="end"
-                  maxListWidth={320}
-                />
-              ) : null}
-
-              {/* 模型服务状态：只说连没连，模型名称由左边的下拉负责。 */}
-              <button
-                type="button"
-                className="topbar-model"
-                onClick={() => openSettings()}
-                title={
-                  settings?.hasKey
-                    ? t("模型服务已连接 · 点击打开设置")
-                    : t("尚未配置 API Key · 点击打开设置")
-                }
-              >
-                <span className={`key-dot${settings?.hasKey ? ' ok' : ''}`} />
-                <span className="topbar-model-state">
-                  {settings?.hasKey ? t("已连接") : t("未连接")}
-                </span>
-              </button>
-
-              {update.status === 'available' ||
-              update.status === 'downloading' ||
-              update.status === 'ready' ? (
+          {fullBleed ? null : (
+            <header className="topbar">
+              <div className="topbar-left">
                 <button
                   type="button"
-                  className={`topbar-update ${update.status}`}
-                  onClick={() => setUpdateOpen(true)}
+                  className="topbar-workspace"
+                  onClick={() => setWorkspaceDialogOpen(true)}
+                  title={t("{v1} · 点击管理工作区", { v1: workspace?.path ?? t("未选择工作区") })}
+                >
+                  <FolderIcon width={14} height={14} />
+                  {workspace?.name ?? t("未选择工作区")}
+                </button>
+                <span className="topbar-divider" />
+                {view === 'chat' ? (
+                  <SessionTitleEditor session={session} onRename={(id, title) => void renameSession(id, title)} />
+                ) : (
+                  <span className="header-title static">
+                    {view === 'memory'
+                      ? t("项目记忆")
+                      : view === 'tools'
+                        ? t("系统工具")
+                        : view === 'todos'
+                          ? t("全部待办")
+                          : view === 'scheduled'
+                            ? t("全部定时任务")
+                            : view === 'knowledge'
+                              ? t("全局知识")
+                              : view === 'links'
+                                ? t("全局链接")
+                                : view === 'documents'
+                                  ? t("全局文档")
+                                  : view === 'plugins'
+                                    ? t("插件")
+                                    : view === 'models'
+                                      ? t("模型")
+                                      : t("偏好")}
+                  </span>
+                )}
+              </div>
+
+              <div className="topbar-right">
+                {view === 'chat' && session && session.kind !== 'review' ? (
+                  <SelectMenu
+                    className="approval-menu session-model-menu"
+                    value={sessionModelValue}
+                    options={sessionModelOptions}
+                    onChange={(value) => void changeSessionModel(value)}
+                    ariaLabel={t("这个任务使用的会话模型")}
+                    title={t("会话模型只影响这个任务，不会改统一设置")}
+                    align="end"
+                    maxListWidth={320}
+                  />
+                ) : null}
+
+                {/* 模型服务状态：只说连没连，模型名称由左边的下拉负责。 */}
+                <button
+                  type="button"
+                  className="topbar-model"
+                  onClick={() => openSettings()}
                   title={
-                    update.status === 'available'
-                      ? t("发现新版本 v{v1}，点击查看", { v1: update.release?.version ?? '' })
-                      : update.status === 'downloading'
-                        ? t("正在后台下载更新 {v1}%，不影响当前会话", { v1: Math.round(update.progress * 100) })
-                        : t("更新已下载，点击查看安装")
+                    settings?.hasKey
+                      ? t("模型服务已连接 · 点击打开设置")
+                      : t("尚未配置 API Key · 点击打开设置")
                   }
                 >
-                  {update.status === 'downloading' ? (
-                    <DownloadIcon width={14} height={14} />
-                  ) : (
-                    <UpdateIcon width={14} height={14} />
-                  )}
-                  <span>
-                    {update.status === 'available'
-                      ? `v${update.release?.version ?? ''}`
-                      : update.status === 'downloading'
-                        ? `${Math.round(update.progress * 100)}%`
-                        : t("待安装")}
+                  <span className={`key-dot${settings?.hasKey ? ' ok' : ''}`} />
+                  <span className="topbar-model-state">
+                    {settings?.hasKey ? t("已连接") : t("未连接")}
                   </span>
                 </button>
-              ) : null}
 
-              {view === 'chat' && session && session.kind !== 'review' ? (
-                <SelectMenu
-                  className="approval-menu"
-                  value={session.approvalMode}
-                  options={APPROVAL_MODES}
-                  onChange={(value) => void changeApprovalMode(value as ApprovalMode)}
-                  ariaLabel={t("当前会话的执行模式")}
-                  align="end"
+                {update.status === 'available' ||
+                update.status === 'downloading' ||
+                update.status === 'ready' ? (
+                  <button
+                    type="button"
+                    className={`topbar-update ${update.status}`}
+                    onClick={() => setUpdateOpen(true)}
+                    title={
+                      update.status === 'available'
+                        ? t("发现新版本 v{v1}，点击查看", { v1: update.release?.version ?? '' })
+                        : update.status === 'downloading'
+                          ? t("正在后台下载更新 {v1}%，不影响当前会话", { v1: Math.round(update.progress * 100) })
+                          : t("更新已下载，点击查看安装")
+                    }
+                  >
+                    {update.status === 'downloading' ? (
+                      <DownloadIcon width={14} height={14} />
+                    ) : (
+                      <UpdateIcon width={14} height={14} />
+                    )}
+                    <span>
+                      {update.status === 'available'
+                        ? `v${update.release?.version ?? ''}`
+                        : update.status === 'downloading'
+                          ? `${Math.round(update.progress * 100)}%`
+                          : t("待安装")}
+                    </span>
+                  </button>
+                ) : null}
+
+                {view === 'chat' && session && session.kind !== 'review' ? (
+                  <SelectMenu
+                    className="approval-menu"
+                    value={session.approvalMode}
+                    options={APPROVAL_MODES}
+                    onChange={(value) => void changeApprovalMode(value as ApprovalMode)}
+                    ariaLabel={t("当前会话的执行模式")}
+                    align="end"
+                  />
+                ) : null}
+
+                {view === 'chat' && session ? (
+                  <TopbarMenu
+                    items={sessionMenuItems}
+                    label={t("会话操作")}
+                    title={t("更多会话操作")}
+                  />
+                ) : null}
+
+                {running ? (
+                  <RunningPill startedAt={runningSince} step={live?.step} />
+                ) : null}
+
+                {/* 分隔线把「当前会话的模式与操作」与「全局的铃铛/模型/主题/连接」分开。 */}
+                {view === 'chat' && session ? <span className="topbar-split" /> : null}
+
+                {/* 小铃铛：会话内所有弹框提醒的历史 + 待审批汇总。产出质量的裁决入口在三个点菜单里。 */}
+                <NotificationCenter
+                  open={noticesOpen}
+                  notices={notices}
+                  pendingApprovals={activeApprovals.length}
+                  onOpenChange={setNoticesOpen}
+                  onMarkAllRead={markAllNoticesRead}
+                  onClear={clearNotices}
                 />
-              ) : null}
 
-              {view === 'chat' && session ? (
-                <TopbarMenu
-                  items={sessionMenuItems}
-                  label={t("会话操作")}
-                  title={t("更多会话操作")}
-                />
-              ) : null}
+                <button
+                  type="button"
+                  className="topbar-icon topbar-theme"
+                  onClick={() => void toggleTheme()}
+                  title={isLightTheme ? t("切换到深色模式") : t("切换到浅色模式")}
+                  aria-label={isLightTheme ? t("切换到深色模式") : t("切换到浅色模式")}
+                >
+                  {isLightTheme ? (
+                    <MoonIcon width={16} height={16} />
+                  ) : (
+                    <SunIcon width={16} height={16} />
+                  )}
+                </button>
 
-              {running ? (
-                <RunningPill startedAt={runningSince} step={live?.step} />
-              ) : null}
-
-              {/* 分隔线把「当前会话的模式与操作」与「全局的铃铛/模型/主题/连接」分开。 */}
-              {view === 'chat' && session ? <span className="topbar-split" /> : null}
-
-              {/* 小铃铛：会话内所有弹框提醒的历史 + 待审批汇总。产出质量的裁决入口在三个点菜单里。 */}
-              <NotificationCenter
-                open={noticesOpen}
-                notices={notices}
-                pendingApprovals={activeApprovals.length}
-                onOpenChange={setNoticesOpen}
-                onMarkAllRead={markAllNoticesRead}
-                onClear={clearNotices}
-              />
-
-              <button
-                type="button"
-                className="topbar-icon topbar-theme"
-                onClick={() => void toggleTheme()}
-                title={isLightTheme ? t("切换到深色模式") : t("切换到浅色模式")}
-                aria-label={isLightTheme ? t("切换到深色模式") : t("切换到浅色模式")}
-              >
-                {isLightTheme ? (
-                  <MoonIcon width={16} height={16} />
-                ) : (
-                  <SunIcon width={16} height={16} />
-                )}
-              </button>
-
-              <button
-                type="button"
-                className={`topbar-icon${companionOpen ? ' is-active' : ''}`}
-                onClick={() => setCompanionOpen(true)}
-                title={t("手机连接")}
-                aria-label={t("手机连接")}
-              >
-                <PhoneIcon width={16} height={16} />
-              </button>
-              <button
-                type="button"
-                className={`topbar-icon${resourcesTab ? ' is-active' : ''}`}
-                onClick={() => toggleResources(resourcesTab ?? 'files')}
-                title={t("会话资源")}
-                aria-label={t("会话资源")}
-              >
-                <FilesIcon width={16} height={16} />
-              </button>
-            </div>
-          </header>
+                <button
+                  type="button"
+                  className={`topbar-icon${companionOpen ? ' is-active' : ''}`}
+                  onClick={() => setCompanionOpen(true)}
+                  title={t("手机连接")}
+                  aria-label={t("手机连接")}
+                >
+                  <PhoneIcon width={16} height={16} />
+                </button>
+                <button
+                  type="button"
+                  className={`topbar-icon${resourcesTab ? ' is-active' : ''}`}
+                  onClick={() => toggleResources(resourcesTab ?? 'files')}
+                  title={t("会话资源")}
+                  aria-label={t("会话资源")}
+                >
+                  <FilesIcon width={16} height={16} />
+                </button>
+              </div>
+            </header>
+          )}
 
           {view === 'chat' ? (
             sessionLoading && !stagedSession ? (

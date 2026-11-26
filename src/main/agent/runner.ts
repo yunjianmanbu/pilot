@@ -323,6 +323,8 @@ function toStoredMessages(
       ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
       ...(message.name ? { name: message.name } : {}),
       ...(message.isError ? { isError: true } : {}),
+      // Carried so a replayed execution box can print each step's duration.
+      ...(typeof message.durationMs === 'number' ? { durationMs: message.durationMs } : {}),
       ...(reasoning ? { reasoning } : {}),
     }
   })

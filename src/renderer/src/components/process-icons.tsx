@@ -306,8 +306,8 @@ export function toolGlyph(name: string, size = 16): ReactNode {
 /**
  * 非工具步骤的图标：思考是灯泡，过程中的说明文字是对话气泡。
  *
- * 这两类以前在折叠行上没有任何图标，只有一串「思考过程 / 说明」文字，
- * 和工具卡混在一起时看不出哪一行是模型在想、哪一行是它在解释。
+ * 这两类以前在折叠行上没有任何图标，只有一串文字（现在是一个「思考」/「说明」胶囊
+ * 标签），和工具卡混在一起时看不出哪一行是模型在想、哪一行是它在解释。
  */
 export function partGlyph(kind: 'reasoning' | 'note', size = 16): ReactNode {
   return kind === 'reasoning' ? (

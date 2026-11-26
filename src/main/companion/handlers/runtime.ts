@@ -1,7 +1,7 @@
 // 运行状态与事件广播：状态快照、开关与中继地址切换、状态持久化，以及手机侧事件推送。
 // 由 server.ts 的同名方法机械搬出：方法体逐字保留，this 换成 host 参数。
 import { randomUUID } from 'node:crypto'
-import { mkdir, rename, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { CompanionStatus, RunEvent } from '../../../shared/types'
 import { normalizeRelayUrl, splitRelayUrl } from '../../../shared/relay'
@@ -34,6 +34,78 @@ export function blankSave(
   host.saveTimer.unref?.()
 }
 
+/**
+ * 状态保存。
+ *
+ * 写盘是「临时文件 + rename」，而 `saveNow()` 有多个并发入口：握手 / 配对的
+ * `await server.saveNow()`、`blankSave()` 的 300ms 防抖（fire-and-forget）、
+ * 停服收尾。临时文件名原先固定成 `${stateFile}.${pid}.tmp`，两次写盘重叠时
+ * 后一次 writeFile 覆盖同一个临时文件、先完成的那次 rename 把它搬走，剩下的
+ * 那次就只能报 `ENOENT: rename 'companion.json.<pid>.tmp' -> 'companion.json'`
+ * （连接页面把它当状态错误显示出来），而且两次 writeFile 交错还会留下半份
+ * JSON。这里堵两处：
+ *
+ * 1. 每个实例一条写盘队列（单飞 + dirty 合并）。同一时刻只有一次写盘；期间
+ *    来的调用只置 dirty，写完按最新 `host.state` 再写一次。写盘时读的是当前
+ *    对象，所以合并不会丢状态，也不会把队列排长。
+ * 2. 临时文件名带随机后缀，同进程、多实例（测试里两个 server 共用一个
+ *    dataDir）都不再撞名；失败时清掉自己那份，不留垃圾。
+ */
+interface SaveQueue {
+  running: Promise<void> | null
+  dirty: boolean
+}
+
+const SAVE_QUEUES = new WeakMap<CompanionServer, SaveQueue>()
+/** 上一次写盘失败的信息，用来在下次成功后清掉页面上那条红字。 */
+const SAVE_ERRORS = new WeakMap<CompanionServer, string>()
+
+function saveQueue(host: CompanionServer): SaveQueue {
+  const existing = SAVE_QUEUES.get(host)
+  if (existing) return existing
+  const created: SaveQueue = { running: null, dirty: false }
+  SAVE_QUEUES.set(host, created)
+  return created
+}
+
+/** Windows 上目标文件被杀软 / 索引短暂持有会让 rename 报 EPERM / EBUSY，退避重试几次。 */
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'EEXIST'])
+
+async function renameWithRetry(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(from, to)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? ''
+      if (attempt >= 4 || !RENAME_RETRY_CODES.has(code)) throw error
+      await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)))
+    }
+  }
+}
+
+async function writeStateFile(host: CompanionServer): Promise<void> {
+  const temp = `${host.stateFile}.${process.pid}.${randomUUID()}.tmp`
+  try {
+    await mkdir(dirname(host.stateFile), { recursive: true })
+    await writeFile(temp, JSON.stringify(host.state, null, 2), { mode: 0o600 })
+    await renameWithRetry(temp, host.stateFile)
+    const failed = SAVE_ERRORS.get(host)
+    SAVE_ERRORS.delete(host)
+    if (failed && host.lastError === failed) {
+      host.lastError = null
+      emitStatus(host)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    SAVE_ERRORS.set(host, message)
+    host.lastError = message
+  } finally {
+    // rename 成功后临时文件已经不在了；失败才需要清，不能让 .tmp 堆在用户目录里。
+    await rm(temp, { force: true }).catch(() => undefined)
+  }
+}
+
 export async function saveNow(
   host: CompanionServer,
 ): Promise<void> {
@@ -41,14 +113,24 @@ export async function saveNow(
     clearTimeout(host.saveTimer)
     host.saveTimer = null
   }
-  try {
-    await mkdir(dirname(host.stateFile), { recursive: true })
-    const temp = `${host.stateFile}.${process.pid}.tmp`
-    await writeFile(temp, JSON.stringify(host.state, null, 2), { mode: 0o600 })
-    await rename(temp, host.stateFile)
-  } catch (error) {
-    host.lastError = error instanceof Error ? error.message : String(error)
+  const queue = saveQueue(host)
+  if (queue.running) {
+    // 已经有一次写盘在路上：它结束时若看到 dirty 会再写一遍，覆盖本次改动。
+    queue.dirty = true
+    return queue.running
   }
+  const running = (async () => {
+    try {
+      do {
+        queue.dirty = false
+        await writeStateFile(host)
+      } while (queue.dirty)
+    } finally {
+      queue.running = null
+    }
+  })()
+  queue.running = running
+  return running
 }
 
 export function emitStatus(

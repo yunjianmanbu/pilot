@@ -61,7 +61,8 @@ export function ProcessNoteRow({
   const body = (
     <>
       <span className="step-glyph glyph-note">{partGlyph('note')}</span>
-      <span className="reasoning-label">{t("说明")}</span>
+      {/* 同上：说明行也用胶囊标签，和工具行的「只读 / 写入」对齐。 */}
+      <span className="step-tag tag-note">{t("说明")}</span>
       {peek ? (
         <span className="reasoning-peek" title={peek}>
           {peek}

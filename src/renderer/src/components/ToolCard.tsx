@@ -91,7 +91,14 @@ export function ToolDetail({ tool }: { tool: ToolView }) {
           </span>
         ) : null}
         {tool.durationMs != null ? (
-          <span className="tool-duration">{formatDuration(tool.durationMs)}</span>
+          <span
+            className={`tool-duration${tool.durationEstimated ? ' is-estimated' : ''}`}
+            title={
+              tool.durationEstimated ? t("该步骤没有落盘耗时，这里按消息时间差估算") : undefined
+            }
+          >
+            {toolDurationLabel(tool)}
+          </span>
         ) : null}
       </div>
       {Object.keys(tool.args).length > 0 ? (
@@ -124,6 +131,17 @@ export function ToolDetail({ tool }: { tool: ToolView }) {
 }
 
 /**
+ * 一行里的耗时文案。估算值前面加 ≈：旧记录没存耗时，数字来自消息时间差，
+ * 不能让它和落盘的真实耗时看起来一模一样。
+ */
+export function toolDurationLabel(tool: ToolView): string {
+  if (tool.durationMs == null) return ''
+  const text = formatDuration(tool.durationMs)
+  if (!text) return ''
+  return tool.durationEstimated ? `≈${text}` : text
+}
+
+/**
  * One folded call in the execution box: a single row that never grows.
  *
  * Clicking it hands the step to the dialog owner (the chat view) instead of
@@ -135,6 +153,7 @@ export function ToolCard({ tool, onOpen }: { tool: ToolView; onOpen?: (() => voi
   const now = useTicker(tool.status === 'running')
   const elapsedLabel = tool.status === 'running' ? runningToolLabel(tool.at, now) : ''
   const shell = shellOf(tool)
+  const durationText = toolDurationLabel(tool)
 
   return (
     <article className={`tool-card tool-${tool.status} risk-${tool.risk}`}>
@@ -144,7 +163,13 @@ export function ToolCard({ tool, onOpen }: { tool: ToolView; onOpen?: (() => voi
         onClick={() => onOpen?.()}
         title={summarizeTool(tool)}
       >
-        <span className={`tool-glyph glyph-${toolKind(tool.name)}`}>{toolGlyph(tool.name)}</span>
+        {/* 图标与动作标签是一个整体：先看到「哪一类动作」+「读还是写」，
+            再看到具体工具名与参数。标签原先排在行尾（在时长、状态之前），
+            要扫到行末才知道这次是只读还是写入，扫视成本比放在图标后高。 */}
+        <span className="tool-lead">
+          <span className={`tool-glyph glyph-${toolKind(tool.name)}`}>{toolGlyph(tool.name)}</span>
+          <span className="tool-risk">{riskLabel(tool.risk)}</span>
+        </span>
         <span className="tool-name">{tool.name}</span>
         <span className="tool-summary">{summarizeTool(tool)}</span>
         {shell ? (
@@ -152,9 +177,17 @@ export function ToolCard({ tool, onOpen }: { tool: ToolView; onOpen?: (() => voi
             {shell}
           </span>
         ) : null}
-        <span className="tool-risk">{riskLabel(tool.risk)}</span>
-        {tool.durationMs != null ? (
-          <span className="tool-duration">{formatDuration(tool.durationMs)}</span>
+        {durationText ? (
+          <span
+            className={`tool-duration${tool.durationEstimated ? ' is-estimated' : ''}`}
+            title={
+              tool.durationEstimated
+                ? t("该步骤没有落盘耗时，这里按消息时间差估算")
+                : t("本次调用的耗时")
+            }
+          >
+            {durationText}
+          </span>
         ) : elapsedLabel ? (
           <span className="tool-duration is-running" aria-live="polite">
             {elapsedLabel}

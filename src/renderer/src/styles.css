@@ -3326,8 +3326,28 @@ div.reasoning-block:hover {
 
 /* Title stays put; the first line of the thinking takes the rest of the row
    and is cut with an ellipsis instead of wrapping. */
-.reasoning-label {
+/* 行内类别标签：与工具行的 `.tool-risk` 同一套胶囊几何（小字、涩色、圆角），
+   所以「思考 / 说明」和「只读 / 写入」在同一列表里读起来是一类东西。
+   底与字都从 `--kind-*` 派生，不另开一套色。 */
+.step-tag {
   flex: none;
+  /* 几何跟 `.tool-risk` 一模一样（1px 5px、圆角 4、10px/600）：两种标签在同一列表
+     里应当看起来是同一个控件，只是说的东西不同。 */
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: calc(10px * var(--font-scale));
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.step-tag.tag-think {
+  background: color-mix(in srgb, var(--kind-think) 18%, transparent);
+  color: var(--kind-think);
+}
+
+.step-tag.tag-note {
+  background: color-mix(in srgb, var(--kind-note) 18%, transparent);
+  color: var(--kind-note);
 }
 
 /* 还在书写的那一步：标题行带一个跳动的点，和回复中的 live-dot 同一套信号。 */
@@ -3818,6 +3838,15 @@ div.reasoning-block:hover {
   font-weight: 600;
 }
 
+/* 图标与它后面那个动作标签：内部间距比 `.tool-head` 的 7px 更紧，
+   这样「图标 + 动作」读成一组，工具名再从外面起。 */
+.tool-lead {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
 .tool-shell {
   flex: none;
   padding: 1px 5px;
@@ -3850,6 +3879,13 @@ div.reasoning-block:hover {
   color: var(--faint);
   font-family: var(--mono);
   font-size: calc(10px * var(--font-scale));
+  font-variant-numeric: tabular-nums;
+}
+
+/* 估算耗时：比真实值更淡，✓ 由数字前的 ≈ 说明，不靠颜色传达。 */
+.tool-duration.is-estimated {
+  color: var(--faint);
+  opacity: 0.75;
 }
 
 /* A working call keeps a visible counter; a settled one stays quiet. */

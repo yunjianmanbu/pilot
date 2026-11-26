@@ -55,7 +55,9 @@ export function ReasoningBlock({
   const body = (
     <>
       <span className="step-glyph glyph-think">{partGlyph('reasoning')}</span>
-      <span className="reasoning-label">{t("思考过程")}</span>
+      {/* 行内标签与工具行的「只读 / 写入」同一套胶囊：只有这里短到两个字，
+          一眼就能分出这一行是模型在思考而不是在调工具；完整说法留在弹框标题里。 */}
+      <span className="step-tag tag-think">{t("思考")}</span>
       {live ? <i className="live-dot reasoning-live" /> : null}
       {peek ? (
         <span className="reasoning-peek" title={peek}>

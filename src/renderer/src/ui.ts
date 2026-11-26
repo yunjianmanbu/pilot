@@ -22,6 +22,17 @@ export type MainView =
   | 'links'
   | 'documents'
 
+/**
+ * 左下角三个全局资源页是否隐藏会话顶栏。
+ *
+ * 它们自带标题、统计条与筛选条，顶栏那一排（工作区、会话标题、会话模型、执行模式、
+ * 会话操作）对全局页没有任何意义；隐藏之后页面从系统工具栏下沿一直铺到底，
+ * 检索结果多显示一整行。
+ */
+export function hidesSessionTopbar(view: MainView): boolean {
+  return view === 'knowledge' || view === 'links' || view === 'documents'
+}
+
 export interface ToolView {
   id: string
   name: string
@@ -30,6 +41,14 @@ export interface ToolView {
   status: 'running' | 'waiting' | 'ok' | 'error' | 'denied'
   result?: ToolResult
   durationMs?: number
+  /**
+   * `durationMs` 是拿消息时间差估算出来的，不是工具自己报的。
+   *
+   * 旧会话的 tool 消息没有存耗时（这个字段是后加的），重放时只剩名字和状态；
+   * 用「发出这批调用的 assistant 消息时间 → 结果写入时间」能补出一个近似值，
+   * 但必须标出来，不能让读者把它当成真实耗时。
+   */
+  durationEstimated?: boolean
   approvalReason?: string
   /**
    * Wall-clock moment the call was issued. Live runs stamp the event arrival,
@@ -221,7 +240,27 @@ function attachToolResult(
 ): void {
   tool.result = result
   tool.status = isError || !result.ok ? 'error' : 'ok'
-  tool.durationMs = result.durationMs
+  // 结果自带耗时优先；已存的（含估算值）不被一次没带耗时的结果抹掉。
+  if (result.durationMs != null) {
+    tool.durationMs = result.durationMs
+    tool.durationEstimated = false
+  }
+}
+
+/**
+ * 旧记录里每步耗时的下限与上限。低于下限的估算值不显示：本地工具常常几毫秒
+ * 就完事，给一整列 `≈0ms` 只会添乱；上限防的是跨天记录算出几十小时。
+ */
+const ESTIMATE_MIN_MS = 200
+const ESTIMATE_MAX_MS = 30 * 60_000
+
+function estimateStepMs(issuedAt: number, doneAt: string): number | undefined {
+  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return undefined
+  const done = new Date(doneAt).getTime()
+  if (Number.isNaN(done)) return undefined
+  const elapsed = done - issuedAt
+  if (elapsed < ESTIMATE_MIN_MS || elapsed > ESTIMATE_MAX_MS) return undefined
+  return elapsed
 }
 
 // Shared with the loop: the renderer decides which chunk to show as the answer,
@@ -292,6 +331,9 @@ export function buildTranscript(messages: StoredMessage[]): UIMessage[] {
   let process: Extract<UIMessage, { kind: 'process' }> | null = null
   let tools = new Map<string, ToolView>()
   let partSeq = 0
+  // 记录「本批调用是什么时候发出去的」，给没有存耗时的旧记录做估算用。
+  let issuedAt = 0
+  let issuedRunId: string | undefined
 
   // A note written in the middle of a run (before another tool call of the same
   // run) is part of the process; a note after the last step is the answer.
@@ -360,6 +402,8 @@ export function buildTranscript(messages: StoredMessage[]): UIMessage[] {
           })
         }
         if (calls.length === 0) continue
+        issuedAt = new Date(message.createdAt).getTime()
+        issuedRunId = message.runId
         process = startProcess(message.runId)
         for (const call of calls) {
           const tool = createToolView(call, undefined, message.createdAt)
@@ -393,6 +437,10 @@ export function buildTranscript(messages: StoredMessage[]): UIMessage[] {
           at: message.createdAt,
         })
       }
+      if (calls.length > 0) {
+        issuedAt = new Date(message.createdAt).getTime()
+        issuedRunId = message.runId
+      }
       for (const call of calls) {
         const tool = createToolView(call, undefined, message.createdAt)
         process.tools.push(tool)
@@ -408,10 +456,23 @@ export function buildTranscript(messages: StoredMessage[]): UIMessage[] {
         ok: !message.isError,
         output: message.content,
         ...(message.isError ? { error: message.content } : {}),
+        // Saved with the message by the loop; without it a replayed step would
+        // show a name and an outcome but no duration.
+        ...(typeof message.durationMs === 'number' ? { durationMs: message.durationMs } : {}),
       }
       if (tool) {
         attachToolResult(tool, result, message.isError)
+        // 旧记录：没存耗时，用消息时间差补一个并标为估算。
+        if (tool.durationMs == null && issuedRunId === message.runId) {
+          const estimated = estimateStepMs(issuedAt, message.createdAt)
+          if (estimated !== undefined) {
+            tool.durationMs = estimated
+            tool.durationEstimated = true
+          }
+        }
       } else if (process) {
+        const estimated =
+          issuedRunId === message.runId ? estimateStepMs(issuedAt, message.createdAt) : undefined
         const tool: ToolView = {
           id: message.toolCallId ?? message.id,
           name: message.name ?? 'tool',
@@ -419,7 +480,11 @@ export function buildTranscript(messages: StoredMessage[]): UIMessage[] {
           risk: inferRisk(message.name ?? ''),
           status: message.isError ? 'error' : 'ok',
           result,
-          durationMs: result.durationMs,
+          ...(result.durationMs != null
+            ? { durationMs: result.durationMs }
+            : estimated !== undefined
+              ? { durationMs: estimated, durationEstimated: true }
+              : {}),
           at: message.createdAt,
         }
         process.tools.push(tool)

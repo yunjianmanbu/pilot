@@ -13,6 +13,28 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import type * as TS from 'typescript'
+import type {
+  CodeIntelAction,
+  CodeIntelDiagnostic,
+  CodeIntelRequest,
+  CodeIntelResult,
+} from './code-intel-types'
+import { runHeuristicCodeIntel } from './lsp/fallback'
+import { disposeLsp, runLspCodeIntel } from './lsp/intel'
+import {
+  LANGUAGES,
+  TS_EXTENSIONS,
+  discoverServer,
+  isTypeScriptFile,
+  languageById,
+  languageForFile,
+  scanSources,
+  type LanguageId,
+  type LanguageSpec,
+} from './lsp/servers'
+
+export type { CodeIntelAction, CodeIntelDiagnostic, CodeIntelRequest, CodeIntelResult }
+export type { CodeIntelPosition } from './code-intel-types'
 
 /** 收集源文件时跳过的目录名。与 workspace 搜索的剪枝口径保持一致。 */
 const SKIP_DIRS = new Set([
@@ -46,28 +68,6 @@ const IDLE_MS = 10 * 60_000
 const MAX_CACHED = 2
 const MAX_SYMBOL_RESULTS = 40
 const MAX_DIAGNOSTICS = 60
-
-export interface CodeIntelPosition {
-  /** Workspace-relative path with forward slashes. */
-  file: string
-  /** 1-based line. */
-  line: number
-  /** 1-based column. */
-  column: number
-  /** The source line, trimmed and length-capped. */
-  preview: string
-  /** TypeScript symbol kind name, when the query resolved to a declaration. */
-  kind?: string
-}
-
-export interface CodeIntelDiagnostic {
-  file: string
-  line: number
-  column: number
-  severity: 'error' | 'warning'
-  message: string
-  code: number
-}
 
 export interface CodeIntelUnavailable {
   /** Why the service cannot answer, phrased for the model. */
@@ -390,36 +390,13 @@ function symbolKindName(kind: TS.ScriptElementKind): string {
   return String(kind)
 }
 
-export type CodeIntelAction = 'definition' | 'references' | 'symbols' | 'diagnostics'
-
-export interface CodeIntelRequest {
-  action: CodeIntelAction
-  /** Workspace-relative file, used to resolve a symbol to a position. */
-  path?: string
-  /** Symbol name to locate inside `path` (or across the project for action=symbols). */
-  symbol?: string
-  /** Explicit 1-based position; wins over `symbol`. */
-  line?: number
-  column?: number
-  /** Name filter for action=symbols; falls back to `symbol`. */
-  query?: string
-  /** action=diagnostics: check the whole project instead of one file. */
-  scope?: 'file' | 'workspace'
-}
-
-export interface CodeIntelResult {
-  ok: boolean
-  output: string
-  metadata: Record<string, unknown>
-}
-
 /**
- * 执行一次代码智能查询。
+ * TypeScript / JavaScript 引擎（进程内 LanguageService）。
  *
- * `root` 是工作区绝对路径；`path` 必须是工作区内的相对路径（越界一律拒绝，
- * 与读类工具同一口径）。
+ * 对外入口是文件末尾的 `runCodeIntel`，它先按扩展名路由：TS/JS 走这里，
+ * 其它语言走 LSP 子进程（lsp/intel.ts）或结构化降级（lsp/fallback.ts）。
  */
-export async function runCodeIntel(root: string, request: CodeIntelRequest): Promise<CodeIntelResult> {
+async function runTsCodeIntel(root: string, request: CodeIntelRequest): Promise<CodeIntelResult> {
   const load = await loadTypeScript(root)
   if ('reason' in load) {
     return { ok: false, output: load.reason, metadata: { unavailable: true, needsTypeScript: load.needsTypeScript } }
@@ -613,4 +590,130 @@ export function codeIntelStatus(): Array<{ root: string; files: number; truncate
     files: session.files.length,
     truncated: session.truncated,
   }))
+}
+
+// ---------------------------------------------------------------------------
+// 多语言路由
+// ---------------------------------------------------------------------------
+
+const MIX_TTL_MS = 60_000
+const mixCache = new Map<string, { at: number; byExtension: Array<{ ext: string; count: number }> }>()
+
+function mixKey(root: string): string {
+  return process.platform === 'win32' ? root.toLowerCase() : root
+}
+
+/**
+ * 工作区里的源文件扩展名分布（带 60s 缓存）。
+ *
+ * 只在不给 `path` 的查询里用到：symbols / 工程级 diagnostics 需要先知道
+ * 「这个工作区主要是哪种语言」才能选对引擎。
+ */
+async function languageMix(root: string): Promise<Array<{ ext: string; count: number }>> {
+  const key = mixKey(root)
+  const cached = mixCache.get(key)
+  if (cached && Date.now() - cached.at < MIX_TTL_MS) return cached.byExtension
+  const extensions = new Set<string>(TS_EXTENSIONS)
+  for (const spec of LANGUAGES) for (const ext of spec.extensions) extensions.add(ext)
+  const scan = await scanSources(root, extensions, 3_000)
+  mixCache.set(key, { at: Date.now(), byExtension: scan.byExtension })
+  return scan.byExtension
+}
+
+function unsupportedMessage(file: string): string {
+  const known = LANGUAGES.map((spec) => spec.extensions.join('/')).join(', ')
+  return `code_intel cannot analyse ${file}. Supported: TypeScript/JavaScript, plus ${known} (which need a language server for exact results).`
+}
+
+/** 有 server 走 LSP；没有（或 server 起不来）退回结构化文本搜索，并说明原因。 */
+async function runOtherLanguage(
+  root: string,
+  language: LanguageSpec,
+  request: CodeIntelRequest,
+): Promise<CodeIntelResult> {
+  if (!discoverServer(root, language)) return runHeuristicCodeIntel(root, language, request)
+
+  let result: CodeIntelResult
+  try {
+    result = await runLspCodeIntel(root, language, request)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    const fallback = await runHeuristicCodeIntel(root, language, request)
+    return {
+      ...fallback,
+      output: `${fallback.output}\n\nNote: the ${language.label} language server failed (${reason}), so this is a text-structure result.`,
+    }
+  }
+  // server 找不到或握手失败：runLspCodeIntel 不抛"错误"而是回 unavailable，
+  // 这时降级比把一句「不可用」交给模型有用。诊断除外——它真的需要 server。
+  if (!result.metadata['unavailable']) return result
+  const fallback = await runHeuristicCodeIntel(root, language, request)
+  return {
+    ...fallback,
+    output: `${fallback.output}\n\nNote: ${result.output}`,
+  }
+}
+
+/**
+ * 执行一次代码智能查询。
+ *
+ * `root` 是工作区绝对路径；`path` 必须是工作区内的相对路径（越界一律拒绝，
+ * 与读类工具同一口径）。
+ *
+ * 引擎选择：
+ * 1. `request.language` 显式指定 -> 用它；
+ * 2. 给了 `path` -> 按扩展名（TS/JS 走进程内 LanguageService）；
+ * 3. 没给 `path` -> 按工作区里文件最多的语言。
+ */
+export async function runCodeIntel(root: string, request: CodeIntelRequest): Promise<CodeIntelResult> {
+  const forced = request.language?.trim().toLowerCase() ?? ''
+  if (forced) {
+    if (forced === 'typescript' || forced === 'javascript') return runTsCodeIntel(root, request)
+    const spec = languageById(forced as LanguageId)
+    if (!spec) {
+      return {
+        ok: false,
+        output: `Unknown language "${forced}". Known: typescript, ${LANGUAGES.map((item) => item.id).join(', ')}.`,
+        metadata: { unsupported: true },
+      }
+    }
+    return runOtherLanguage(root, spec, request)
+  }
+
+  const wanted = request.path?.trim() ?? ''
+  if (wanted) {
+    const file = absPath(root, wanted)
+    if (isTypeScriptFile(file)) return runTsCodeIntel(root, request)
+    const language = languageForFile(file)
+    if (!language) return { ok: false, output: unsupportedMessage(wanted), metadata: { unsupported: true } }
+    return runOtherLanguage(root, language, request)
+  }
+
+  const mix = await languageMix(root)
+  if (mix.length === 0) {
+    return { ok: false, output: 'No supported source files under the workspace root.', metadata: {} }
+  }
+  const tsCount = mix
+    .filter((entry) => TS_EXTENSIONS.has(entry.ext))
+    .reduce((total, entry) => total + entry.count, 0)
+  const topOther = mix.find((entry) => !TS_EXTENSIONS.has(entry.ext))
+  if (!topOther || tsCount >= topOther.count) return runTsCodeIntel(root, request)
+  const language = languageForFile(`source.${topOther.ext}`)
+  if (!language) return runTsCodeIntel(root, request)
+  const result = await runOtherLanguage(root, language, request)
+  return {
+    ...result,
+    metadata: {
+      ...result.metadata,
+      inferredLanguage: language.id,
+      languageMix: mix.slice(0, 5),
+    },
+  }
+}
+
+/** 释放 TS 引擎与所有 LSP 子进程。进程退出或切换工作区时调。 */
+export async function disposeAllCodeIntel(): Promise<void> {
+  disposeCodeIntel()
+  mixCache.clear()
+  await disposeLsp()
 }

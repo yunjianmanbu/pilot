@@ -538,6 +538,14 @@ export interface AgentMessage {
   toolCallId?: string
   name?: string
   isError?: boolean
+  /**
+   * How long the tool call this message reports actually ran, in milliseconds.
+   * Set on the `tool` message so the execution box can still show a per-step
+   * duration when the run is replayed from storage: the stored message time is
+   * the moment it was written, not the moment the call took, so a difference of
+   * timestamps cannot stand in for this number.
+   */
+  durationMs?: number
   /** Provider reasoning text, kept separately from the visible answer. */
   reasoning?: string
   /** Inline image data URLs (data:image/...;base64,...) for vision models. */
