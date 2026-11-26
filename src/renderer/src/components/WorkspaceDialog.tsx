@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { WorkspaceSummary } from '../../../shared/types'
 import {
   CheckIcon,
+  DownloadIcon,
   FolderIcon,
   InfoIcon,
   PlusIcon,
@@ -19,6 +20,8 @@ export function WorkspaceDialog({
   onPick,
   onRemove,
   onReveal,
+  onPackExport,
+  onPackImport,
   onClose,
   onError,
 }: {
@@ -28,6 +31,10 @@ export function WorkspaceDialog({
   onPick: () => void
   onRemove: (path: string) => Promise<void>
   onReveal: (path: string) => void
+  /** 导出某个工作区成 .pilotpack.zip（可勾选范围，含明文密钥）。 */
+  onPackExport: (workspace: WorkspaceSummary) => void
+  /** 从 .pilotpack.zip 导入一个工作区到本机。 */
+  onPackImport: () => void
   onClose: () => void
   onError: (message: string) => void
 }) {
@@ -81,6 +88,8 @@ export function WorkspaceDialog({
             <p>{t("Pilot 只在被授权的工作区内读写文件、执行命令。")}</p>
           </div>
           <div className="modal-head-actions">
+            <button type="button" className="button ghost small" onClick={onPackImport} title={t("从 .pilotpack.zip 导入工作区")}>
+              {t("导入")}</button>
             <button type="button" className="button primary small" onClick={onPick}>
               <PlusIcon width={15} height={15} />
               {t("打开文件夹")}</button>
@@ -131,6 +140,15 @@ export function WorkspaceDialog({
                       </span>
                     </button>
                     <div className="workspace-row-actions">
+                      <button
+                        type="button"
+                        className="icon-text-button"
+                        title={t("导出这个工作区（可勾选范围，含密钥）")}
+                        disabled={busy === workspace.path}
+                        onClick={() => onPackExport(workspace)}
+                      >
+                        <DownloadIcon width={13} height={13} />
+                        {t("导出")}</button>
                       <button
                         type="button"
                         className="icon-text-button"

@@ -11,12 +11,15 @@ import { isDocumentWindowContents, openDocumentWindow } from '../document-window
 import { join } from 'node:path'
 import { knowledgePairsFor } from '../search'
 import { listDirectory, MAX_UPLOAD_BYTES, previewFile, resolveExisting } from '../workspace'
+import { renderDocumentPdf } from '../office-render'
 import { listSessionChanges, revertSessionFile } from '../changes'
 import { localizeChanges, localizeMain } from '../localize'
 import { parseUploadBatch } from '../../shared/uploads'
+import { normalizeCheckpointScope } from '../../shared/checkpoint-ignore'
 import type {
   ApprovalMode,
   CheckpointRestoreMode,
+  CheckpointScope,
   MessageDelivery,
   MessageOptions,
   MessageSearchFilter,
@@ -274,6 +277,29 @@ export function registerSessionIpc(ctx: IpcContext): void {
     }))
   })
 
+  ctx.handle(
+    'pilot:checkpoint-preview',
+    async (
+      workspacePath: string,
+      // 设置页拿还没保存的草稿来算「切到仅源码会少存多少」，所以这两项可以从
+      // 调用方来；省略时用已保存的设置，其它调用方（打开工作区提示）不变。
+      options?: { ignore?: readonly string[]; scope?: CheckpointScope },
+    ) => {
+      if (!ctx.store.workspaces().some((entry) => entry.path === workspacePath)) {
+        throw new Error('Workspace not found')
+      }
+      const stored = ctx.store.settings()
+      const ignore = Array.isArray(options?.ignore)
+        ? options.ignore.filter((entry): entry is string => typeof entry === 'string')
+        : stored.checkpointIgnore
+      return ctx.checkpoints.preview({
+        workspacePath,
+        ignore,
+        scope: normalizeCheckpointScope(options?.scope ?? stored.checkpointScope),
+      })
+    },
+  )
+
   ctx.handle('pilot:checkpoint-create', async (sessionId: string, label?: string) => {
     const session = ctx.store.session(sessionId)
     if (!session) throw new Error('Session not found')
@@ -292,6 +318,7 @@ export function registerSessionIpc(ctx: IpcContext): void {
       retention: ctx.store.settings().checkpointRetention,
       maxBytes: ctx.store.settings().checkpointMaxBytes,
       ignore: ctx.store.settings().checkpointIgnore,
+      scope: ctx.store.settings().checkpointScope,
     })
   })
 
@@ -354,6 +381,23 @@ export function registerSessionIpc(ctx: IpcContext): void {
     const target = await resolveExisting(path, file)
     const error = await shell.openPath(target)
     if (error) throw new Error(error)
+  })
+
+  /**
+   * Draw an Office document the way its own application draws it.
+   *
+   * The in-app parsers recover text and nothing else, which is not enough to
+   * judge a layout before editing it. This channel converts the file with the
+   * office suite installed on this machine (WPS → Office → LibreOffice) and
+   * returns the PDF bytes; the renderer paints them with the PDF pager it
+   * already uses, so no new protocol or web preferences are involved.
+   *
+   * File access stays behind `resolveExisting`, exactly like `pilot:file-open`:
+   * only a path the workspace jail allows can reach an office application.
+   */
+  ctx.handle('pilot:file-render', async (path: string, file: string) => {
+    const target = await resolveExisting(path, file)
+    return renderDocumentPdf(target)
   })
 
 

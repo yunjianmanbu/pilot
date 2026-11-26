@@ -3,7 +3,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { ProcessBox } from '../src/renderer/src/components/ProcessBox'
 import { reasoningPeek } from '../src/renderer/src/components/ReasoningBlock'
-import { ToolCard } from '../src/renderer/src/components/ToolCard'
+import { ProcessNoteRow, noteStep, reasoningStep, toolStep } from '../src/renderer/src/components/StepDialog'
+import { ToolCard, ToolDetail } from '../src/renderer/src/components/ToolCard'
 import { buildTranscript, formatClock, type UIMessage, type ToolView } from '../src/renderer/src/ui'
 import type { StoredMessage } from '../src/shared/types'
 
@@ -48,13 +49,12 @@ describe('reasoning summary line', () => {
     expect(reasoningPeek(long, 5)).toBe('甲甲甲甲甲…')
   })
 
-  it('shows the peek inside the folded summary of a step', () => {
+  it('shows the peek inside the folded row of a step', () => {
     const process = processOf([step('m1', '', '先检查依赖\n然后跑测试', ['t1'])])
     const html = renderToStaticMarkup(<ProcessBox process={process} />)
-    const summary = html.slice(html.indexOf('<summary>'), html.indexOf('</summary>'))
-    expect(summary).toContain('reasoning-peek')
-    expect(summary).toContain('先检查依赖')
-    expect(summary).not.toContain('然后跑测试')
+    expect(html).toContain('reasoning-peek')
+    expect(html).toContain('先检查依赖')
+    expect(html).not.toContain('然后跑测试')
   })
 })
 
@@ -107,18 +107,60 @@ describe('ProcessBox collapsed rendering', () => {
     expect(html).not.toContain('思考一')
   })
 
-  it('opens each step with its execution time', () => {
+  it('keeps the body text of a step behind its dialog', () => {
     const process = processOf([step('m1', '先看目录', '思考一', ['t1'])])
-    const clock = formatClock('2026-01-01T00:00:00.000Z')
-    expect(clock).toMatch(/^\d{2}:\d{2}:\d{2}$/)
-
     const html = renderToStaticMarkup(<ProcessBox process={process} />)
-    // Reasoning block and interim note both carry the stored message time.
-    expect(html.match(/执行时间/g) ?? []).toHaveLength(2)
-    expect(html).toContain(`执行时间 ${clock}`)
+    // 折叠行只给一行预览：完整正文和任何执行时刻都不在框里，框的高度才不会跳。
+    expect(html).not.toContain('执行时间')
+    expect(html).not.toContain('tool-args')
+  })
+})
+
+describe('every step opens in a dialog', () => {
+  const tool: ToolView = {
+    id: 't1',
+    name: 'read_file',
+    args: { path: 'a.ts' },
+    risk: 'read',
+    status: 'ok',
+    at: '2026-01-01T00:00:00.000Z',
+    result: { ok: true, output: 'contents' },
+  }
+
+  it('turns thinking, notes and calls into one dialog payload each', () => {
+    expect(reasoningStep({ key: 'r1', text: '想一想', at: '2026-01-01T00:00:03.000Z' }, true)).toEqual({
+      kind: 'reasoning',
+      key: 'r1',
+      text: '想一想',
+      at: '2026-01-01T00:00:03.000Z',
+      live: true,
+    })
+    expect(noteStep({ key: 'n1', text: '说明' })).toEqual({ kind: 'note', key: 'n1', text: '说明' })
+    expect(toolStep(tool)).toEqual({ kind: 'tool', key: 't1', tool })
   })
 
-  it('puts the execution time on the first line of an expanded tool card', () => {
+  it('leaves the stamp out when the step has none', () => {
+    expect('at' in noteStep({ key: 'n1', text: '说明' })).toBe(false)
+    expect('at' in reasoningStep({ key: 'r1', text: '想一想' }, false)).toBe(false)
+  })
+
+  it('renders thinking, notes and calls as buttons when a dialog owner is present', () => {
+    const process = processOf([step('m1', '先看目录', '思考一', ['t1'])])
+    const html = renderToStaticMarkup(<ProcessBox process={process} onOpenStep={() => {}} />)
+    expect(html).toContain('class="reasoning-block process-reasoning"')
+    expect(html).toContain('class="reasoning-block process-note-row"')
+    // 没有一行是就地展开的 div/detail：全部是按钮，交给上层的弹框。
+    expect(html).not.toContain('<div class="reasoning-block')
+    expect(html).not.toContain('tool-body')
+    // 每行都带上自己的语义图标。
+    expect(html).toContain('glyph-think')
+    expect(html).toContain('glyph-note')
+    expect(html).toContain('glyph-read')
+  })
+})
+
+describe('step dialog content', () => {
+  it('puts the execution time on the first line of a tool detail', () => {
     const at = '2026-01-01T03:04:05.000Z'
     const tool: ToolView = {
       id: 't1',
@@ -130,10 +172,35 @@ describe('ProcessBox collapsed rendering', () => {
       result: { ok: false, output: 'boom', error: 'boom' },
     }
 
-    const html = renderToStaticMarkup(<ToolCard tool={tool} />)
+    const html = renderToStaticMarkup(<ToolDetail tool={tool} />)
     expect(html).toContain(`执行时间 ${formatClock(at)}`)
-    // The stamp comes before the parameter block inside the opened body.
+    // The stamp comes before the parameter block inside the dialog body.
     expect(html.indexOf('process-time')).toBeLessThan(html.indexOf('tool-args'))
+    expect(html).toContain('boom')
+  })
+
+  it('folds a note the same way a thought is folded', () => {
+    const html = renderToStaticMarkup(<ProcessNoteRow text={'第一行说明\n第二行'} onOpen={() => {}} />)
+    expect(html).toContain('<button')
+    expect(html).toContain('step-glyph')
+    expect(html).toContain('第一行说明')
+    expect(html).not.toContain('第二行')
+  })
+
+  it('keeps a tool row folded and free of a body', () => {
+    const tool: ToolView = {
+      id: 't1',
+      name: 'read_file',
+      args: { path: 'a.ts' },
+      risk: 'read',
+      status: 'ok',
+      at: '2026-01-01T00:00:00.000Z',
+      result: { ok: true, output: 'contents' },
+    }
+    const html = renderToStaticMarkup(<ToolCard tool={tool} onOpen={() => {}} />)
+    expect(html).toContain('tool-head')
+    expect(html).not.toContain('tool-body')
+    expect(html).not.toContain('contents')
   })
 })
 

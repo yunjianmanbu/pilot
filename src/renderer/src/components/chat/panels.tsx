@@ -11,7 +11,7 @@ import { sortTodos } from '../../../../shared/todos'
 import type { FailureAction } from '../../../../shared/run-failure'
 import { classifyRunFailure, failureAction } from '../../../../shared/run-failure'
 import {
-  BrainIcon,
+  BookmarkIcon,
   CheckIcon,
   ChevronIcon,
   ClockIcon,
@@ -128,7 +128,7 @@ export function Welcome({
 
       <div className="welcome-features">
         <span>
-          <BrainIcon width={13} height={13} />
+          <BookmarkIcon width={13} height={13} />
           {t("项目记忆")}</span>
         <span>
           <SparkIcon width={13} height={13} />

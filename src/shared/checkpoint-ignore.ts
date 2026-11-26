@@ -1,3 +1,5 @@
+import type { CheckpointScope } from './types'
+
 /**
  * Snapshot-only ignore patterns (Settings → 回退点).
  *
@@ -151,4 +153,13 @@ export function matchesCheckpointIgnore(rel: string, patterns: readonly string[]
     if (matched) return true
   }
   return false
+}
+
+/**
+ * Snapshot scope from stored settings. Anything unknown — an old store, a hand
+ * edited file — falls back to `all`, which is what every snapshot did before
+ * this setting existed.
+ */
+export function normalizeCheckpointScope(value: unknown): CheckpointScope {
+  return value === 'code' ? 'code' : 'all'
 }

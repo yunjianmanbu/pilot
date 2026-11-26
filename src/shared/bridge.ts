@@ -10,6 +10,7 @@
 import type {
   ApprovalMode,
   CheckpointRestoreMode,
+  CheckpointScope,
   ContributionEvidence,
   MessageDelivery,
   MessageOptions,
@@ -27,6 +28,7 @@ import type {
   TodoPriority,
   UpdateState,
 } from '../shared/types'
+import type { WorkspacePackScope } from './workspace-pack'
 
 /**
  * `undefined` 在 JSON 里会变成 `null`，而 IPC 里两者并不等价：`options` 位置传
@@ -176,6 +178,9 @@ export function createBridge(rpc: BridgeRpc): PilotBridge {
     removeCompanionRoot: (path: string) => invoke('pilot:companion-root-remove', path),
 
     pickFolder: (title?: string) => invoke('pilot:pick-folder', title),
+    exportWorkspacePack: (workspacePath: string, scope?: Partial<WorkspacePackScope>) =>
+      invoke('pilot:pack-export', workspacePath, scope),
+    importWorkspacePack: (targetPath?: string) => invoke('pilot:pack-import', targetPath),
     openWorkspace: (path: string) => invoke('pilot:workspace-open', path),
     activateSession: (sessionId: string) => invoke('pilot:session-activate', sessionId),
     removeWorkspace: (path: string) => invoke('pilot:workspace-remove', path),
@@ -221,6 +226,8 @@ export function createBridge(rpc: BridgeRpc): PilotBridge {
       return invoke('pilot:knowledge-pairs', sessionId, query, limit)
     },
     sessionLinks: (sessionId: string) => invoke('pilot:session-links', sessionId),
+    allSessionLinks: () => invoke('pilot:session-links-all'),
+    allSessionDocuments: () => invoke('pilot:session-documents-all'),
     toolsCatalog: (sessionId: string) => invoke('pilot:tools-catalog', sessionId),
     toolsCatalogForWorkspace: (workspacePath: string) =>
       invoke('pilot:tools-catalog-workspace', workspacePath),
@@ -308,6 +315,10 @@ export function createBridge(rpc: BridgeRpc): PilotBridge {
     qualityTune: (path: string) => invoke('pilot:quality-tune', path),
     listCheckpoints: (sessionId: string) =>
       invoke('pilot:checkpoints-list', sessionId),
+    previewCheckpoints: (
+      workspacePath: string,
+      options?: { ignore?: readonly string[]; scope?: CheckpointScope },
+    ) => invoke('pilot:checkpoint-preview', workspacePath, options),
     createCheckpoint: (sessionId: string, label?: string) =>
       invoke('pilot:checkpoint-create', sessionId, label),
     restoreCheckpoint: (
@@ -432,6 +443,7 @@ export function createBridge(rpc: BridgeRpc): PilotBridge {
     previewFile: (path: string, file: string) => invoke('pilot:file-preview', path, file),
     revealFile: (path: string, file: string) => invoke('pilot:file-reveal', path, file),
     openFile: (path: string, file: string) => invoke('pilot:file-open', path, file),
+    renderFile: (path: string, file: string) => invoke('pilot:file-render', path, file),
     openDocument: (workspace: string, file: string) =>
       invoke('pilot:doc-open', workspace, file),
     documentState: () => invoke('pilot:doc-state'),

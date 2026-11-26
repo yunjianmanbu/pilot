@@ -17,6 +17,10 @@ export type MainView =
   | 'models'
   | 'preferences'
   | 'plugins'
+  /** 左下角三个全局资源页：知识（消息检索）、链接、办公文档。 */
+  | 'knowledge'
+  | 'links'
+  | 'documents'
 
 export interface ToolView {
   id: string
@@ -697,9 +701,44 @@ export function applyLiveDelta(
       ? appendLiveProcessText(live, delta.text)
       : { ...live, content: live.content + delta.text }
     : live
-  return delta.reasoning
-    ? { ...withText, reasoning: withText.reasoning + delta.reasoning }
-    : withText
+  return delta.reasoning ? appendLiveReasoning(withText, delta.reasoning) : withText
+}
+
+/**
+ * Append streamed thinking to the live run's process parts.
+ *
+ * Thinking used to live in a block of its own above the answer, which appeared
+ * when the model started thinking and vanished the moment the step settled - the
+ * transcript moved up and down under the reader's eyes on every step. Writing the
+ * text into the step box instead keeps it where the rest of the work is, and the
+ * folded row only ever shows its first line, so a growing stream cannot change
+ * the height of the page.
+ *
+ * The part key is derived from the step, not from the tool call that ends it: the
+ * block is created by the first delta of the step and keeps its identity until
+ * the run ends, so React updates the row instead of remounting it.
+ */
+export function appendLiveReasoning(live: LiveRun, text: string, at?: string): LiveRun {
+  if (!text) return live
+  const key = `r-${live.step}`
+  const parts = live.parts ?? []
+  const last = parts[parts.length - 1]
+  const reasoning = live.reasoning + text
+  if (last && last.kind === 'reasoning' && last.key === key) {
+    return {
+      ...live,
+      reasoning,
+      parts: [...parts.slice(0, -1), { ...last, text: last.text + text }],
+    }
+  }
+  return {
+    ...live,
+    reasoning,
+    parts: [
+      ...parts,
+      { kind: 'reasoning', key, text, at: at ?? new Date().toISOString() },
+    ],
+  }
 }
 
 /**
@@ -783,7 +822,12 @@ export function liveProcess(live: LiveRun | undefined): Extract<UIMessage, { kin
   if (!live) return null
   const hasTools = live.tools.length > 0
   const hasText = live.processText.some((part) => part.trim())
-  const hasReasoning = live.processReasoning.some((part) => part.trim())
+  // Thinking that has not yet been claimed by a tool call lives only in the
+  // parts (and in `reasoning`), so the box has to open on it: the reader asked
+  // to see thinking inside the step box, not in a separate block that flickers.
+  const hasReasoning =
+    live.processReasoning.some((part) => part.trim()) ||
+    (live.parts ?? []).some((part) => part.kind === 'reasoning' && part.text.trim())
   if (!hasTools && !hasText && !hasReasoning && !live.compacted && !live.error) return null
   return {
     kind: 'process',

@@ -8,21 +8,23 @@ import type {
   WorkspaceSummary,
 } from '../../../shared/types'
 import {
+  BookmarkIcon,
+  BookOpenIcon,
   BrainIcon,
   ChevronDownIcon,
   ClockIcon,
   FeedbackIcon,
+  FilesIcon,
   FolderIcon,
-  LayersIcon,
+  LinkIcon,
   ListCheckIcon,
   PauseIcon,
   PilotLogo,
   PlusIcon,
+  PlugIcon,
   RefreshIcon,
   SearchIcon,
   SettingsIcon,
-  SparkIcon,
-  SunIcon,
   TodoIcon,
   TrashIcon,
   WrenchIcon,
@@ -656,11 +658,38 @@ export function Sidebar({
           </button>
           <button
             type="button"
+            className={`footer-nav-item${view === 'knowledge' ? ' is-active' : ''}`}
+            title={t("全局知识：所有会话的提问与回复，可按项目、会话筛选")}
+            onClick={() => onView('knowledge')}
+          >
+            <BookOpenIcon width={16} height={16} />
+            <span className="footer-nav-label">{t("知识")}</span>
+          </button>
+          <button
+            type="button"
+            className={`footer-nav-item${view === 'links' ? ' is-active' : ''}`}
+            title={t("全局链接：所有会话里出现过的网址")}
+            onClick={() => onView('links')}
+          >
+            <LinkIcon width={16} height={16} />
+            <span className="footer-nav-label">{t("链接")}</span>
+          </button>
+          <button
+            type="button"
+            className={`footer-nav-item${view === 'documents' ? ' is-active' : ''}`}
+            title={t("全局文档：所有会话产出的办公文档与 Markdown 报告，不含代码与脚本")}
+            onClick={() => onView('documents')}
+          >
+            <FilesIcon width={16} height={16} />
+            <span className="footer-nav-label">{t("文档")}</span>
+          </button>
+          <button
+            type="button"
             className={`footer-nav-item${view === 'memory' ? ' is-active' : ''}`}
             title={t("项目记忆")}
             onClick={() => onView('memory')}
           >
-            <BrainIcon width={16} height={16} />
+            <BookmarkIcon width={16} height={16} />
             <span className="footer-nav-label">
               {t("记忆")}{memoryCount > 0 ? <span className="footer-badge">{memoryCount}</span> : null}
             </span>
@@ -692,7 +721,7 @@ export function Sidebar({
             title={t("插件市场与插件助手")}
             onClick={() => onView('plugins')}
           >
-            <LayersIcon width={16} height={16} />
+            <PlugIcon width={16} height={16} />
             <span className="footer-nav-label">{t("插件")}</span>
           </button>
           <button
@@ -701,7 +730,7 @@ export function Sidebar({
             title={t("模型：会话、复盘与评估引用的全部端点")}
             onClick={() => onView('models')}
           >
-            <SparkIcon width={16} height={16} />
+            <BrainIcon width={16} height={16} />
             <span className="footer-nav-label">{t("模型")}</span>
           </button>
           <button
@@ -710,7 +739,7 @@ export function Sidebar({
             title={t("偏好：外观与界面语言")}
             onClick={() => onView('preferences')}
           >
-            <SunIcon width={16} height={16} />
+            <SettingsIcon width={16} height={16} />
             <span className="footer-nav-label">{t("偏好")}</span>
           </button>
           <button

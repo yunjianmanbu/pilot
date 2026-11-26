@@ -31,10 +31,17 @@ function documentFolder(preview: FilePreview): string {
  */
 export function FilePreviewBody({
   preview,
+  workspacePath,
   onOpenWindow,
   onOpenExternal,
 }: {
   preview: FilePreview
+  /**
+   * Absolute path of the open workspace. The high-fidelity document render
+   * needs it: the main process resolves the file inside this root and only then
+   * hands it to an office application.
+   */
+  workspacePath?: string
   /** Omit inside the standalone window: opening a window from it would nest. */
   onOpenWindow?: () => void
   /**
@@ -134,6 +141,21 @@ export function FilePreviewBody({
           <span className="preview-tools-hint">{preview.language}</span>
         )}
         <span className="preview-tools-gap" />
+        {/*
+          Always reachable, whatever the in-app renderer managed to draw: the
+          layout a document will really have is sometimes only visible in the
+          application that authored it.
+        */}
+        {isDocumentKind(preview.kind) && onOpenExternal ? (
+          <button
+            type="button"
+            className="preview-window-button"
+            title={t('用本机的 Word / Excel / PowerPoint 等软件打开')}
+            onClick={onOpenExternal}
+          >
+            {t('本地软件打开')}
+          </button>
+        ) : null}
         {onOpenWindow ? (
           <button
             type="button"
@@ -196,7 +218,11 @@ export function FilePreviewBody({
         ) : null}
 
         {isDocumentKind(preview.kind) ? (
-          <DocumentPreview preview={preview} onOpenFallback={onOpenExternal} />
+          <DocumentPreview
+            preview={preview}
+            {...(workspacePath ? { workspacePath } : {})}
+            onOpenFallback={onOpenExternal}
+          />
         ) : null}
 
         {preview.kind === 'text' ? <pre className="preview-code">{preview.content}</pre> : null}

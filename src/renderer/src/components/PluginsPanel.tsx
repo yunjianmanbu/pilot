@@ -14,8 +14,8 @@ import {
   CheckIcon,
   DownloadIcon,
   FolderIcon,
-  LayersIcon,
   PlusIcon,
+  PlugIcon,
   RefreshIcon,
   SparkIcon,
   TrashIcon,
@@ -408,7 +408,7 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
         <div className="page-head">
           <div>
             <div className="page-eyebrow">
-              <LayersIcon width={13} height={13} />
+              <PlugIcon width={13} height={13} />
               {t("能力扩展")}
             </div>
             <h1>{t("插件")}</h1>
@@ -416,7 +416,7 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
           </div>
         </div>
         <div className="empty-panel">
-          <LayersIcon width={30} height={30} />
+          <PlugIcon width={30} height={30} />
           <strong>{t("还没有选择工作区")}</strong>
           <span>{t("选择一个工作区后，这里会显示可安装的插件市场、已安装插件和插件助手。")}</span>
         </div>
@@ -429,7 +429,7 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
       <div className="page-head">
         <div>
           <div className="page-eyebrow">
-            <LayersIcon width={13} height={13} />
+            <PlugIcon width={13} height={13} />
             {t("能力扩展")}
           </div>
           <h1>{t("插件市场与插件助手")}</h1>
@@ -701,7 +701,7 @@ export function PluginsPanel({ workspace }: { workspace: WorkspaceSummary | null
             </div>
           ) : data.plugins.length === 0 ? (
             <div className="empty-panel">
-              <LayersIcon width={30} height={30} />
+              <PlugIcon width={30} height={30} />
               <strong>{t("还没有安装插件")}</strong>
               <span>{t("从「市场」装一个，或用「插件助手」把自己的插件生成到某个目录后导入。")}</span>
             </div>

@@ -224,11 +224,6 @@ describe('checkpoint service', () => {
     const b = await makeWorkspace('b')
     const service = new CheckpointService(userDataDir, store, { watch: false })
 
-    const time = async (run: () => Promise<unknown>): Promise<number> => {
-      const startedAt = Date.now()
-      await run()
-      return Date.now() - startedAt
-    }
     const snap = (target: { dir: string; session: { id: string } }, label: string) =>
       service.create({
         sessionId: target.session.id,
@@ -241,13 +236,36 @@ describe('checkpoint service', () => {
 
     await snap(a, 'warm a')
     await snap(b, 'warm b')
-    const sequential = await time(async () => {
-      await snap(a, 'sequential a')
-      await snap(b, 'sequential b')
-    })
-    const parallel = await time(async () => {
-      await Promise.all([snap(a, 'parallel a'), snap(b, 'parallel b')])
-    })
+    // Comparing wall-clock "parallel" against "sequential" was the original
+    // proxy for "not serialized", but it is not a usable one here: the walk
+    // already saturates the libuv thread pool (DIR_CONCURRENCY 16 vs 4 pooled
+    // threads), so two extra workspaces overlap the same threads and the two
+    // totals land inside each other's noise. Measured on this machine, HEAD
+    // alone flipped between passing and 238 > 207 depending on system load.
+    //
+    // What a store-wide lock actually changes is *when the two finish*: the
+    // second one cannot complete until the first is done. So time each snapshot
+    // on its own to get a reference, then check that the two concurrent ones
+    // complete inside a fraction of it. The reference is measured in the same
+    // conditions as the gap, so a slow or busy machine scales both sides.
+    const timed = async (
+      target: { dir: string; session: { id: string } },
+      label: string,
+    ): Promise<number> => {
+      const startedAt = Date.now()
+      await snap(target, label)
+      return Date.now() - startedAt
+    }
+    const reference = Math.min(await timed(a, 'reference a'), await timed(b, 'reference b'))
+    const finished: number[] = []
+    await Promise.all([
+      snap(a, 'parallel a').then(() => finished.push(Date.now())),
+      snap(b, 'parallel b').then(() => finished.push(Date.now())),
+    ])
+    const gap = Math.abs(finished[0]! - finished[1]!)
+    // Serialized, the second completion trails the first by about one snapshot,
+    // so the gap approaches `reference`; truly concurrent, it is a few ms.
+    expect(gap).toBeLessThan(Math.max(reference * 0.5, 20))
 
     // Both workspaces are done and correct — a shared lock would also do that.
     const listA = await service.list(a.session.id)
@@ -256,9 +274,6 @@ describe('checkpoint service', () => {
     expect(listB.map((entry) => entry.label)).toContain('parallel b')
     expect(listA.find((entry) => entry.label === 'parallel a')?.files).toBe(60)
     expect(listB.find((entry) => entry.label === 'parallel b')?.files).toBe(60)
-    // The margin is deliberately loose: this asserts "not serialized", not a
-    // speedup number. A global lock made these two runs add up end to end.
-    expect(parallel).toBeLessThan(Math.max(sequential, 40))
     service.dispose()
   }, 30_000)
 
@@ -1257,5 +1272,79 @@ describe('checkpoint service', () => {
     const healed = (await service.list(session.id)).find((entry) => entry.id === first.id)
     expect(healed?.baseline).toBe(true)
     expect(second.baseline).toBeUndefined()
+  })
+
+  describe('preview', () => {
+    it('describes the next snapshot without writing one', async () => {
+      const { service, workspacePath } = await setup()
+      await mkdir(join(workspacePath, 'zz-media'), { recursive: true })
+      await writeFile(join(workspacePath, 'zz-media', 'shot.png'), 'png', 'utf8')
+
+      const preview = await service.preview({ workspacePath })
+
+      expect(preview.scope).toBe('all')
+      expect(preview.files).toBe(2)
+      expect(preview.bytes).toBeGreaterThan(0)
+      expect(preview.omittedDirs).toEqual([])
+      expect(preview.truncated).toBe(false)
+      // Read-only: nothing was hashed into the blob store.
+      expect(await blobFiles()).toEqual([])
+    })
+
+    it('narrows the count to source, docs and config in code scope', async () => {
+      const { service, workspacePath } = await setup()
+      await mkdir(join(workspacePath, 'zz-notes'), { recursive: true })
+      await writeFile(join(workspacePath, 'zz-notes', 'readme.md'), '# notes\n', 'utf8')
+      await writeFile(join(workspacePath, 'zz-notes', 'trace.log'), 'log\n', 'utf8')
+      await mkdir(join(workspacePath, 'zz-media'), { recursive: true })
+      await writeFile(join(workspacePath, 'zz-media', 'icon.png'), 'png', 'utf8')
+      await writeFile(join(workspacePath, 'zz-media', 'config.json'), '{}\n', 'utf8')
+
+      const all = await service.preview({ workspacePath })
+      const code = await service.preview({ workspacePath, scope: 'code' })
+
+      // src/a.txt, b.txt, readme.md, trace.log, config.json (the png never counts)
+      expect(all.files).toBe(5)
+      expect(code.files).toBe(4)
+      expect(code.scope).toBe('code')
+      // The same walk answers what `code` would keep, so the scope selector can
+      // show the trade-off before the user switches away from `all`.
+      expect(all.codeFiles).toBe(4)
+      expect(all.codeBytes).toBeGreaterThan(0)
+      expect(all.codeBytes).toBeLessThan(all.bytes)
+      expect(code.codeFiles).toBe(code.files)
+    })
+
+    it('honours the snapshot ignore list', async () => {
+      const { service, workspacePath } = await setup()
+      await mkdir(join(workspacePath, 'zz-notes'), { recursive: true })
+      await writeFile(join(workspacePath, 'zz-notes', 'readme.md'), '# notes\n', 'utf8')
+
+      const preview = await service.preview({ workspacePath, ignore: ['zz-notes'] })
+
+      expect(preview.files).toBe(2)
+    })
+
+    it('names a directory the snapshot cannot hold', async () => {
+      const { service, workspacePath } = await setup()
+      await mkdir(join(workspacePath, 'zz-media'), { recursive: true })
+      // Past the hint thresholds (200 files): a media directory is dropped whole
+      // from every snapshot, so the panel has to say so instead of letting the
+      // user believe a rollback would bring it back.
+      for (let index = 0; index < 205; index += 1) {
+        await writeFile(join(workspacePath, 'zz-media', `frame-${index}.png`), 'x', 'utf8')
+      }
+
+      const preview = await service.preview({ workspacePath })
+
+      expect(preview.omittedDirs.map((dir) => dir.path)).toContain('zz-media')
+      expect(preview.omittedDirs.find((dir) => dir.path === 'zz-media')).toMatchObject({
+        path: 'zz-media',
+        files: 205,
+      })
+      // A media tree that eats the `all` budget must not shrink the source count:
+      // the two numbers spend their own budgets.
+      expect(preview.codeFiles).toBe(2)
+    }, 20_000)
   })
 })

@@ -469,6 +469,7 @@ export const en: Record<string, string> = {
     "No API key yet; open Settings to get started.",
   "局域网直连": "Direct LAN",
   "展开": "Expand",
+  "详情": "Details",
   "工作区": "Workspace",
   "工作区 Hooks": "Workspace hooks",
   "工作区已移除。": "Workspace removed.",
@@ -547,6 +548,10 @@ export const en: Record<string, string> = {
   "待发送图片": "Pending images",
   "待安装": "Ready to install",
   "思考过程": "Reasoning",
+  "展开查看完整思考": "Show the full reasoning",
+  "展开查看完整说明": "Show the full note",
+  "正在思考，内容会继续追加。": "Thinking — this keeps updating.",
+  "这段思考已经结束。": "This reasoning is finished.",
   "恢复": "Restore",
   "我": "Me",
   "我的提问": "My questions",
@@ -1860,6 +1865,30 @@ export const en: Record<string, string> = {
   "这类文档还不支持应用内预览": "This kind of document cannot be previewed in the app yet",
   "可以在系统应用里打开查看（.doc / .xls / .ppt / .odt 等旧格式请用系统应用）。":
     "You can open it with a system application (legacy formats such as .doc / .xls / .ppt / .odt need one).",
+  "用本机的 Word / Excel / PowerPoint 等软件打开":
+    "Open with Word / Excel / PowerPoint or similar software on this machine",
+  "本地软件打开": "Open locally",
+  // 文件预览：交给本机办公软件排版（WPS → Office → LibreOffice）
+  "正在用本机办公软件排版…": "Laying out with the local office application…",
+  "第一次打开要等几秒，之后同一个文件会直接读缓存。":
+    "The first open takes a few seconds; the same file then reads from cache.",
+  "先看内置版式": "Show the built-in layout first",
+  "由本机 {v1} 排版，与它自己打印出来的一致。":
+    "Laid out by {v1} on this machine: the same pages it would print.",
+  "这台电脑上没有找到 WPS、Office 或 LibreOffice。":
+    "No WPS, Office or LibreOffice was found on this machine.",
+  "装其中任意一个，文档就会按它自己的排版显示；现在用的是应用内置解析。":
+    "Install any one of them and documents show in their own layout; the built-in parser is used for now.",
+  "本机办公软件没能把这份文档转成 PDF。":
+    "The office application on this machine could not turn this document into a PDF.",
+  "现在用的是应用内置解析；要看真正的排版，可以用系统应用直接打开。":
+    "The built-in parser is used for now; open it with a system application to see the real layout.",
+  "文件太大，没有交给本机办公软件排版。":
+    "This file is too large to hand to the office application.",
+  "现在用的是应用内置解析；用系统应用打开可以保留完整排版。":
+    "The built-in parser is used for now; opening it with a system application keeps the full layout.",
+  "本机办公软件不可用，现在用的是应用内置解析。":
+    "No office application is available; the built-in parser is used.",
   "表格较大，只显示前 {v1} 行 × {v2} 列（共 {v3} 行 × {v4} 列）。":
     "The table is large: showing the first {v1} rows × {v2} columns of {v3} rows × {v4} columns.",
   "大纲预览：文字与图片按阅读顺序排列，不含原版式":
@@ -2532,7 +2561,26 @@ export const en: Record<string, string> = {
   "运行记录": "Run records",
   "源码自检": "Source self-check",
   "已开会话": "Session opened",
+  "快照范围": "Snapshot scope",
+  "全部文件：工作区里未被排除的文件都保存，回退时一并恢复，代价是大型目录会占满回退点空间。仅源码、文档与配置：只保存代码类文件，回退只覆盖这些文件，不会删除或恢复其它内容。":
+    "All files: every file not excluded in the workspace is saved and restored together, at the cost of large folders filling up the checkpoint budget. Source, docs and config only: only code-like files are saved, so a rollback touches nothing else.",
+  "仅源码、文档与配置": "Source, docs and config only",
   "已跳过": "Skipped",
+  "跳过此目录": "Skip this folder",
+  "仅源码": "Source only",
+  "全部文件": "All files",
+  "按当前跳过路径估算：全部文件 {v1} 个 / {v2}；仅源码、文档与配置 {v3} 个 / {v4}。":
+    "Estimated with the current skipped paths: {v1} files / {v2} for all files; {v3} files / {v4} for source, docs and config only.",
+  "只扫描了一部分，实际数字会更大。": "Only part of the workspace was scanned, so the real numbers are larger.",
+  "正在统计这个工作区的文件…": "Counting files in this workspace…",
+  "无法统计这个工作区：{v1}": "Could not count this workspace: {v1}",
+  "回退时只覆盖这个范围里的文件": "A rollback only overwrites files inside this scope",
+  "这次快照放不下以下目录（超出单次快照的大小预算），回退时不会恢复它们：":
+    "This snapshot could not fit the folders below (past the per-snapshot size budget), so a rollback will not restore them:",
+  "工作区里有 {v1} 个目录不会进入回退点：{v2}。回退时不会恢复它们，可在回退点面板里跳过。":
+    "{v1} folder(s) in this workspace will not enter a checkpoint: {v2}. A rollback will not restore them; you can skip them from the checkpoint panel.",
+  "只扫描了工作区的一部分，已扫到的 {v1} 等目录不会进入回退点；回退时不会恢复它们，可在回退点面板里跳过。":
+    "Only part of the workspace was scanned; folders such as {v1} will not enter a checkpoint, so a rollback will not restore them. You can skip them from the checkpoint panel.",
   "自主优化闭环": "Self-optimization loop",
   "Pilot 定时把运行记录、内视结果、源码自检与反思结论汇总成一份信号清单，在护栏内只挑一件事，用普通会话去修。取舍类问题（页面设计、项目结构、交互体验、输出质量）只列不自动动手；开出来的会话照常走沙箱与审批，不打开「允许自动动手」时什么都不会改。":
     "On a schedule Pilot folds run records, self-check results, source risks and reflection findings into one signal list, then picks exactly one item and fixes it in a normal session. Trade-off topics (page design, project structure, interaction experience, output quality) are listed but never fixed automatically; every session still goes through the sandbox and approvals, and with 'allow automatic fixes' off nothing is changed.",
@@ -2886,4 +2934,101 @@ export const en: Record<string, string> = {
   "已新建规则 {name}（{source}）。": "Created rule {name} ({source}).",
   "名称与正则不能为空，且正则必须能编译。":
     "Name and pattern are required, and the pattern has to compile.",
+  "工作区导出与导入": "Export and import a workspace",
+  "把整个工作区打成一个 .zip 包，在另一台机器的 Pilot 里完整恢复。":
+    "Pack the whole workspace into one .zip and restore it in Pilot on another machine.",
+  "导出": "Export",
+  "导入": "Import",
+  "导出这个工作区（可勾选范围，含密钥）":
+    "Export this workspace (pick what to include, secrets optional)",
+  "从 .pilotpack.zip 导入工作区": "Import a workspace from a .pilotpack.zip",
+  "还没有打开工作区：先在工作区列表里选一个再导出。":
+    "No workspace is open yet: pick one in the workspace list first.",
+  "会话与任务": "Sessions and tasks",
+  "全部会话、消息、待办、计划、评审报告与定时任务。":
+    "Every session, message, todo, plan, review report and scheduled task.",
+  "按 .gitignore 与内置排除规则跳过 node_modules、.git 等目录。":
+    "Skips node_modules, .git and similar folders via .gitignore and the built-in rules.",
+  "模型端点、审批模式、通知、反思、主题等；不含密钥本身。":
+    "Model endpoints, approval mode, notifications, reflection, theme and so on; not the secrets themselves.",
+  "密钥": "Secrets",
+  "模型 API Key、SMTP 授权码与测试验证码。导出包里是明文。":
+    "Model API keys, the SMTP password and the test verification code. They sit in the package as plaintext.",
+  "检查点快照": "Checkpoint snapshots",
+  "可以让导入端回退到导出时的文件状态，体积较大。":
+    "Lets the other machine roll back to the exported file state; this makes the package much larger.",
+  "条待办": "todos",
+  "个定时任务": "scheduled tasks",
+  "个检查点文件": "checkpoint files",
+  "条密钥": "secrets",
+  "导入失败": "Import failed",
+  "这个包会以明文包含密钥": "This package carries secrets in plaintext",
+  "模型 API Key、SMTP 授权码与测试验证码会以可读文本写进 .zip。任何拿到这个文件的人都能读到它们；导入后会用本机 safeStorage 重新加密。":
+    "Model API keys, the SMTP password and the test verification code are written into the .zip as readable text. Anyone who gets this file can read them; importing re-encrypts them with safeStorage on this machine.",
+  "我了解此包含明文密钥，会妥善保管":
+    "I understand this package holds plaintext secrets and will keep it safe",
+  "已导出": "Exported",
+  "包含 {v1} 个会话、{v2} 个文件、{v3}": "Contains {v1} sessions, {v2} files, {v3}",
+  "已写出导出包": "Package written",
+  "；其中 {v1} 条密钥为明文": "; {v1} secrets inside are plaintext",
+  "正在打包…": "Packing…",
+  "导出为 .zip": "Export as .zip",
+  "导入会先选一个导出包，再选目标文件夹；包里的文件、会话、待办、定时任务与设置会合并进本机，同名会话按 id 去重，不会覆盖已有内容。":
+    "Importing asks for a package first, then for a target folder. Files, sessions, todos, scheduled tasks and settings are merged into this machine; sessions are deduplicated by id, so nothing you already have is overwritten.",
+  "如果包里带了密钥，导入时会用它重新加密写回本机，包文件本身可以直接删除。":
+    "If the package carries secrets, importing re-encrypts them for this machine, so the package itself can be deleted afterwards.",
+  "正在读取导出包…": "Reading the package…",
+  "包较大时可能需要几分钟，请不要关闭窗口。":
+    "A large package can take a few minutes; please keep this window open.",
+  "已导入「{v1}」": "Imported “{v1}”",
+  "包里没有可导入的内容": "The package had nothing to import",
+  "打开这个工作区": "Open this workspace",
+  "正在导入…": "Importing…",
+  "选择导出包并导入": "Choose a package and import",
+  "工作区已导入。": "Workspace imported.",
+  "全局知识": "Global knowledge",
+  "全局链接": "Global links",
+  "全局文档": "Global documents",
+  "全局资源": "Global resources",
+  "知识": "Knowledge",
+  "链接": "Links",
+  "文档": "Documents",
+  "全局知识：所有会话的提问与回复，可按项目、会话筛选":
+    "Global knowledge: every question and answer across sessions, filterable by project and session",
+  "全局链接：所有会话里出现过的网址":
+    "Global links: every URL that appeared in any session",
+  "全局文档：所有会话产出的办公文档与 Markdown 报告，不含代码与脚本":
+    "Global documents: office files and Markdown reports sessions produced, excluding code and scripts",
+  "所有会话里出现过的网址，按项目与会话筛选后可直接打开。":
+    "Every URL that appeared in a session, filterable by project and session and openable right here.",
+  "所有会话产出的办公文档与 Markdown 报告，不含代码与脚本。":
+    "Office files and Markdown reports sessions produced; code and scripts are excluded.",
+  "搜索网址、域名或上下文": "Search URL, host or context",
+  "搜索文件名、路径或类型": "Search file name, path or type",
+  "搜索链接": "Search links",
+  "搜索文档": "Search documents",
+  "按项目筛选": "Filter by project",
+  "全部项目": "All projects",
+  "按会话筛选": "Filter by session",
+  "全部会话": "All sessions",
+  "匹配 {v1} / 共 {v2} 条": "Matched {v1} of {v2}",
+  "共 {v1} 条": "{v1} in total",
+  "正在汇总…": "Collecting…",
+  "没有匹配的条目": "Nothing matched",
+  "换一个关键词，或把项目与会话筛选放宽。":
+    "Try another keyword, or loosen the project and session filters.",
+  "会话里出现过的网址会汇总到这里。": "URLs mentioned in sessions show up here.",
+  "会话写出过的 Word、Excel、PowerPoint、PDF 与 Markdown 会汇总到这里。":
+    "Word, Excel, PowerPoint, PDF and Markdown files sessions wrote show up here.",
+  "条链接": "links",
+  "份文档": "files",
+  "在浏览器打开": "Open in browser",
+  "预览": "Preview",
+  "用本机办公软件打开；预览排版不对时用它兜底":
+    "Open with the office app on this machine; use it when the preview layout is off",
+  "本机应用": "Local app",
+  "链接来自会话正文，同一个会话里重复提到的网址只列一次。":
+    "Links come from session text; a URL mentioned twice in one session is listed once.",
+  "文档来自会话里成功的 write/edit 调用，按扩展名收录；代码、脚本与数据文件不在其中。":
+    "Documents come from successful write/edit calls in sessions and are collected by extension; code, scripts and data files are excluded.",
 }

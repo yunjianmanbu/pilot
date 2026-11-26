@@ -7,7 +7,7 @@ import {
   MEMORY_STORE_LIMIT,
   memoryCategoryOf,
 } from '../../../shared/memory'
-import { BrainIcon, PlusIcon, SparkIcon, TrashIcon } from '../icons'
+import { BookmarkIcon, PlusIcon, SparkIcon, TrashIcon } from '../icons'
 import { formatRelative } from '../ui'
 import { t } from '../i18n'
 
@@ -85,7 +85,7 @@ export function MemoryPanel({
       <div className="page-head">
         <div>
           <div className="page-eyebrow">
-            <BrainIcon width={13} height={13} />
+            <BookmarkIcon width={13} height={13} />
             {t("长期上下文")}</div>
           <h1>{t("项目记忆")}</h1>
           <p>
@@ -143,7 +143,7 @@ export function MemoryPanel({
 
           {memory.length === 0 ? (
             <div className="empty-panel">
-              <BrainIcon width={30} height={30} />
+              <BookmarkIcon width={30} height={30} />
               <strong>{t("还没有项目记忆")}</strong>
               <span>
                 {t("Pilot 会在失败运行、工具报错、负反馈或长时间探查后自动复盘，也可以在上面的输入框里直接写入长期偏好。")}</span>

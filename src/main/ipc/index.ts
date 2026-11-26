@@ -8,6 +8,8 @@
  */
 import { createIpcContext, type IpcContext } from '../ipc-context'
 import { registerCompanionIpc } from './companion'
+import { registerGlobalLibraryIpc } from './global-resources'
+import { registerPackIpc } from './pack'
 import { registerPersonalIpc } from './personal'
 import { registerSessionIpc } from './session'
 import { registerSettingsIpc } from './settings'
@@ -15,9 +17,11 @@ import { registerWorkIpc } from './work'
 
 export function registerAllIpc(ctx: IpcContext = createIpcContext()): IpcContext {
   registerSessionIpc(ctx)
+  registerGlobalLibraryIpc(ctx)
   registerWorkIpc(ctx)
   registerSettingsIpc(ctx)
   registerCompanionIpc(ctx)
+  registerPackIpc(ctx)
   registerPersonalIpc(ctx)
   return ctx
 }

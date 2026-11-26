@@ -78,7 +78,8 @@ export function KnowledgePanel({
   sessions,
   activeWorkspace,
   activeSessionId,
-  scope,
+  scope: scopeProp,
+  lockedScope,
   sessionId,
   onScopeChange,
   onSessionChange,
@@ -92,6 +93,11 @@ export function KnowledgePanel({
   activeWorkspace: string | null
   activeSessionId: string | null
   scope: KnowledgeScope
+  /**
+   * 把页面钉死在一个层级上。左下角「全局知识」用它：一个只回答「全部会话」
+   * 的页面里再摆一层层级切换，只会让人以为选中的是别的东西。
+   */
+  lockedScope?: KnowledgeScope
   sessionId: string | null
   onScopeChange: (scope: KnowledgeScope) => void
   onSessionChange: (sessionId: string | null) => void
@@ -100,6 +106,9 @@ export function KnowledgePanel({
   onOpenSession: (session: SessionSummary) => void
   onError: (message: string) => void
 }) {
+  // 层级只有一个来源：钉死的层级优先，其次才是用户选的那一层。
+  const scope = lockedScope ?? scopeProp
+
   const [query, setQuery] = useState('')
   const [workspaceFilter, setWorkspaceFilter] = useState('')
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all')
@@ -136,10 +145,15 @@ export function KnowledgePanel({
     () => (sessionId ? sessionById.get(sessionId) ?? null : null),
     [sessionById, sessionId],
   )
-  const orderedSessions = useMemo(
-    () => [...sessions].sort((left, right) => stamp(right.updatedAt) - stamp(left.updatedAt)),
-    [sessions],
-  )
+  const orderedSessions = useMemo(() => {
+    const scoped =
+      scope === 'global' && workspaceFilter
+        ? sessions.filter((session) => pathKey(session.workspacePath) === pathKey(workspaceFilter))
+        : sessions
+    return [...scoped].sort((left, right) => stamp(right.updatedAt) - stamp(left.updatedAt))
+  }, [scope, sessions, workspaceFilter])
+  /** 全局层被钉死时，会话选择也要出现，否则「按会话筛选」无入口。 */
+  const sessionPicker = scope === 'session' || (scope === 'global' && lockedScope !== undefined)
   const scopedSessions = plan.sessions
   const totalMessages = useMemo(
     () => scopedSessions.reduce((total, session) => total + (Number(session.messageCount) || 0), 0),
@@ -170,6 +184,9 @@ export function KnowledgePanel({
     const timer = window.setTimeout(() => {
       const filter: MessageSearchFilter = {}
       if (scope === 'global' && workspaceFilter) filter.workspacePath = workspaceFilter
+      // 钉死全局层（左下角「全局知识」）时，筛选栏里的会话下拉会叠在项目筛选上；
+      // 会话 id 优先级高于工作区，因为它已经隐含了所属项目。
+      if (scope === 'global' && sessionId) filter.sessionId = sessionId
       if (scope === 'project' && activeWorkspace) filter.workspacePath = activeWorkspace
       if (roleFilter !== 'all') filter.role = roleFilter
       if (rangeFilter !== 'all') {
@@ -192,7 +209,7 @@ export function KnowledgePanel({
         })
     }, 220)
     return () => window.clearTimeout(timer)
-  }, [activeWorkspace, needle, rangeFilter, ready, roleFilter, scope, workspaceFilter, onError])
+  }, [activeWorkspace, needle, rangeFilter, ready, roleFilter, scope, sessionId, workspaceFilter, onError])
 
   // Session level works on instruction→reply pairs instead of raw messages.
   useEffect(() => {
@@ -273,8 +290,8 @@ export function KnowledgePanel({
         <div>
           <div className="page-eyebrow">
             <HistoryIcon width={13} height={13} />
-            {t("三级知识库")}</div>
-          <h1>{t("知识库")}</h1>
+            {lockedScope ? t("全局资源") : t("三级知识库")}</div>
+          <h1>{lockedScope === 'global' ? t("全局知识") : t("知识库")}</h1>
           <p>{scopeDescription(scope)}</p>
         </div>
         <div className="stat-strip">
@@ -287,7 +304,9 @@ export function KnowledgePanel({
         </div>
       </div>
 
-      <div className="knowledge-levels" role="tablist" aria-label={t("知识库层级")}>
+      <div className="knowledge-levels" role="tablist" aria-label={t("知识库层级")}
+        hidden={lockedScope !== undefined}
+      >
         {(['global', 'project', 'session'] as KnowledgeScope[]).map((level) => (
           <button
             type="button"
@@ -351,7 +370,7 @@ export function KnowledgePanel({
             {t("当前项目：")}{activeWorkspace ? workspaceName(activeWorkspace) : t("未选择工作区")}
           </span>
         ) : null}
-        {scope === 'session' ? (
+        {sessionPicker ? (
           <div className="knowledge-filter knowledge-filter-wide">
             <span>{t("会话")}</span>
             <SelectMenu
@@ -361,7 +380,7 @@ export function KnowledgePanel({
               ariaLabel={t("选择会话")}
               maxListWidth={360}
               options={[
-                { value: '', label: t("选择会话") },
+                { value: '', label: scope === 'global' ? t("全部会话") : t("选择会话") },
                 ...orderedSessions.map((session) => ({
                   value: session.id,
                   label: `${session.title || t("未命名会话")} · ${workspaceName(session.workspacePath)}`,

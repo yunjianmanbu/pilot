@@ -20,7 +20,11 @@ import {
 } from '../src/shared/media'
 import { FilePreviewBody } from '../src/renderer/src/components/FilePreviewBody'
 import { Markdown } from '../src/renderer/src/components/Markdown'
-import type { FilePreview } from '../src/shared/types'
+import {
+  renderEngineLabel,
+  renderFallbackCopy,
+} from '../src/renderer/src/components/DocumentPreview'
+import type { DocumentRender, FilePreview } from '../src/shared/types'
 
 function preview(partial: Partial<FilePreview>): FilePreview {
   return {
@@ -126,6 +130,39 @@ describe('preview zoom', () => {
     expect(zoomShortcut('0', true)).toBe(0)
     expect(zoomShortcut('=', false)).toBeNull()
     expect(zoomShortcut('a', true)).toBeNull()
+  })
+})
+
+describe('native layout note', () => {
+  it('names the office application a user would recognise', () => {
+    expect(renderEngineLabel('wps')).toBe('WPS')
+    expect(renderEngineLabel('office')).toBe('Microsoft Office')
+    expect(renderEngineLabel('libreoffice')).toBe('LibreOffice')
+    // No engine means no PDF was produced, so there is nothing to attribute.
+    expect(renderEngineLabel(null)).toBe('')
+  })
+
+  it('explains a missing engine by pointing at what to install', () => {
+    const copy = renderFallbackCopy({ engine: null, reason: 'no-engine' })
+    expect(copy.title).toContain('WPS')
+    expect(copy.detail).toContain('内置解析')
+  })
+
+  it('offers the system application when the engine failed or was skipped', () => {
+    for (const reason of ['failed', 'large'] as const) {
+      const copy = renderFallbackCopy({ engine: null, reason })
+      expect(copy.title.length).toBeGreaterThan(0)
+      expect(copy.detail).toContain('系统应用')
+    }
+  })
+
+  it('keeps one generic line for every other reason', () => {
+    const reasons = ['unsupported', 'missing', 'server'] as const
+    const titles = reasons.map((reason) => renderFallbackCopy({ engine: null, reason }).title)
+    expect(new Set(titles).size).toBe(1)
+    expect(titles[0]).toBe(renderFallbackCopy(null).title)
+    // A converted document needs no fallback copy at all.
+    expect(renderFallbackCopy({ engine: 'wps' } as DocumentRender).title).toBe(titles[0])
   })
 })
 

@@ -44,6 +44,8 @@ import { SystemResourceDialog } from './components/SystemResourceDialog'
 import { SystemToolsPanel } from './components/SystemToolsPanel'
 import { AllTodosPanel } from './components/AllTodosPanel'
 import { AllScheduledPanel } from './components/AllScheduledPanel'
+import { GlobalLibraryPanel } from './components/GlobalLibraryPanel'
+import { KnowledgePanel } from './components/KnowledgePanel'
 import { MemoryPanel } from './components/MemoryPanel'
 import { ModelPanel } from './components/ModelPanel'
 import { PreferencesPanel } from './components/PreferencesPanel'
@@ -68,6 +70,7 @@ import {
 } from './notifications'
 import { TopbarMenu, type TopbarMenuItem } from './components/TopbarMenu'
 import { WorkspaceDialog } from './components/WorkspaceDialog'
+import { WorkspacePackDialog } from './components/WorkspacePackDialog'
 import {
   CopyIcon,
   ClockIcon,
@@ -399,11 +402,25 @@ export function App() {
   /** 「产出质量」裁决面板：入口在顶栏三个点菜单里，不再是通知中心的页签。 */
   const [qualityOpen, setQualityOpen] = useState(false)
   const [view, setView] = useState<MainView>('chat')
+  /**
+   * 左下角「全局知识」页里选中的会话。与当前打开的会话分开：在这里选会话只是
+   * 缩小检索范围，不应真的把主视图切走。
+   */
+  const [librarySessionId, setLibrarySessionId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [settingsFocus, setSettingsFocus] = useState<SettingsFocus>(null)
   const [updateOpen, setUpdateOpen] = useState(false)
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
+  /**
+   * 工作区导出/导入对话框：null 表示关闭。带着要导出的那个工作区，
+   * 因为可以从列表里任意一行导出，不只是当前打开的那个。
+   */
+  const [packDialog, setPackDialog] = useState<{
+    mode: 'export' | 'import'
+    workspacePath: string | null
+    workspaceName: string | null
+  } | null>(null)
   /**
    * 会话资源抽屉：null 表示关闭，否则是当前分类。工作区文件、相关链接、可用
    * 工具、会话知识库和本次产出的文件共用这一个抽屉，切换分类不用另开面板。
@@ -455,6 +472,8 @@ export function App() {
 
   const activeSessionRef = useRef<string | null>(null)
   const activeWorkspaceRef = useRef<string | null>(null)
+  /** 每个工作区每次启动只预览一次快照覆盖范围，不重复走目录。 */
+  const previewedWorkspacesRef = useRef<Set<string>>(new Set())
   const composerSeedKeyRef = useRef(0)
   const sessionRef = useRef<Session | null>(null)
   /** 上一份已加载完的会话：切换期间继续显示它，避免整块闪成「载入会话…」。 */
@@ -854,6 +873,40 @@ export function App() {
     [refreshSessions],
   )
 
+  /**
+   * 回退能救回什么，取决于快照实际覆盖到哪些文件；而单次快照的大小预算会把大
+   * 目录整块排除。打开工作区时先算一次（只读、带时间预算），只在真的有目录进
+   * 不去时才提示。延后两秒再走，避免和会话加载争主进程。
+   */
+  const previewWorkspaceCoverage = useCallback(
+    (workspacePath: string) => {
+      if (previewedWorkspacesRef.current.has(workspacePath)) return
+      previewedWorkspacesRef.current.add(workspacePath)
+      window.setTimeout(() => {
+        window.pilot
+          .previewCheckpoints(workspacePath)
+          .then((preview) => {
+            if (preview.omittedDirs.length === 0) return
+            const names = preview.omittedDirs.map((dir) => dir.path).join('、')
+            pushToast(
+              preview.truncated
+                ? t(
+                    "只扫描了工作区的一部分，已扫到的 {v1} 等目录不会进入回退点；回退时不会恢复它们，可在回退点面板里跳过。",
+                    { v1: names },
+                  )
+                : t(
+                    "工作区里有 {v1} 个目录不会进入回退点：{v2}。回退时不会恢复它们，可在回退点面板里跳过。",
+                    { v1: String(preview.omittedDirs.length), v2: names },
+                  ),
+              'warn',
+            )
+          })
+          .catch(() => undefined)
+      }, 1500)
+    },
+    [pushToast],
+  )
+
   const applyBootstrap = useCallback(
     (data: BootstrapData) => {
       if (
@@ -892,8 +945,15 @@ export function App() {
       if (data.activeSession) void loadSession(data.activeSession)
       else setSessionLoading(false)
       if (data.workspaces.length > 0) void refreshAllSessions(data.workspaces)
+      if (data.activeWorkspace) previewWorkspaceCoverage(data.activeWorkspace)
     },
-    [loadDetail, loadSession, refreshAllSessions, setSessionHasMoreBoth],
+    [
+      loadDetail,
+      loadSession,
+      previewWorkspaceCoverage,
+      refreshAllSessions,
+      setSessionHasMoreBoth,
+    ],
   )
 
   useEffect(() => {
@@ -1108,14 +1168,16 @@ export function App() {
               // step box grows: a report stays the answer, and a recap written
               // after it is carried into the process instead of replacing it.
               const settled = settleLiveAnswer(live, `n-${tool.id}`)
-              // Reasoning and interim text belong to the step that ends with this call.
-              const parts: ProcessPart[] = [
-                ...(settled.parts ?? []),
-                ...(reasoning
-                  ? [{ kind: 'reasoning' as const, key: `r-${tool.id}`, text: reasoning, at: tool.at }]
-                  : []),
-                { kind: 'tool' as const, key: tool.id, toolId: tool.id },
-              ]
+              // 思考在增量到达时就已经是步骤里的一步（appendLiveReasoning），
+              // 这里只在异常路径没留下记录时补一条，否则同一步会渲染两行思考。
+              const parts: ProcessPart[] = [...(settled.parts ?? [])]
+              if (
+                reasoning &&
+                !parts.some((part) => part.kind === 'reasoning' && part.key === `r-${live.step}`)
+              ) {
+                parts.push({ kind: 'reasoning', key: `r-${live.step}`, text: reasoning, at: tool.at })
+              }
+              parts.push({ kind: 'tool' as const, key: tool.id, toolId: tool.id })
               return {
                 ...settled,
                 reasoning: '',
@@ -1728,8 +1790,10 @@ export function App() {
         // 主进程记的「当前会话」跟着走，否则重启后回到的是这个工作区的第一个会话。
         void window.pilot.activateSession(targetId).catch(() => undefined)
       }
+      // 回退能救回什么取决于快照覆盖到哪里，而快照预算会把大目录整块排除。
+      previewWorkspaceCoverage(openedPath)
     },
-    [loadDetail, loadSession, setSessionHasMoreBoth],
+    [loadDetail, loadSession, previewWorkspaceCoverage, setSessionHasMoreBoth],
   )
 
   const newSession = useCallback(
@@ -2854,6 +2918,30 @@ export function App() {
     [applyBootstrap, pushToast],
   )
 
+  /** 从工作区列表打开导出：先关列表弹窗，让勾选范围的对话框独占屏幕。 */
+  const openPackExport = useCallback((workspace: WorkspaceSummary) => {
+    setPackDialog({ mode: 'export', workspacePath: workspace.path, workspaceName: workspace.name })
+  }, [])
+
+  const openPackImport = useCallback(() => {
+    setPackDialog({ mode: 'import', workspacePath: null, workspaceName: null })
+  }, [])
+
+  /**
+   * 导入完成后先重读 bootstrap（包里可能带了设置），再打开这个新工作区。
+   * 不重新读的话，设置项要等到下次启动才生效，看起来像没导进去。
+   */
+  const finishPackImport = useCallback(
+    async (path: string) => {
+      const data = await window.pilot.bootstrap()
+      applyBootstrap(data)
+      await switchWorkspace(path)
+      setView('chat')
+      pushToast(t("工作区已导入。"), 'info')
+    },
+    [applyBootstrap, pushToast, switchWorkspace],
+  )
+
   const revealWorkspace = useCallback(
     async (path: string) => {
       try {
@@ -3157,11 +3245,17 @@ export function App() {
                         ? t("全部待办")
                         : view === 'scheduled'
                           ? t("全部定时任务")
-                          : view === 'plugins'
-                            ? t("插件")
-                            : view === 'models'
-                              ? t("模型")
-                              : t("偏好")}
+                          : view === 'knowledge'
+                            ? t("全局知识")
+                            : view === 'links'
+                              ? t("全局链接")
+                              : view === 'documents'
+                                ? t("全局文档")
+                                : view === 'plugins'
+                                  ? t("插件")
+                                  : view === 'models'
+                                    ? t("模型")
+                                    : t("偏好")}
                 </span>
               )}
             </div>
@@ -3378,6 +3472,29 @@ export function App() {
                 />
               </div>
             )
+          ) : view === 'knowledge' ? (
+            <KnowledgePanel
+              workspaces={workspaces}
+              sessions={sessions}
+              activeWorkspace={activeWorkspace}
+              activeSessionId={activeSessionId}
+              scope="global"
+              lockedScope="global"
+              sessionId={librarySessionId}
+              onScopeChange={() => undefined}
+              onSessionChange={setLibrarySessionId}
+              onOpenHit={openSearchHit}
+              onOpenMessage={openMessage}
+              onOpenSession={(target) => openSessionById(target.id)}
+              onError={showError}
+            />
+          ) : view === 'links' || view === 'documents' ? (
+            <GlobalLibraryPanel
+              mode={view === 'links' ? 'links' : 'documents'}
+              workspaces={workspaces}
+              onOpenSession={openSessionById}
+              onError={showError}
+            />
           ) : view === 'memory' ? (
             <MemoryPanel
               workspace={workspace}
@@ -3485,9 +3602,14 @@ export function App() {
         />
       ) : null}
 
-      {checkpointsOpen && session ? (
+      {checkpointsOpen && session && settings ? (
         <CheckpointDialog
           session={session}
+          settings={settings}
+          onSettingsSaved={(next) => {
+            setSettings(next)
+            pushToast(t("设置已保存。"), 'info')
+          }}
           onClose={() => setCheckpointsOpen(false)}
           onRestored={(restored, safetyCheckpointId) => {
             setSession(restored)
@@ -3665,7 +3787,20 @@ export function App() {
           onPick={() => void pickWorkspace()}
           onRemove={removeWorkspace}
           onReveal={(path) => void revealWorkspace(path)}
+          onPackExport={openPackExport}
+          onPackImport={openPackImport}
           onClose={() => setWorkspaceDialogOpen(false)}
+          onError={showError}
+        />
+      ) : null}
+
+      {packDialog ? (
+        <WorkspacePackDialog
+          initialMode={packDialog.mode}
+          workspacePath={packDialog.workspacePath ?? activeWorkspace}
+          workspaceName={packDialog.workspaceName ?? workspace?.name ?? null}
+          onClose={() => setPackDialog(null)}
+          onImported={finishPackImport}
           onError={showError}
         />
       ) : null}

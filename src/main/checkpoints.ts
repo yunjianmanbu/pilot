@@ -17,9 +17,12 @@ import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path
 import { setImmediate as yieldEventLoop } from 'node:timers/promises'
 import type {
   Checkpoint,
+  CheckpointPreview,
   CheckpointRestoreMode,
   CheckpointRestoreResult,
+  CheckpointScope,
   CheckpointTrigger,
+  SnapshotDirHint,
 } from '../shared/types'
 import {
   ephemeralDirSegment,
@@ -124,6 +127,48 @@ const SNAPSHOT_SKIP_EXTENSIONS = new Set([
   '.woff', '.woff2', '.ttf', '.otf', '.eot', '.jar', '.class', '.pyc', '.node', '.wasm',
   '.iso', '.dmg', '.msi', '.apk', '.ipa', '.aab', '.psd', '.ai', '.sketch', '.fig',
 ])
+/**
+ * What a snapshot spends its byte budget on first. The budget is per snapshot
+ * and first-come-first-served, so a 500 MB `release/` tree reached in path
+ * order pushes `src/` out of the snapshot and the rollback then restores
+ * everything nobody wants. Source and configuration come first because
+ * restoring the code but losing `package.json` is worse than not restoring.
+ */
+const SNAPSHOT_SOURCE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', '.vue', '.svelte',
+  '.astro', '.html', '.htm', '.css', '.scss', '.sass', '.less', '.styl',
+  '.py', '.pyi', '.go', '.rs', '.java', '.kt', '.kts', '.scala', '.groovy',
+  '.c', '.h', '.cc', '.cpp', '.cxx', '.hpp', '.hxx', '.cs', '.fs', '.vb',
+  '.rb', '.php', '.pl', '.lua', '.dart', '.swift', '.m', '.mm', '.r', '.jl',
+  '.ex', '.exs', '.erl', '.hs', '.ml', '.clj', '.sol', '.zig', '.nim',
+  '.sh', '.bash', '.zsh', '.fish', '.ps1', '.psm1', '.bat', '.cmd',
+  '.sql', '.graphql', '.gql', '.proto', '.thrift',
+  '.json', '.jsonc', '.json5', '.yml', '.yaml', '.toml', '.ini', '.cfg', '.conf',
+  '.properties', '.env', '.xml', '.xsd', '.plist', '.gradle', '.cmake', '.mk',
+  '.lock',
+])
+const SNAPSHOT_DOC_EXTENSIONS = new Set(['.md', '.mdx', '.txt', '.rst', '.adoc', '.asciidoc', '.tex', '.org'])
+/** Extension-less build and repository files that still belong to the code. */
+const SNAPSHOT_SOURCE_NAMES = new Set([
+  'makefile', 'dockerfile', 'procfile', 'jenkinsfile', 'vagrantfile', 'gemfile', 'rakefile',
+  'cmakelists.txt', 'license', 'licence', 'notice', 'copying', 'authors', 'readme', 'changelog',
+  '.gitignore', '.gitattributes', '.gitmodules', '.npmrc', '.nvmrc', '.dockerignore',
+  '.editorconfig', '.prettierrc', '.prettierignore', '.eslintrc', '.eslintignore',
+])
+/**
+ * A directory is only worth mentioning when leaving it out costs the user
+ * something a rollback would miss. Below these thresholds the hint would fire
+ * on every snapshot and become noise.
+ */
+const OMITTED_DIR_HINT_BYTES = 8 * 1024 * 1024
+const OMITTED_DIR_HINT_FILES = 200
+const OMITTED_DIR_HINT_LIMIT = 6
+/**
+ * How long the read-only preview may walk a workspace. It runs right after a
+ * workspace is opened, so it must never be the reason the window feels stuck;
+ * a deeper tree simply reports `truncated`.
+ */
+const PREVIEW_BUDGET_MS = 6_000
 // The settings UI enforces 512 MB–20 GB; the service only rejects nonsense so
 // tests and future callers can drive the budget directly.
 const MIN_GLOBAL_BYTES = 1
@@ -226,6 +271,85 @@ async function mapLimit<T, R>(
 
 function hasSkippedExtension(rel: string): boolean {
   return SNAPSHOT_SKIP_EXTENSIONS.has(extname(rel).toLowerCase())
+}
+
+/**
+ * Snapshot priority of a file: 0 source/config, 1 docs, 2 other, 3 media and
+ * binaries (which are skipped anyway). Lower wins the remaining budget.
+ */
+function snapshotRank(rel: string): number {
+  const base = rel.slice(rel.lastIndexOf('/') + 1).toLowerCase()
+  if (SNAPSHOT_SOURCE_NAMES.has(base)) return 0
+  const ext = extname(base)
+  if (SNAPSHOT_SOURCE_EXTENSIONS.has(ext)) return 0
+  if (SNAPSHOT_DOC_EXTENSIONS.has(ext)) return 1
+  if (SNAPSHOT_SKIP_EXTENSIONS.has(ext)) return 3
+  return 2
+}
+
+/** `code` scope keeps source, docs and config only. */
+function isCodeScopePath(rel: string): boolean {
+  return snapshotRank(rel) <= 1
+}
+
+/**
+ * Turn "these files did not make it into the snapshot" into "these directories
+ * are not covered", which is what the panel can actually offer an action for.
+ *
+ * A directory qualifies only when *every* file under it was left out: a partial
+ * coverage hint would suggest ignoring a directory whose source files are
+ * already in the snapshot. When nested directories qualify, only the shallowest
+ * one is kept, because ignoring the parent covers the children.
+ */
+function omittedDirectoryHints(
+  all: Map<string, number>,
+  missing: Map<string, number>,
+): SnapshotDirHint[] {
+  if (missing.size === 0) return []
+  const total = new Map<string, { files: number; bytes: number }>()
+  const left = new Map<string, { files: number; bytes: number }>()
+  const accumulate = (
+    target: Map<string, { files: number; bytes: number }>,
+    rel: string,
+    size: number,
+  ): void => {
+    const segments = rel.split('/')
+    // Root-level files have no directory to offer, so they never become hints.
+    for (let depth = 1; depth < segments.length; depth += 1) {
+      const dir = segments.slice(0, depth).join('/')
+      const entry = target.get(dir)
+      if (entry) {
+        entry.files += 1
+        entry.bytes += size
+      } else {
+        target.set(dir, { files: 1, bytes: size })
+      }
+    }
+  }
+  for (const [rel, size] of all) accumulate(total, rel, size)
+  for (const [rel, size] of missing) accumulate(left, rel, size)
+
+  const candidates: SnapshotDirHint[] = []
+  for (const [dir, part] of left) {
+    const whole = total.get(dir)
+    if (!whole || whole.files !== part.files) continue
+    if (part.bytes < OMITTED_DIR_HINT_BYTES && part.files < OMITTED_DIR_HINT_FILES) continue
+    candidates.push({ path: dir, files: part.files, bytes: part.bytes })
+  }
+  candidates.sort((l, r) => r.bytes - l.bytes || l.path.localeCompare(r.path))
+
+  const kept: SnapshotDirHint[] = []
+  for (const hint of candidates) {
+    if (kept.some((parent) => hint.path.startsWith(`${parent.path}/`))) continue
+    kept.push(hint)
+    if (kept.length >= OMITTED_DIR_HINT_LIMIT) break
+  }
+  return kept
+}
+
+function clampPreviewBudget(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return PREVIEW_BUDGET_MS
+  return Math.min(Math.max(Math.round(value), 500), 60_000)
 }
 
 function isIgnoredPath(rel: string, ignore?: readonly string[]): boolean {
@@ -930,11 +1054,20 @@ export class CheckpointService {
   private async collectWorkspaceFiles(
     workspacePath: string,
     ignore: readonly string[] = [],
-  ): Promise<Map<string, { size: number; mtimeMs: number }>> {
+    deadline = 0,
+  ): Promise<{ files: Map<string, { size: number; mtimeMs: number }>; truncated: boolean }> {
     const directories: string[] = ['']
     const files: Array<{ rel: string; absolute: string }> = []
     const checkpointRootKey = comparePath(resolve(this.root))
+    let truncated = false
     while (directories.length > 0) {
+      // A preview passes a deadline; a snapshot leaves it at 0 and always walks
+      // the whole tree, because an incomplete snapshot would be wrong rather
+      // than merely slow.
+      if (deadline > 0 && Date.now() > deadline) {
+        truncated = true
+        break
+      }
       const batch = directories.splice(0, DIR_CONCURRENCY)
       const listings = await Promise.all(
         batch.map(async (relativeDir) => {
@@ -976,7 +1109,7 @@ export class CheckpointService {
     for (const info of stats) {
       if (info) result.set(info.rel, { size: info.size, mtimeMs: info.mtimeMs })
     }
-    return result
+    return { files: result, truncated }
   }
 
   /** Which of these hashes still have a blob on disk. */
@@ -1292,6 +1425,75 @@ export class CheckpointService {
     }
   }
 
+  /**
+   * What the next snapshot of this workspace would cover, without writing one.
+   * A workspace is only as protected as the part of it a snapshot reaches, and
+   * the size budget is what decides that — so the panel can say "these folders
+   * will not come back" when the workspace is opened, instead of leaving it to
+   * be discovered after a rollback.
+   */
+  async preview(input: {
+    workspacePath: string
+    ignore?: readonly string[]
+    scope?: CheckpointScope
+    budgetMs?: number
+  }): Promise<CheckpointPreview> {
+    const scope = input.scope ?? 'all'
+    const state = this.stateFor(input.workspacePath)
+    const ignore = normalizeCheckpointIgnore([...(input.ignore ?? []), ...state.autoIgnore])
+    const walked = await this.collectWorkspaceFiles(
+      input.workspacePath,
+      ignore,
+      Date.now() + clampPreviewBudget(input.budgetMs),
+    )
+    const candidates = [...walked.files]
+      .filter(([rel]) => scope === 'all' || isCodeScopePath(rel))
+      .map(([rel, info]) => ({ rel, size: info.size, rank: snapshotRank(rel) }))
+      .sort((left, right) => left.rank - right.rank || left.rel.localeCompare(right.rel))
+    const all = new Map<string, number>()
+    const missing = new Map<string, number>()
+    let bytes = 0
+    let files = 0
+    let codeBytes = 0
+    let codeFiles = 0
+    for (const entry of candidates) {
+      all.set(entry.rel, entry.size)
+      // The same three reasons a real snapshot drops a file, applied in the same
+      // rank order, so the answer matches what create() would actually do.
+      const dropped =
+        hasSkippedExtension(entry.rel) ||
+        entry.size > MAX_FILE_BYTES ||
+        bytes + entry.size > MAX_TOTAL_BYTES
+      // The code numbers answer "what would I keep if the snapshot followed the
+      // source only", so they spend their own budget instead of the all-scope
+      // one — a large asset tree must not shrink the source count.
+      if (
+        entry.rank <= 1 &&
+        !hasSkippedExtension(entry.rel) &&
+        entry.size <= MAX_FILE_BYTES &&
+        codeBytes + entry.size <= MAX_TOTAL_BYTES
+      ) {
+        codeBytes += entry.size
+        codeFiles += 1
+      }
+      if (dropped) {
+        missing.set(entry.rel, entry.size)
+        continue
+      }
+      bytes += entry.size
+      files += 1
+    }
+    return {
+      scope,
+      files,
+      bytes,
+      codeFiles,
+      codeBytes,
+      omittedDirs: omittedDirectoryHints(all, missing),
+      truncated: walked.truncated,
+    }
+  }
+
   async create(input: {
     sessionId: string
     workspacePath: string
@@ -1306,6 +1508,12 @@ export class CheckpointService {
      * file tree still shows and edits these paths.
      */
     ignore?: readonly string[]
+    /**
+     * How much of the workspace to capture. Defaults to `all`: a restore, and
+     * the safety snapshot taken before one, must be able to bring back every
+     * file they are about to overwrite.
+     */
+    scope?: CheckpointScope
     /**
      * Checkpoints that must survive the eviction this snapshot triggers. A
      * restore passes its own target so the protection step cannot delete the
@@ -1409,7 +1617,7 @@ export class CheckpointService {
         const walkStartedAt = Date.now()
         const walked = await this.collectWorkspaceFiles(input.workspacePath, ignore)
         state.lastScanMs = Date.now() - walkStartedAt
-        for (const [rel, info] of walked) stats.set(rel, info)
+        for (const [rel, info] of walked.files) stats.set(rel, info)
         for (const rel of [...state.index.keys()]) {
           if (!stats.has(rel)) {
             state.index.delete(rel)
@@ -1448,7 +1656,23 @@ export class CheckpointService {
 
       const candidates = new Set<string>(state.index.keys())
       for (const rel of stats.keys()) candidates.add(rel)
-      const ordered = [...candidates].sort((left, right) => left.localeCompare(right))
+      const scope = input.scope ?? 'all'
+      // The snapshot has one byte budget and fills it in walk order, so the
+      // order decides what a rollback gets back. Source and config first: a
+      // 200 MB build tree reached first would otherwise push every source file
+      // out and leave a "complete" snapshot that restores nothing useful.
+      const ranked = (scope === 'code' ? [...candidates].filter(isCodeScopePath) : [...candidates])
+        .map((rel) => ({ rel, rank: snapshotRank(rel) }))
+        .sort((left, right) => left.rank - right.rank || left.rel.localeCompare(right.rel))
+      const ordered = ranked.map((entry) => entry.rel)
+      // Sizes of everything this snapshot could have held. A full walk has them
+      // all in `stats`; the fast path falls back to the cached index. Rooted
+      // here because the loop below deletes skipped entries from that index.
+      const sizes = new Map<string, number>()
+      for (const entry of ranked) {
+        const info = stats.get(entry.rel) ?? state.index.get(entry.rel)
+        if (info) sizes.set(entry.rel, info.size)
+      }
 
       // A blob can disappear when maintenance evicts snapshots, so reuse is
       // only valid while the content-addressed file is still on disk.
@@ -1464,6 +1688,9 @@ export class CheckpointService {
       let errors = 0
       let hashed = 0
       let reused = 0
+      // Paths left out of this snapshot, with the size we measured for them.
+      // `skipped` counts them; the directory hints below explain them.
+      const missing = new Map<string, number>()
 
       for (const rel of ordered) {
         const info = stats.get(rel) ?? state.index.get(rel)
@@ -1474,12 +1701,14 @@ export class CheckpointService {
         if (hasSkippedExtension(rel) || info.size > MAX_FILE_BYTES) {
           if (state.index.delete(rel)) indexDirty.value = true
           skipped += 1
+          missing.set(rel, info.size)
           continue
         }
         if (reservedBytes + info.size > MAX_TOTAL_BYTES) {
           if (state.index.delete(rel)) indexDirty.value = true
           skipped += 1
           capHit = true
+          missing.set(rel, info.size)
           continue
         }
         const known = state.index.get(rel)
@@ -1524,6 +1753,7 @@ export class CheckpointService {
           skipped += 1
           errors += 1
           reservedBytes -= item.size
+          missing.set(item.rel, item.size)
           continue
         }
         state.index.set(result.rel, result.entry)
@@ -1543,6 +1773,10 @@ export class CheckpointService {
       // label and the tree both match exactly and it is still fresh: rolling
       // back to it restores precisely the same bytes.
       const label = checkpointLabel(input.label)
+      // Files the budget or a read error left out, grouped to top-level
+      // directories the panel can offer to ignore. This is reporting only:
+      // nothing here edits the ignore list behind the user's back.
+      const omittedDirs = omittedDirectoryHints(sizes, missing)
       const manifestDigest = createHash('sha256')
         .update(manifest.map((entry) => `${entry.path}\u0000${entry.sha256}`).join('\n'))
         .digest('hex')
@@ -1597,6 +1831,8 @@ export class CheckpointService {
         reused,
         manifestDigest,
         ...(baseline ? { baseline: true } : {}),
+        scope,
+        ...(omittedDirs.length > 0 ? { omittedDirs } : {}),
       }
       // Manifest first: a crash in between leaves a directory without meta,
       // which maintenance treats as abandoned.
@@ -1718,6 +1954,7 @@ export class CheckpointService {
             retention: settings.checkpointRetention,
             maxBytes: settings.checkpointMaxBytes,
             ignore: settings.checkpointIgnore,
+            scope: settings.checkpointScope,
             protectIds: [checkpointId],
           })
         } catch (error) {
@@ -1742,7 +1979,10 @@ export class CheckpointService {
           restoredFiles += 1
         }
 
-        if (meta.complete) {
+        // A `code` snapshot never held the workspace's other files, so deleting
+        // whatever the manifest does not list would destroy data it could not
+        // restore. Restrict such a restore to overwriting what it captured.
+        if (meta.complete && meta.scope !== 'code') {
           const removeExtras = async (relativePath: string): Promise<void> => {
             const absolute = relativePath
               ? join(session.workspacePath, relativePath)

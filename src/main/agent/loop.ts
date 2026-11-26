@@ -247,9 +247,21 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
     1,
     Math.min(8, Math.round(options.maxParallelReadTools ?? 8)),
   )
+  // Above this share of the *whole* window the transcript is folded by a model
+  // summary. The denominator differs from the compactor's: this one includes
+  // the tool schemas (`maxContextTokens`), while `fitMessages` is handed
+  // `messageBudget = maxContextTokens - toolsTokens`. With 96K configured and
+  // ~7.5K of schemas, the old 0.75 put summarising at ~64.5K — only 2.5K above
+  // the compactor's 0.7 gate (~62K) — so a run that had just been compacted
+  // reached a second, model-priced rewrite almost immediately; 392 of them in a
+  // week cost 8.6M miss tokens with no usable cache prefix. 0.85 moves it to
+  // ~74K: still ~14K below the hard budget (the pass that actually drops
+  // content), far enough from the compactor that the two passes no longer
+  // overlap, and the share of runs that ever need a summary drops from 60% to
+  // 35%.
   const summaryThreshold = Math.min(
     0.95,
-    Math.max(0.5, options.contextSummaryThreshold ?? 0.75),
+    Math.max(0.5, options.contextSummaryThreshold ?? 0.85),
   )
 
   let messages: AgentMessage[] = [...options.messages]

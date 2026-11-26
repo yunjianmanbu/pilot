@@ -9,9 +9,8 @@ import {
 } from 'react'
 import { ChevronDownIcon, InfoIcon } from '../icons'
 import { processParts, recentProcessParts, runElapsedLabel, type ProcessPart, type ToolView, type UIMessage } from '../ui'
-import { Markdown } from './Markdown'
-import { ProcessTime } from './ProcessTime'
 import { ReasoningBlock } from './ReasoningBlock'
+import { ProcessNoteRow, noteStep, reasoningStep, toolStep, type StepView } from './StepDialog'
 import { ToolCard } from './ToolCard'
 import { t } from '../i18n'
 
@@ -41,18 +40,20 @@ function useNowTicker(active: boolean): number {
 function renderReasoning(
   part: ProcessPart & { kind: 'reasoning' },
   live: boolean,
-  onEngage?: () => void,
+  onOpen?: (step: StepView) => void,
 ) {
-  // The folded line carries a line of the thinking, like the phone app; the step
-  // that is still streaming updates it to the newest line instead of opening
-  // itself — thinking stays background until the reader asks for it.
+  // The folded row carries one line of the thinking. Opening it hands the text
+  // to the dialogue box that owns it: the step itself never grows in place, so a
+  // streaming thought cannot push the transcript around.
   return (
     <ReasoningBlock
       key={part.key}
       text={part.text}
-      at={part.at}
+      className="process-reasoning"
       live={live}
-      onEngage={onEngage}
+      {...(onOpen
+        ? { onOpen: () => onOpen(reasoningStep(part, live)) }
+        : {})}
     />
   )
 }
@@ -62,6 +63,7 @@ function ProcessBoxRow({
   onLoadSteps,
   initialExpanded = false,
   onEngage,
+  onOpenStep,
 }: {
   process: ProcessMessage
   /** Fetch one run's steps when its page did not carry them. */
@@ -74,6 +76,12 @@ function ProcessBoxRow({
    * streamed token scrolls the box they are reading out of view.
    */
   onEngage?: (() => void) | undefined
+  /**
+   * Open one step in a dialog. The owner of the dialog (the chat view) holds it
+   * so it outlives this box: a finished run replaces the live box with the
+   * stored one, and a dialog that lived here would vanish mid-read.
+   */
+  onOpenStep?: ((step: StepView) => void) | undefined
 }) {
   const [expanded, setExpanded] = useState(initialExpanded)
   const [loading, setLoading] = useState(false)
@@ -205,7 +213,11 @@ function ProcessBoxRow({
     nodes.push(
       <div className="tool-list" key={`tools-${toolBuffer[0]!.id}`}>
         {toolBuffer.map((tool) => (
-          <ToolCard tool={tool} key={tool.id} />
+          <ToolCard
+            tool={tool}
+            key={tool.id}
+            {...(onOpenStep ? { onOpen: () => onOpenStep(toolStep(tool)) } : {})}
+          />
         ))}
       </div>,
     )
@@ -222,14 +234,28 @@ function ProcessBoxRow({
     flushTools()
     if (part.kind === 'reasoning') {
       // Only the newest step of a running box is still being written.
-      nodes.push(renderReasoning(part, Boolean(running) && part.key === lastKey, onEngage))
+      const live = Boolean(running) && part.key === lastKey
+      nodes.push(
+        renderReasoning(part, live, (step) => {
+          onEngage?.()
+          onOpenStep?.(step)
+        }),
+      )
       continue
     }
     nodes.push(
-      <div className="process-note" key={part.key}>
-        <ProcessTime at={part.at} />
-        <Markdown content={part.text} />
-      </div>,
+      <ProcessNoteRow
+        key={part.key}
+        text={part.text}
+        {...(onOpenStep
+          ? {
+              onOpen: () => {
+                onEngage?.()
+                onOpenStep(noteStep(part))
+              },
+            }
+          : {})}
+      />,
     )
   }
   flushTools()
@@ -257,7 +283,12 @@ function ProcessBoxRow({
         <span className="process-meta">
           {pending
             ? t("{v1} 项步骤", { v1: pending.stepCount })
-            : `${process.tools.length} ${t("个工具")}${process.reasoning.length > 0 ? t(" · 含思考") : ''}`}
+            : `${process.tools.length} ${t("个工具")}${
+                process.reasoning.length > 0 ||
+                parts.some((part) => part.kind === 'reasoning')
+                  ? t(" · 含思考")
+                  : ''
+              }`}
         </span>
         {elapsed ? <span className="process-elapsed">{elapsed}</span> : null}
         <span className={`process-status text-${status}`}>{statusText}</span>

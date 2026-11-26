@@ -27,6 +27,7 @@ import { ipcMain, session, IpcMainInvokeEvent } from 'electron'
 const DOCUMENT_CHANNELS = new Set([
   'pilot:file-preview',
   'pilot:file-open',
+  'pilot:file-render',
   'pilot:doc-state',
   'pilot:doc-close',
   'pilot:open-link',

@@ -166,6 +166,7 @@ export function checkpointBridge(
         retention: store.settings().checkpointRetention,
         maxBytes: store.settings().checkpointMaxBytes,
         ignore: store.settings().checkpointIgnore,
+        scope: store.settings().checkpointScope,
       })
     },
     restore: (sessionId, checkpointId, mode) =>

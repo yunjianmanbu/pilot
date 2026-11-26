@@ -4,6 +4,7 @@ import {
   compactToolResults,
   COMPACTED_MARKER,
   declarationSkeleton,
+  DEFAULT_COMPACT_ABOVE,
   DIGEST_MAX_CHARS,
   estimateTokens,
   fitMessages,
@@ -283,6 +284,28 @@ describe('fitMessages', () => {
     }
     const fitted = fitMessages(messages, messagesTokens(messages) * 2, { compactAbove: 0 })
     expect(fitted.compacted).toBeGreaterThan(0)
+  })
+
+  // The gate stays at 0.7 on purpose: raising it to 0.8 was measured and did not
+  // reduce the number of rewrites (steady state fires about once per growing
+  // step either way) while pushing more steps into the aggressive pass. Pinned
+  // on both sides so a future edit cannot move it silently.
+  it('defaults to compacting only once the transcript is past 70% of the budget', () => {
+    expect(DEFAULT_COMPACT_ABOVE).toBe(0.7)
+    const messages: AgentMessage[] = [{ role: 'system', content: 'sys' }]
+    messages.push({ role: 'user', content: 'task' })
+    for (let index = 0; index < 12; index += 1) {
+      messages.push(toolMessage(`output-${index}\n${'z'.repeat(3_000)}`))
+    }
+    const used = messagesTokens(messages)
+    // Budget sized so the transcript sits at ~65% of it: below the gate, so the
+    // cached prefix must survive.
+    const under = fitMessages(messages, Math.ceil(used / 0.65))
+    expect(under.compacted).toBe(0)
+    expect(under.messages).toBe(messages)
+    // ~75% of the budget: past the gate, so the rewrite must happen.
+    const over = fitMessages(messages, Math.ceil(used / 0.75))
+    expect(over.compacted).toBeGreaterThan(0)
   })
 })
 

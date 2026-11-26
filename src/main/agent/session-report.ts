@@ -10,6 +10,7 @@
 
 import type { RunRecord, ToolCall } from '../../shared/types'
 import type { SessionReport } from '../../shared/session-report'
+import { withPilotFooter } from '../../shared/pilot-markdown'
 
 export type { SessionReport }
 
@@ -228,5 +229,12 @@ export function buildSessionReport(input: {
     lines.push('')
   }
 
-  return { title, markdown: lines.join('\n').trimEnd(), changedFiles, verified, failures }
+  // 报告是 Pilot 生成的 Markdown：预览、复制、保存共用这份文本，脚注只加一次。
+  return {
+    title,
+    markdown: withPilotFooter(lines.join('\n')),
+    changedFiles,
+    verified,
+    failures,
+  }
 }

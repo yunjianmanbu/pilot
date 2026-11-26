@@ -11,7 +11,7 @@ import {
   modelOptionLabel,
   normalizeModelTag,
 } from '../../../shared/model-label'
-import { CheckIcon, RefreshIcon, SparkIcon, XIcon } from '../icons'
+import { BrainIcon, CheckIcon, RefreshIcon, XIcon } from '../icons'
 import { t } from '../i18n'
 import { BillingPanel, balanceSummary } from './BillingPanel'
 import { Field } from './form-fields'
@@ -324,7 +324,7 @@ disabled: !resource.enabled,
       <div className="page-head">
         <div>
           <div className="page-eyebrow">
-            <SparkIcon width={13} height={13} />
+            <BrainIcon width={13} height={13} />
             {t("会话 · 复盘 · 评估")}
           </div>
           <h1>{t("模型")}</h1>

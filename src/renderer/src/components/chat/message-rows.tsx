@@ -19,7 +19,7 @@ import { formatNumber, formatTime, type UIMessage } from '../../ui'
 import { t } from '../../i18n'
 import { Markdown } from '../Markdown'
 import { FileChangeBar } from '../FileChangeBar'
-import { ReasoningBlock } from '../ReasoningBlock'
+import { ReasoningSection } from '../ReasoningBlock'
 import { TurnPlan } from './plan'
 
 function RunBadge({ run }: { run?: RunRecord }) {
@@ -97,7 +97,11 @@ function AssistantMessage({
         </div>
 
         {message.reasoning?.trim() ? (
-          <ReasoningBlock text={message.reasoning} className="answer-reasoning" />
+          <ReasoningSection
+            text={message.reasoning}
+            at={message.createdAt}
+            className="answer-reasoning"
+          />
         ) : null}
 
         {message.content.trim() ? (

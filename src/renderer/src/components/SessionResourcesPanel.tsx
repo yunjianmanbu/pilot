@@ -24,7 +24,7 @@ import {
 } from '../session-resources'
 import {
   ArrowUpRightIcon,
-  BrainIcon,
+  BookmarkIcon,
   ChevronDownIcon,
   ChevronIcon,
   CollapseIcon,
@@ -73,7 +73,7 @@ function tabIcon(tab: ResourceTab, size = 13): ReactNode {
   if (tab === 'links') return <LinkIcon width={size} height={size} />
   if (tab === 'tools') return <WrenchIcon width={size} height={size} />
   if (tab === 'knowledge') return <HistoryIcon width={size} height={size} />
-  if (tab === 'memory') return <BrainIcon width={size} height={size} />
+  if (tab === 'memory') return <BookmarkIcon width={size} height={size} />
   if (tab === 'artifacts') return <FileIcon width={size} height={size} />
   return <FilesIcon width={size} height={size} />
 }
@@ -190,6 +190,7 @@ function FilePreviewPane({
       </div>
       <FilePreviewBody
         preview={preview}
+        {...(workspace ? { workspacePath: workspace.path } : {})}
         {...(workspace
           ? {
               onOpenWindow: () => {
@@ -781,14 +782,14 @@ export function SessionResourcesPanel({
   const renderMemoryList = (): ReactNode => {
     if (!session) {
       return emptyState(
-        <BrainIcon width={26} height={26} />,
+        <BookmarkIcon width={26} height={26} />,
         t('还没有选中的会话'),
         t('选择会话后，这里会列出这轮任务用到的项目记忆。'),
       )
     }
     if (visibleMemoryRows.length === 0) {
       return emptyState(
-        <BrainIcon width={26} height={26} />,
+        <BookmarkIcon width={26} height={26} />,
         needle ? t('没有匹配的记忆') : t('这个会话还没有记忆'),
         needle
           ? t('换一个关键词，或清空搜索查看全部条目。')
@@ -806,7 +807,7 @@ export function SessionResourcesPanel({
             title={excerpt(row.entry.content, 400)}
           >
             <span className="file-icon memory">
-              <BrainIcon width={15} height={15} />
+              <BookmarkIcon width={15} height={15} />
             </span>
             <span className="resource-row-main">
               <span className="resource-row-title">{excerpt(row.entry.content, 48)}</span>
@@ -1228,7 +1229,7 @@ export function SessionResourcesPanel({
         {onOpenMemoryPanel ? (
           <div className="resource-actions">
             <button type="button" className="button small" onClick={onOpenMemoryPanel}>
-              <BrainIcon width={14} height={14} />
+              <BookmarkIcon width={14} height={14} />
               {t('打开项目记忆')}
             </button>
           </div>

@@ -14,8 +14,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FilePreview } from '../../../shared/types'
-import { isParsedDocumentKind } from '../../../shared/media'
+import type { DocumentRender, DocumentRenderEngine, FilePreview } from '../../../shared/types'
+import { isDocumentKind, isParsedDocumentKind } from '../../../shared/media'
 import type { PptxDeck } from '../preview/pptx'
 import type { OpenedPdf, PageRender } from '../preview/pdf'
 import type { SheetTable } from '../preview/xlsx'
@@ -78,33 +78,94 @@ export function tidyParserMessage(raw: string): string {
   return cut.length > 160 ? `${cut.slice(0, 157)}…` : cut
 }
 
+/** Name of the office application that produced a PDF, as users know it. */
+export function renderEngineLabel(engine: DocumentRenderEngine | null): string {
+  if (engine === 'wps') return 'WPS'
+  if (engine === 'office') return 'Microsoft Office'
+  if (engine === 'libreoffice') return 'LibreOffice'
+  return ''
+}
+
+/**
+ * What to tell the user when the native layout was not used.
+ *
+ * The title is written to stand on its own, because it is shown twice: as the
+ * only explanation when the built-in parser cannot read the format either, and
+ * as a thin line above the parsed result when the document could still be read.
+ */
+export function renderFallbackCopy(result: DocumentRender | null): {
+  title: string
+  detail?: string
+} {
+  if (result?.reason === 'no-engine') {
+    return {
+      title: t('这台电脑上没有找到 WPS、Office 或 LibreOffice。'),
+      detail: t('装其中任意一个，文档就会按它自己的排版显示；现在用的是应用内置解析。'),
+    }
+  }
+  if (result?.reason === 'failed') {
+    return {
+      title: t('本机办公软件没能把这份文档转成 PDF。'),
+      detail: t('现在用的是应用内置解析；要看真正的排版，可以用系统应用直接打开。'),
+    }
+  }
+  if (result?.reason === 'large') {
+    return {
+      title: t('文件太大，没有交给本机办公软件排版。'),
+      detail: t('现在用的是应用内置解析；用系统应用打开可以保留完整排版。'),
+    }
+  }
+  return { title: t('本机办公软件不可用，现在用的是应用内置解析。') }
+}
+
 export function DocumentPreview({
   preview,
+  workspacePath,
   onOpenFallback,
 }: {
   preview: FilePreview
+  /**
+   * Absolute root of the open workspace. With it, an Office document is first
+   * converted by the office application on this machine and shown as the pages
+   * that application would print; without it (a browser tab, or no workspace)
+   * only the built-in parsers are available.
+   */
+  workspacePath?: string
   /** Opens the file with the system application; omitted when unavailable. */
   onOpenFallback?: () => void
 }) {
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [failure, setFailure] = useState<Failure | null>(null)
   const [loading, setLoading] = useState(true)
+  /** Shown above the document: which engine laid it out, or why it did not. */
+  const [note, setNote] = useState<string | null>(null)
+  /** 'render' means an office application is running — it takes seconds. */
+  const [stage, setStage] = useState<'render' | 'parse'>('parse')
+  /**
+   * The user chose the built-in parser instead of waiting for the office
+   * application. Keyed by path, so opening another file tries the native layout
+   * again without a second effect racing the loader.
+   */
+  const [skipped, setSkipped] = useState<{ path: string; value: boolean }>({
+    path: '',
+    value: false,
+  })
 
   const url = preview.url ?? ''
   const parsable = isParsedDocumentKind(preview.kind)
+  const skipNative = skipped.path === preview.path && skipped.value
+  // A PDF is already a layout, so it goes straight to the pager; everything
+  // else in the document family is worth handing to the office application.
+  const renderable = Boolean(workspacePath) && preview.kind !== 'pdf' && !skipNative
 
   useEffect(() => {
-    if (!parsable) {
+    if (!isDocumentKind(preview.kind)) {
       setLoading(false)
       setLoaded(null)
       setFailure(null)
       return
     }
-    if (!url) {
-      setLoading(false)
-      setFailure({ message: t('没有拿到这个文件的读取地址。') })
-      return
-    }
+    if (!parsable && !renderable) return
     if (preview.size > MAX_DOCUMENT_BYTES) {
       setLoading(false)
       setFailure({ message: t('文件超过 64 MB，应用内预览会拖慢界面，请用系统应用打开。') })
@@ -117,9 +178,50 @@ export function DocumentPreview({
     setLoading(true)
     setFailure(null)
     setLoaded(null)
+    setNote(null)
+    setStage(renderable ? 'render' : 'parse')
 
     void (async () => {
       try {
+        if (renderable && workspacePath) {
+          // A failure here is not an error the user has to fix: it only decides
+          // whether the page shows native layout or the built-in parsers.
+          const rendered = await window.pilot
+            .renderFile(workspacePath, preview.path)
+            .catch(() => null)
+          if (cancelled) return
+          if (rendered?.pdf && rendered.pdf.byteLength > 0) {
+            const { openPdfDocument } = await import('../preview/pdf')
+            // Copy out of the transferred view: PDF.js detaches its input.
+            const bytes = rendered.pdf.slice()
+            const pdf = await openPdfDocument(bytes.buffer as ArrayBuffer)
+            if (cancelled) {
+              void pdf.destroy()
+              return
+            }
+            opened = pdf
+            const label = renderEngineLabel(rendered.engine)
+            if (label) {
+              setNote(t('由本机 {v1} 排版，与它自己打印出来的一致。', { v1: label }))
+            }
+            setLoaded({ kind: 'pdf', pages: pdf.doc.numPages, opened: pdf })
+            return
+          }
+          if (!parsable) {
+            const copy = renderFallbackCopy(rendered)
+            setFailure({
+              message: copy.title,
+              ...(copy.detail ? { hint: copy.detail } : {}),
+            })
+            return
+          }
+          setNote(renderFallbackCopy(rendered).title)
+        }
+        if (!url) {
+          setFailure({ message: t('没有拿到这个文件的读取地址。') })
+          return
+        }
+        setStage('parse')
         const data = await fetchBytes(url, controller.signal)
         if (cancelled) return
         if (preview.kind === 'docx') {
@@ -169,9 +271,9 @@ export function DocumentPreview({
       // PDF.js keeps a worker and decoded page buffers alive until destroyed.
       void opened?.destroy()
     }
-  }, [parsable, preview.kind, preview.path, preview.size, url])
+  }, [parsable, renderable, skipNative, workspacePath, preview.kind, preview.path, preview.size, url])
 
-  if (!parsable) {
+  if (!parsable && !renderable) {
     return (
       <Unavailable
         title={t('这类文档还不支持应用内预览')}
@@ -185,7 +287,35 @@ export function DocumentPreview({
     return (
       <div className="doc-state">
         <span className="doc-spinner" aria-hidden />
-        <p>{t('正在解析文档…')}</p>
+        <p>{stage === 'render' ? t('正在用本机办公软件排版…') : t('正在解析文档…')}</p>
+        {stage === 'render' ? (
+          <p className="doc-state-detail">
+            {t('第一次打开要等几秒，之后同一个文件会直接读缓存。')}
+          </p>
+        ) : null}
+        {/*
+          A damaged file can keep the office application busy until the timeout,
+          so waiting is never the only option: the parsed view is available at
+          once, and the system application always is.
+        */}
+        {stage === 'render' ? (
+          <div className="doc-state-actions">
+            {parsable ? (
+              <button
+                type="button"
+                className="doc-open-external"
+                onClick={() => setSkipped({ path: preview.path, value: true })}
+              >
+                {t('先看内置版式')}
+              </button>
+            ) : null}
+            {onOpenFallback ? (
+              <button type="button" className="doc-open-external" onClick={onOpenFallback}>
+                {t('用系统应用打开')}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     )
   }
@@ -202,10 +332,23 @@ export function DocumentPreview({
 
   if (!loaded) return null
 
-  if (loaded.kind === 'pdf') return <PdfPager doc={loaded.opened.doc} pages={loaded.pages} />
-  if (loaded.kind === 'docx') return <DocxFrame html={loaded.html} messages={loaded.messages} />
-  if (loaded.kind === 'xlsx') return <SheetTables sheets={loaded.sheets} />
-  return <SlideDeck deck={loaded.deck} />
+  const body =
+    loaded.kind === 'pdf' ? (
+      <PdfPager doc={loaded.opened.doc} pages={loaded.pages} />
+    ) : loaded.kind === 'docx' ? (
+      <DocxFrame html={loaded.html} messages={loaded.messages} />
+    ) : loaded.kind === 'xlsx' ? (
+      <SheetTables sheets={loaded.sheets} />
+    ) : (
+      <SlideDeck deck={loaded.deck} />
+    )
+
+  return (
+    <div className="doc-rendered">
+      {note ? <p className="doc-render-note">{note}</p> : null}
+      {body}
+    </div>
+  )
 }
 
 function Unavailable({

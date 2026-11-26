@@ -66,7 +66,26 @@ import {
   SEARCH_INDEX_MIN_INTERVAL_MS,
   MAX_SCHEDULED_RUNS,
   SessionBodyRef,
+  sanitizeScheduledTask,
 } from './store-schema'
+
+// 导出/导入包的接线。类型走 `import type`，避免把 jszip 拖进 store 的运行时依赖。
+import { emptyWorkspaceSecrets } from '../shared/workspace-pack'
+import type { WorkspacePackScope, WorkspaceSecrets } from '../shared/workspace-pack'
+import type { WorkspacePackSnapshot } from './workspace-pack'
+import {
+  planSessionImport,
+  portableSettingsPatch,
+  secretsForResource,
+  stripPersistedSecrets,
+} from './workspace-pack-merge'
+import type {
+  WorkspacePackImportInput,
+  WorkspacePackImportOutcome,
+} from './workspace-pack-merge'
+
+/** 与 `createSession` 里的裁剪阈值保持一致：一个工作区只留 200 个会话。 */
+const MAX_IMPORTED_WORKSPACE_SESSIONS = 200
 
 // 公开 API 仍在 store.ts 导出：调用方不需要知道内部怎么分层。
 // 类型必须用 `export type`：打包器（rolldown）会按运行时导出解析，漏了就直接报
@@ -1062,6 +1081,7 @@ export class Store {
       checkpointMaxBytes: this.state.settings.checkpointMaxBytes,
       checkpointShell: this.state.settings.checkpointShell,
       checkpointIgnore: [...this.state.settings.checkpointIgnore],
+      checkpointScope: this.state.settings.checkpointScope,
       notifyDesktop: this.state.settings.notifyDesktop,
       reflectEnabled: this.state.settings.reflectEnabled,
       reflectModelId: this.state.settings.reflectModelId,
@@ -2286,6 +2306,291 @@ export class Store {
       evolution: this.evolutionState(path),
       quality: this.qualityState(path),
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 工作区导出包：快照与导入
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 导出用的内容快照。
+   *
+   * 密钥在这里是**明文**：safeStorage 只在写入本机时才加密，跨机器没有可用的
+   * 解密钥。调用方只应把它写进包，不要落日志。
+   */
+  workspacePackSnapshot(workspacePath: string, scope: WorkspacePackScope): WorkspacePackSnapshot {
+    const record = this.workspaceRecord(workspacePath)
+    const sessions = this.state.sessions
+      .filter((session) => session.workspacePath === workspacePath)
+      .map((session) => {
+        // 读一次 body 才会触发 shard 懒加载；不读的话 messages 是空数组，
+        // 导出的会话就只剩标题。
+        return {
+          ...session,
+          messages: [...session.messages],
+          queue: [...session.queue],
+          todos: [...session.todos],
+        } as Session
+      })
+    const ids = new Set(sessions.map((session) => session.id))
+    const scheduled = scope.sessions
+      ? this.state.scheduled
+          .filter((task) => ids.has(task.sessionId))
+          .map((task) => ({ ...task }))
+      : []
+    const settings = scope.settings
+      ? {
+          settings: stripPersistedSecrets(this.state.settings),
+          quickCommands: this.quickCommands() ?? [],
+          reflectionReports: this.reflectionReports(),
+        }
+      : null
+    return {
+      workspace: {
+        memory: [...(record?.memory ?? [])],
+        profiles: [...(record?.profiles ?? [])],
+        runs: [...(record?.runs ?? [])],
+      },
+      sessions,
+      scheduled,
+      settings,
+      secrets: scope.secrets ? this.workspaceSecrets() : null,
+    }
+  }
+
+  /** 解出本机全部密钥，供导出包使用。返回值里是明文，调用方不得打印。 */
+  private workspaceSecrets(): WorkspaceSecrets {
+    const secrets = emptyWorkspaceSecrets()
+    for (const resource of this.state.settings.modelResources) {
+      const key = this.keyOf(resource)
+      if (key) secrets.modelResources[resource.id] = key
+    }
+    for (const provider of this.state.settings.judgeProviders) {
+      const key = this.keyOf(provider)
+      if (key) secrets.judgeProviders[provider.id] = key
+    }
+    secrets.testCaptcha = this.getTestCaptcha()
+    secrets.smtpPassword = this.getSmtpPassword()
+    secrets.apiKey = this.getApiKey()
+    return secrets
+  }
+
+  /**
+   * 把包内容合并进本机。
+   *
+   * 顺序是有意的：先应用可移植设置（含 SMTP 授权码与测试验证码），再合并模型资源
+   * 并挂上密钥，最后落会话、定时任务与工作区记录。任何一步失败都不会留下半个包：
+   * 会话与任务在最后一次性 `save()`。
+   */
+  async applyWorkspacePack(input: WorkspacePackImportInput): Promise<WorkspacePackImportOutcome> {
+    const warnings: string[] = []
+    const path = input.workspacePath
+    const scope = input.manifest.scope
+    const core = input.core
+    const workspaceCore = (
+      core['workspace'] && typeof core['workspace'] === 'object' ? core['workspace'] : {}
+    ) as Record<string, unknown>
+    const stamp = new Date().toISOString()
+
+    // ---- 1. 工作区记录（已存在就合并，不覆盖本机记忆） ----
+    let record = this.workspaceRecord(path)
+    if (!record) {
+      record = {
+        path,
+        name: input.workspaceName || input.manifest.workspace.name || path,
+        addedAt: stamp,
+        lastOpenedAt: stamp,
+        memory: [],
+        profiles: [],
+        runs: [],
+      }
+      this.state.workspaces.push(record)
+    }
+    const mergeList = <T extends { id: string }>(current: T[], incoming: unknown): T[] => {
+      if (!Array.isArray(incoming)) return current
+      const seen = new Set(current.map((entry) => entry.id))
+      const merged = [...current]
+      for (const entry of incoming as T[]) {
+        if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string') continue
+        if (seen.has(entry.id)) continue
+        seen.add(entry.id)
+        merged.push(entry)
+      }
+      return merged
+    }
+    record.memory = mergeList(record.memory, workspaceCore['memory'])
+    record.profiles = mergeList(record.profiles, workspaceCore['profiles'])
+    record.runs = mergeList(record.runs, workspaceCore['runs'])
+
+    // ---- 2. 设置与密钥 ----
+    let settingsApplied = false
+    let secretsApplied = 0
+    const rawSettings = core['settings']
+    if (scope.settings && rawSettings && typeof rawSettings === 'object') {
+      const patch = portableSettingsPatch(rawSettings)
+      // 包里没有邮箱地址时不要清掉本机已经配好的那个。
+      if (!patch.reflectEmailTo) delete patch.reflectEmailTo
+      if (input.secrets?.testCaptcha) patch.testCaptcha = input.secrets.testCaptcha
+      if (input.secrets?.smtpPassword) patch.reflectSmtpPassword = input.secrets.smtpPassword
+      await this.updateSettings(patch)
+      settingsApplied = true
+      if (input.secrets?.testCaptcha) secretsApplied += 1
+      if (input.secrets?.smtpPassword) secretsApplied += 1
+      secretsApplied += await this.mergePackModelResources(rawSettings, input.secrets)
+      secretsApplied += await this.mergePackQuickCommands(core['quickCommands'])
+      secretsApplied += await this.mergePackReflectionReports(core['reflectionReports'])
+      // 旧版只有单密钥：只有在没有任何模型资源时才补上，避免覆盖当前资源的 key。
+      if (input.secrets?.apiKey && !this.sessionResource()) {
+        this.setApiKey(input.secrets.apiKey)
+        secretsApplied += 1
+      }
+    }
+
+    // ---- 3. 会话 ----
+    const plan = planSessionImport({
+      payloads: input.sessions,
+      fromPath: input.manifest.workspace.path,
+      toPath: path,
+      taken: new Set(this.state.sessions.map((session) => session.id)),
+    })
+    for (const session of plan.sessions) this.state.sessions.push(this.track(session))
+    if (plan.skipped.length) warnings.push(`跳过了 ${plan.skipped.length} 个无法解析的会话`)
+
+    // ---- 4. 定时任务（sessionId 跟着重映射，过期的一次性任务丢弃） ----
+    let scheduledApplied = 0
+    const rawScheduled = Array.isArray(core['scheduled']) ? core['scheduled'] : []
+    const importedIds = new Set(plan.sessions.map((session) => session.id))
+    for (const raw of rawScheduled) {
+      if (!raw || typeof raw !== 'object') continue
+      const entry = raw as Record<string, unknown>
+      const sessionId = typeof entry['sessionId'] === 'string'
+        ? (plan.idMap[entry['sessionId']] ?? entry['sessionId'])
+        : ''
+      if (!sessionId || !importedIds.has(sessionId)) continue
+      const task = sanitizeScheduledTask({ ...entry, sessionId })
+      if (!task) continue
+      if (task.kind === 'once' && task.nextRunAt <= new Date().toISOString()) {
+        warnings.push('跳过了一个已经过期的一次性定时任务')
+        continue
+      }
+      const id = this.state.scheduled.some((existing) => existing.id === task.id)
+        ? randomUUID()
+        : task.id
+      this.state.scheduled.push({ ...task, id })
+      scheduledApplied += 1
+    }
+    if (this.state.scheduled.length > MAX_SCHEDULED_RUNS) {
+      this.state.scheduled = this.state.scheduled.slice(-MAX_SCHEDULED_RUNS)
+    }
+    // 同 createSession 的上限：一个工作区的会话不能无限增长。
+    const owned = this.state.sessions.filter((session) => session.workspacePath === path)
+    if (owned.length > MAX_IMPORTED_WORKSPACE_SESSIONS) {
+      const overflow = owned
+        .filter((session) => !this.isRunning(session.id))
+        .slice(0, owned.length - MAX_IMPORTED_WORKSPACE_SESSIONS)
+      const drop = new Set(overflow.map((session) => session.id))
+      this.state.sessions = this.state.sessions.filter((session) => !drop.has(session.id))
+      this.state.scheduled = this.state.scheduled.filter((task) => !drop.has(task.sessionId))
+    }
+
+    this.state.activeWorkspace = path
+    this.state.activeSession = plan.sessions[0]?.id ?? this.state.activeSession
+    await this.save()
+
+    return {
+      sessions: plan.sessions.length,
+      scheduled: scheduledApplied,
+      files: 0,
+      checkpoints: 0,
+      secretsApplied,
+      settingsApplied,
+      warnings,
+    }
+  }
+
+  /**
+   * 合并包里的模型资源并挂上密钥。
+   *
+   * `applyModelResources` 是整体替换语义，所以入参必须是「本机现有 + 包里的」，
+   * 少一个就会把本机资源删掉。返回写回的密钥条数。
+   */
+  private async mergePackModelResources(raw: unknown, secrets: WorkspaceSecrets | null): Promise<number> {
+    const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+    const incoming = Array.isArray(record['modelResources'])
+      ? (record['modelResources'] as Array<Record<string, unknown>>)
+      : []
+    if (!incoming.length) return 0
+    const inputs: ModelResourceInput[] = this.modelResources().map((resource) => ({
+      id: resource.id,
+      label: resource.label,
+      baseUrl: resource.baseUrl,
+      model: resource.model,
+      tag: resource.tag,
+      enabled: resource.enabled,
+    }))
+    const taken = new Set(inputs.map((entry) => entry.id!))
+    let applied = 0
+    for (const entry of incoming) {
+      const baseUrl = typeof entry['baseUrl'] === 'string' ? entry['baseUrl'] : ''
+      const model = typeof entry['model'] === 'string' ? entry['model'] : ''
+      if (!baseUrl || !model) continue
+      const sourceId = typeof entry['id'] === 'string' ? entry['id'] : ''
+      const id = sourceId && !taken.has(sourceId) ? sourceId : randomUUID()
+      taken.add(id)
+      const key = secretsForResource(sourceId, secrets)
+      inputs.push({
+        id,
+        label: typeof entry['label'] === 'string' && entry['label'].trim() ? entry['label'] : model,
+        baseUrl,
+        model,
+        tag: typeof entry['tag'] === 'string' ? entry['tag'] : '',
+        enabled: entry['enabled'] !== false,
+        ...(key ? { apiKey: key } : {}),
+      })
+      if (key) applied += 1
+    }
+    await this.updateSettings({ modelResources: inputs })
+    // 角色选择：包里指向的资源都已存在时才照搬，否则交给 normalizeModelSelection 兜底。
+    const ids = new Set(this.state.settings.modelResources.map((resource) => resource.id))
+    const selection: SettingsUpdate = {}
+    const sessionModelId = typeof record['sessionModelId'] === 'string' ? record['sessionModelId'] : ''
+    if (sessionModelId && ids.has(sessionModelId)) selection.sessionModelId = sessionModelId
+    const reviewModelId = typeof record['reviewModelId'] === 'string' ? record['reviewModelId'] : ''
+    if (reviewModelId && ids.has(reviewModelId)) selection.reviewModelId = reviewModelId
+    const evaluation = Array.isArray(record['evaluationModelIds'])
+      ? (record['evaluationModelIds'] as unknown[]).filter(
+          (id): id is string => typeof id === 'string' && ids.has(id),
+        )
+      : []
+    if (evaluation.length) selection.evaluationModelIds = evaluation
+    if (Object.keys(selection).length) await this.updateSettings(selection)
+    return applied
+  }
+
+  /** 快速指令：包里带了自己的列表才替换，空数组也算「用户清空了」。 */
+  private async mergePackQuickCommands(raw: unknown): Promise<number> {
+    if (!Array.isArray(raw)) return 0
+    await this.saveQuickCommands(
+      raw
+        .filter((item): item is QuickCommandInput => Boolean(item) && typeof item === 'object')
+        .map((item) => ({ content: String((item as { content?: unknown }).content ?? '') })),
+    )
+    return 0
+  }
+
+  /** 反思报告是快照日志：按 id 去重后追加，不覆盖本机更早的报告。 */
+  private async mergePackReflectionReports(raw: unknown): Promise<number> {
+    if (!Array.isArray(raw) || !raw.length) return 0
+    const existing = new Set(this.state.reflectionReports.map((report) => report.id))
+    const incoming = (raw as ReflectionReport[]).filter(
+      (report) => report && typeof report.id === 'string' && !existing.has(report.id),
+    )
+    if (!incoming.length) return 0
+    this.state.reflectionReports = [...incoming, ...this.state.reflectionReports].slice(
+      0,
+      MAX_REFLECTION_REPORTS,
+    )
+    return 0
   }
 
   /**

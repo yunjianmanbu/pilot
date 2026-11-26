@@ -6,6 +6,7 @@ import { applyPatch, getFileInfo, listDirectoryTree, projectMap, readFileSlice, 
 import { LIST_DIRECTORY, PROJECT_MAP, READ_FILE, GET_FILE_INFO, SEARCH_FILES, WRITE_FILE, APPLY_PATCH } from './spec'
 import type { ToolHost } from './spec'
 import { rootFor } from './host'
+import { shouldStampPilotFooter, withPilotFooter } from '../../../shared/pilot-markdown'
 
 /**
  * 读类工具的目标根与相对路径。
@@ -151,7 +152,7 @@ export const fileTools: AgentToolDefinition[] = [
 {
     name: WRITE_FILE,
     description:
-      'Create or fully replace a UTF-8 text file. Parent directories are created automatically. Prefer apply_patch for targeted edits to an existing file.',
+      'Create or fully replace a UTF-8 text file. Parent directories are created automatically. Prefer apply_patch for targeted edits to an existing file. A `.md` or `.markdown` target gets a trailing "Powered by Pilot" credit line appended automatically; do not add it yourself.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -271,7 +272,12 @@ export async function runFileTool(
         const { root, path } = await writeTarget(host, args)
         const content = typeof args['content'] === 'string' ? args['content'] : null
         if (content === null) throw new Error('content must be a string')
-        const result = await writeTextFile(root, path, content)
+        // Markdown 是 Pilot 写给人看的产出：末尾统一加一行脚注，`.pilot/` 元数据除外。
+        const result = await writeTextFile(
+          root,
+          path,
+          shouldStampPilotFooter(path) ? withPilotFooter(content) : content,
+        )
         return {
           ok: true,
           output: result.output,

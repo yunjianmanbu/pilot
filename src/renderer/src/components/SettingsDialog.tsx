@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type {
   ApprovalMode,
+  CheckpointPreview,
+  CheckpointScope,
   CompanionStatus,
   QualityPublishTarget,
   SandboxMode,
@@ -24,6 +26,7 @@ import {
 import { InfoIcon, SparkIcon, XIcon } from '../icons'
 import { copyText } from '../clipboard'
 import { t } from '../i18n'
+import { CheckpointScopeSummary } from './CheckpointScopeSummary'
 import { EvolutionHub, type EvolutionTab } from './EvolutionHub'
 import { Field, Toggle } from './form-fields'
 import { HookRulesPanel } from './HookRulesPanel'
@@ -227,12 +230,22 @@ export function SettingsDialog({
   const [checkpointMaxMb, setCheckpointMaxMb] = useState(
     String(Math.round(settings.checkpointMaxBytes / (1024 * 1024))),
   )
+  const [checkpointScope, setCheckpointScope] = useState<CheckpointScope>(
+    settings.checkpointScope,
+  )
   const [checkpointShell, setCheckpointShell] = useState(settings.checkpointShell)
   // One pattern per line keeps the control honest: spaces and globs are legal
   // inside a pattern, so a comma-separated field would be ambiguous.
   const [checkpointIgnore, setCheckpointIgnore] = useState(
     settings.checkpointIgnore.join('\n'),
   )
+  /**
+   * 「快照范围」下方要回答「切到仅源码会少存多少」：数字由一次只读预览算出来，
+   * 不写任何文件。这是草稿的估算，所以跟着还没保存的跳过路径一起变。
+   */
+  const [snapshotPreview, setSnapshotPreview] = useState<CheckpointPreview | null>(null)
+  const [snapshotPreviewError, setSnapshotPreviewError] = useState('')
+  const [snapshotPreviewBusy, setSnapshotPreviewBusy] = useState(false)
   const [hooksEnabled, setHooksEnabled] = useState(settings.hooksEnabled)
   const [mcpEnabled, setMcpEnabled] = useState(settings.mcpEnabled)
   const [openingGlobal, setOpeningGlobal] = useState(false)
@@ -282,6 +295,45 @@ export function SettingsDialog({
       cancelled = true
     }
   }, [activeSection])
+
+  /**
+   * 快照范围旁边的对比数字：按草稿里的跳过路径算一次（scope 固定成 all，这样两个
+   * 数字能同时给出「全部」与「仅源码」），延时再跑，避免每敲一个字就扫一遍盘。
+   */
+  useEffect(() => {
+    if (activeSection !== 'sandbox' || !workspacePath) {
+      setSnapshotPreview(null)
+      setSnapshotPreviewError('')
+      setSnapshotPreviewBusy(false)
+      return
+    }
+    let cancelled = false
+    setSnapshotPreviewBusy(true)
+    const timer = window.setTimeout(() => {
+      window.pilot
+        .previewCheckpoints(workspacePath, {
+          ignore: linesOf(checkpointIgnore),
+          scope: 'all',
+        })
+        .then((preview) => {
+          if (cancelled) return
+          setSnapshotPreview(preview)
+          setSnapshotPreviewError('')
+        })
+        .catch((caught: unknown) => {
+          if (cancelled) return
+          setSnapshotPreview(null)
+          setSnapshotPreviewError(caught instanceof Error ? caught.message : String(caught))
+        })
+        .finally(() => {
+          if (!cancelled) setSnapshotPreviewBusy(false)
+        })
+    }, 600)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [activeSection, workspacePath, checkpointIgnore])
 
   const jumpTo = (id: SettingsSectionId) => setActiveSection(id)
 
@@ -528,6 +580,7 @@ export function SettingsDialog({
       qualityTuneEvery: Math.min(50, Math.max(0, Math.round(Number(qualityTuneEvery) || 0))),
       checkpointRetention: Math.round(retention),
       checkpointMaxBytes: Math.round(maxMb * 1024 * 1024),
+      checkpointScope,
       checkpointShell,
       checkpointIgnore: checkpointIgnore
         .split('\n')
@@ -1118,6 +1171,27 @@ export function SettingsDialog({
                   onChange={(event) => setCheckpointMaxMb(event.target.value)}
                 />
               </Field>
+              <Field
+                label={t("快照范围")}
+                hint={t(
+                  "全部文件：工作区里未被排除的文件都保存，回退时一并恢复，代价是大型目录会占满回退点空间。仅源码、文档与配置：只保存代码类文件，回退只覆盖这些文件，不会删除或恢复其它内容。",
+                )}
+              >
+                <SelectMenu
+                  value={checkpointScope}
+                  options={[
+                    { value: 'all', label: t("全部文件") },
+                    { value: 'code', label: t("仅源码、文档与配置") },
+                  ]}
+                  onChange={(value) => setCheckpointScope(value as CheckpointScope)}
+                  ariaLabel={t("快照范围")}
+                />
+              </Field>
+              <CheckpointScopeSummary
+                preview={snapshotPreview}
+                error={snapshotPreviewError}
+                busy={snapshotPreviewBusy}
+              />
               <Field
                 label={t("快照跳过的路径")}
                 hint={t(

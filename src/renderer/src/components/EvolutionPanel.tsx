@@ -21,16 +21,16 @@ import { ProfileDecision } from './ProfileDecision'
 import { SelfSourceSection } from './SelfSourceSection'
 import {
   ArrowUpRightIcon,
-  BrainIcon,
   CheckIcon,
-  ClockIcon,
   DownloadIcon,
   FilesIcon,
+  HistoryIcon,
   InfoIcon,
   RefreshIcon,
   SparkIcon,
   TerminalIcon,
   TrashIcon,
+  UsersIcon,
 } from '../icons'
 import { formatRelative } from '../ui'
 import { t } from '../i18n'
@@ -1563,7 +1563,7 @@ export function EvolutionPanel({
           </div>
         ) : (
           <div className="empty-panel">
-            <BrainIcon width={28} height={28} />
+            <UsersIcon width={28} height={28} />
             <strong>{t("尚未启用全局画像")}</strong>
             <span>
               {t("工作区画像运行稳定后，可以点击“提升为全局候选”，让跨项目仍然成立的经验在所有工作区生效。")}</span>
@@ -1596,7 +1596,7 @@ export function EvolutionPanel({
         {globalRetired.length > 0 ? (
           <details className="retired-section">
             <summary>
-              <ClockIcon width={14} height={14} />
+              <HistoryIcon width={14} height={14} />
               {t("全局历史版本 ·")}{globalRetired.length}
             </summary>
             <div className="retired-list">
@@ -1739,7 +1739,7 @@ export function EvolutionPanel({
           </div>
         ) : (
           <div className="empty-panel">
-            <BrainIcon width={28} height={28} />
+            <UsersIcon width={28} height={28} />
             <strong>{t("当前工作区尚未启用画像")}</strong>
             <span>
               {t("这个工作区还没有自己的运行画像；画像按工作区保存，其他工作区的版本不会显示在这里。 累计至少 3 次真实任务后，可以手动生成第一份候选版本。")}{canPropose ? '' : hasKey ? t(" 继续完成几个任务即可。") : t(" 先在设置中配置 API Key。")}
@@ -1795,7 +1795,7 @@ export function EvolutionPanel({
         <section className="evolution-section">
           <details className="retired-section">
             <summary>
-              <ClockIcon width={14} height={14} />
+              <HistoryIcon width={14} height={14} />
               {t("历史版本 ·")}{retired.length}
             </summary>
             <div className="retired-list">

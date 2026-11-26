@@ -370,6 +370,23 @@ export interface FitOptions extends CompactOptions {
   compactAbove?: number
 }
 
+/**
+ * Fraction of the message budget above which the opportunistic pass may rewrite
+ * history. 0.7 is deliberate, not a leftover: raising it to 0.8 was tried and
+ * measured against a week of `deepseek-flash` runs.
+ *
+ * The rewrite frequency turns out not to depend on this number. In steady state
+ * every new tool result pushes the oldest one out of `keepRecentToolResults`, so
+ * the pass fires roughly once per growing step no matter where the gate sits;
+ * raising it only moves the whole plateau ~9K higher, which buys no fewer
+ * rewrites, charges those tokens on every step, and pushed the share of steps
+ * that fall through to the aggressive pass (which does drop content) from 0.48%
+ * to 2.4%. Lowering it trades the same way in reverse. The lesson: the cache
+ * churn measured on this repo (~22.6M miss tokens a week) comes from rewriting
+ * per step, not from the gate's position.
+ */
+export const DEFAULT_COMPACT_ABOVE = 0.7
+
 export interface FitResult extends TrimResult {
   compacted: number
   savedChars: number
@@ -389,7 +406,7 @@ export function fitMessages(
   // Gate the first (lossless-looking) pass on real pressure: an unbounded
   // budget keeps the old behaviour, a budgeted run only rewrites history once
   // it is above the threshold.
-  const compactAbove = Math.min(Math.max(options.compactAbove ?? 0.7, 0), 1)
+  const compactAbove = Math.min(Math.max(options.compactAbove ?? DEFAULT_COMPACT_ABOVE, 0), 1)
   const underPressure =
     maxTokens <= 0 || messagesTokens(messages) > maxTokens * compactAbove
   const first = underPressure

@@ -25,13 +25,13 @@ import type {
 } from '../../../shared/types'
 import { artifactsFromCalls, collectArtifactsByRun } from '../../../shared/artifacts'
 import { ChevronIcon, InfoIcon, PilotMark } from '../icons'
-import { buildTranscript, liveAnswerText, liveProcess, withPendingProcesses, type LiveRun } from '../ui'
+import { buildTranscript, liveAnswerText, liveProcess, processParts, withPendingProcesses, type LiveRun } from '../ui'
 import { nextFollow } from '../scroll-follow'
 import { Markdown } from './Markdown'
 import { FileChangeBar } from './FileChangeBar'
 import type { TranscriptUsage } from '../tokens'
 import { ProcessBox } from './ProcessBox'
-import { ReasoningBlock } from './ReasoningBlock'
+import { StepDialog, type StepView } from './StepDialog'
 import { SelectionTodoMenu, type SelectionMenuState } from './SelectionTodoMenu'
 import { normalizeSelectionText } from '../selection'
 import { t } from '../i18n'
@@ -112,6 +112,9 @@ export interface ChatViewProps {
   /** 「查看更多」：open the session's files area. */
   onOpenArtifacts: () => void
 }
+
+/** 打开中的步骤弹框：由聊天视图持有，跨过一轮的实时框 → 历史块的替换。 */
+type OpenStep = StepView
 
 export function ChatView({
   workspace,
@@ -263,6 +266,13 @@ export function ChatView({
     return latest?.status === 'completed'
   }, [running, runs, session])
   const process = liveProcess(live)
+
+  /**
+   * 打开中的步骤弹框。状态放在这一层而不是执行过程框里：一轮结束时实时框
+   * 会被换成历史块（组件重挂），只有不重挂的上层持有，弹框才能做到「用户不
+   * 关就一直开着」，而不是思考完成就自己消失。
+   */
+  const [stepView, setStepView] = useState<OpenStep | null>(null)
   // The answer area shows the run's answer, never the text that followed it.
   const answerText = liveAnswerText(live)
   const empty = transcript.length === 0 && !live
@@ -329,6 +339,48 @@ export function ChatView({
     if (element) element.scrollTo({ top: element.scrollTop, behavior: 'auto' })
     setShowJump(true)
   }, [cancelFollowFrame])
+
+  // 弹框里的内容跟着这一轮走：思考续写就追加，工具出结果就换上新状态，
+  // 这一轮结束后只把 live 标记摘掉，文本停在最后一次写到的位置，等用户自己关。
+  useEffect(() => {
+    setStepView((current) => {
+      if (!current) return current
+      if (!process) {
+        return current.kind === 'reasoning' && current.live ? { ...current, live: false } : current
+      }
+      if (current.kind === 'tool') {
+        const tool = process.tools.find((entry) => entry.id === current.key)
+        if (!tool || tool === current.tool) return current
+        return { ...current, tool }
+      }
+      const parts = processParts(process)
+      const part = parts.find((entry) => entry.key === current.key)
+      if (!part) {
+        return current.kind === 'reasoning' && current.live ? { ...current, live: false } : current
+      }
+      if (current.kind === 'reasoning') {
+        if (part.kind !== 'reasoning') {
+          return current.live ? { ...current, live: false } : current
+        }
+        const live = Boolean(process.live) && parts[parts.length - 1]?.key === part.key
+        if (part.text === current.text && live === current.live) return current
+        return { ...current, text: part.text, live }
+      }
+      // 说明文字不会续写；读者开着弹框时，这一轮的新步骤不应改它。
+      if (part.kind === 'tool' || part.text === current.text) return current
+      return { ...current, text: part.text }
+    })
+  }, [process])
+
+  /** 执行过程框请求打开一项：思考、说明、工具调用走同一个弹框。 */
+  const openStep = useCallback(
+    (step: OpenStep) => {
+      setStepView(step)
+      // 读者在看这一步，就别让新到达的正文把他按回底部。
+      stopFollowing()
+    },
+    [stopFollowing],
+  )
 
   useEffect(() => {
     const id = session?.id ?? null
@@ -598,6 +650,7 @@ export function ChatView({
                   process={message}
                   onLoadSteps={loadProcessSteps}
                   initialExpanded={message.runId ? expandedRuns.has(message.runId) : false}
+                  onOpenStep={openStep}
                   key={message.id}
                 />
               )
@@ -628,6 +681,7 @@ export function ChatView({
               onLoadSteps={loadProcessSteps}
               initialExpanded={process.runId ? expandedRuns.has(process.runId) : false}
               onEngage={stopFollowing}
+              onOpenStep={openStep}
             />
           ) : null}
 
@@ -657,14 +711,6 @@ export function ChatView({
                     <i className="live-dot" />
                     {t("回复中")}</span>
                 </div>
-                {live.reasoning ? (
-                  <ReasoningBlock
-                    text={live.reasoning}
-                    className="answer-reasoning"
-                    live={running}
-                    onEngage={stopFollowing}
-                  />
-                ) : null}
                 <Markdown content={answerText} />
                 <span className="stream-caret" />
                 <FileChangeBar
@@ -674,18 +720,6 @@ export function ChatView({
                 />
               </div>
             </div>
-          ) : null}
-
-          {/* 思考先于回答到达：这一段还在写的时候也要看得到，而不是只有一个
-              转圈指示器。块默认收拢、标题行贴着最新一行滚动，读者自己展开后才
-              逐字追加；折叠或上滚后就停不再自动跟。 */}
-          {live?.reasoning && !answerText ? (
-            <ReasoningBlock
-              text={live.reasoning}
-              className="answer-reasoning live-reasoning"
-              live={running}
-              onEngage={stopFollowing}
-            />
           ) : null}
 
           {running && !answerText && !process ? (
@@ -742,6 +776,8 @@ export function ChatView({
           onClose={() => setSelectionMenu(null)}
         />
       ) : null}
+
+      {stepView ? <StepDialog step={stepView} onClose={() => setStepView(null)} /> : null}
 
       <div className="composer-dock">
         <ApprovalDock

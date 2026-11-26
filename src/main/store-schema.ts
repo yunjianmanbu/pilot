@@ -8,11 +8,11 @@
  */
 import { basename, isAbsolute, relative, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
+import { normalizeCheckpointIgnore, normalizeCheckpointScope } from '../shared/checkpoint-ignore'
 import { MODEL_TAG_MAX_LENGTH, modelTagLength, normalizeModelTag } from '../shared/model-label'
 import { isLocaleSetting, LocaleSetting } from '../shared/i18n'
 import { isFontSizePreference, isThemeMode } from '../shared/theme'
-import type { ApprovalMode, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionStage, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResourceInput, PermissionRules, Plan, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileVersion, QualityPublishTarget, QualityState, QuickCommand, ReviewEvidenceRef, ReviewFinding, ReviewReport, ReviewScope, ReviewScores, ReviewSessionScope, RunRecord, SandboxMode, ScheduleKind, ScheduledRunEntry, ScheduledTask, SelfSourceMode, Session, SessionKind, ShellInterpreter, StoredMessage, TestCaptchaMode, ThemeMode, FontSizePreference } from '../shared/types'
+import type { ApprovalMode, CheckpointScope, EvolutionCycle, EvolutionPolicy, EvolutionPolicyVersion, EvolutionStage, JudgeProviderInput, MemoryCategory, MemoryEntry, ModelResourceInput, PermissionRules, Plan, ProfileEvidence, ProfileExplanation, ProfileReview, ProfileVersion, QualityPublishTarget, QualityState, QuickCommand, ReviewEvidenceRef, ReviewFinding, ReviewReport, ReviewScope, ReviewScores, ReviewSessionScope, RunRecord, SandboxMode, ScheduleKind, ScheduledRunEntry, ScheduledTask, SelfSourceMode, Session, SessionKind, ShellInterpreter, StoredMessage, TestCaptchaMode, ThemeMode, FontSizePreference } from '../shared/types'
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, SETTING_CONTEXT_MAX, SETTING_CONTEXT_MIN, SETTING_OUTPUT_MAX, SETTING_OUTPUT_MIN } from '../shared/modelLimits'
 import { normalizeRelayUrl } from '../shared/relay'
 import {
@@ -172,6 +172,8 @@ export interface PersistedSettings {
   checkpointShell: boolean
   /** Paths a snapshot skips beyond the built-in list (snapshot-only). */
   checkpointIgnore: string[]
+  /** How much of the workspace each snapshot captures. */
+  checkpointScope: CheckpointScope
   notifyDesktop: boolean
   /**
    * 反思：让 Pilot 定期/在失败后对自身常规问题自问。
@@ -364,6 +366,7 @@ export function defaults(): PersistedState {
       checkpointMaxBytes: 2 * 1024 * 1024 * 1024,
       checkpointShell: true,
       checkpointIgnore: [],
+      checkpointScope: 'all',
       notifyDesktop: true,
       reflectEnabled: false,
       reflectModelId: '',
@@ -1817,6 +1820,7 @@ export function sanitize(raw: unknown, presetSessions?: Session[]): PersistedSta
     ),
     checkpointShell: settingsRaw['checkpointShell'] !== false,
     checkpointIgnore: normalizeCheckpointIgnore(settingsRaw['checkpointIgnore']),
+    checkpointScope: normalizeCheckpointScope(settingsRaw['checkpointScope']),
     notifyDesktop: settingsRaw['notifyDesktop'] !== false,
     hooksEnabled: settingsRaw['hooksEnabled'] === true,
     mcpEnabled: settingsRaw['mcpEnabled'] === true,

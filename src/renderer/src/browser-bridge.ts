@@ -606,6 +606,10 @@ function adaptToBrowser(bridge: PilotBridge, invoke: BridgeRpc['invoke']): void 
     return encodePickedImage(new Blob([data]))
   }
 
+  // 浏览器标签页里没有本机办公软件，也传不了几十兆的 PDF：高保真预览在服务端
+  // 模式下降级为内置解析器，界面据此隐藏「本机渲染」标注。
+  bridge.renderFile = async () => ({ engine: null, reason: 'server' })
+
   bridge.openDocument = async (workspace: string, file: string) => {
     const url = new URL('/doc.html', location.origin)
     url.searchParams.set('workspace', workspace)

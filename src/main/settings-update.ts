@@ -9,7 +9,7 @@ import {
   SETTING_OUTPUT_MIN,
 } from '../shared/modelLimits'
 import { isLocaleSetting } from '../shared/i18n'
-import { normalizeCheckpointIgnore } from '../shared/checkpoint-ignore'
+import { normalizeCheckpointIgnore, normalizeCheckpointScope } from '../shared/checkpoint-ignore'
 import { normalizeRelayUrl } from '../shared/relay'
 import { normalizeServerPort } from '../shared/server-mode'
 import { normalizeConfiguredSteps } from '../shared/step-budget'
@@ -319,6 +319,9 @@ export function applySettingsUpdate(
     }
     if (input.checkpointIgnore !== undefined) {
       settings.checkpointIgnore = normalizeCheckpointIgnore(input.checkpointIgnore)
+    }
+    if (input.checkpointScope !== undefined) {
+      settings.checkpointScope = normalizeCheckpointScope(input.checkpointScope)
     }
     if (input.notifyDesktop !== undefined) {
       settings.notifyDesktop = input.notifyDesktop !== false

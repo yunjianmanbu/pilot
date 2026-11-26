@@ -23,11 +23,25 @@ import type {
 } from './reflect'
 import type { UploadBatch } from './uploads'
 import type { SupervisorRound, SupervisorSettings, SupervisorState } from './supervisor'
+import type {
+  WorkspacePackCounts,
+  WorkspacePackExportResult,
+  WorkspacePackImportResult,
+  WorkspacePackManifest,
+  WorkspacePackScope,
+} from './workspace-pack'
 
 export type { ModuleCheckReport, ModuleCheckSettings, ModuleCheckState, ModuleTarget }
 export type { SupervisorRound, SupervisorSettings, SupervisorState }
 export type { ReflectionReport, ReflectionScheduleMode, ReflectionTopicId, ReflectionTriggers }
 export type { NotifyEventDef, NotifyEventId } from './notify-events'
+export type {
+  WorkspacePackCounts,
+  WorkspacePackExportResult,
+  WorkspacePackImportResult,
+  WorkspacePackManifest,
+  WorkspacePackScope,
+}
 
 /** Reflection mail transport: implicit TLS (465), STARTTLS (587) or plain. */
 export type ReflectionSmtpSecurity = 'tls' | 'starttls' | 'none'
@@ -305,6 +319,45 @@ export interface DiagnosticsSnapshot {
 
 export type CheckpointTrigger = 'prompt' | 'shell' | 'manual' | 'prerestore'
 export type CheckpointRestoreMode = 'code' | 'conversation' | 'both'
+/**
+ * How much of the workspace a snapshot captures. `all` walks everything the
+ * built-in rules allow, `code` keeps only source, docs and config files (its
+ * restore never deletes a file it did not capture). The user's own ignore list
+ * applies to both.
+ */
+export type CheckpointScope = 'all' | 'code'
+
+/** A top-level directory the size budget left out of a snapshot. */
+export interface SnapshotDirHint {
+  /** Workspace-relative top-level directory, e.g. `pilot/release`. */
+  path: string
+  files: number
+  bytes: number
+}
+
+/**
+ * What the next snapshot of a workspace would cover, computed without writing
+ * anything. Shown right after a workspace is opened, so the user learns what a
+ * rollback will not bring back before relying on one.
+ */
+export interface CheckpointPreview {
+  scope: CheckpointScope
+  /** Files that would enter the snapshot. */
+  files: number
+  /** Bytes those files occupy. */
+  bytes: number
+  /**
+   * Files a `code` scope would keep instead — answered in the same walk, so the
+   * panel can quote the number before the user switches away from `all`.
+   */
+  codeFiles: number
+  /** Bytes that `code` scope would keep. */
+  codeBytes: number
+  /** Directories the per-snapshot budget would leave out entirely. */
+  omittedDirs: SnapshotDirHint[]
+  /** True when the walk stopped at its time budget and the numbers are partial. */
+  truncated: boolean
+}
 
 export interface Checkpoint {
   id: string
@@ -323,6 +376,18 @@ export interface Checkpoint {
   hashed?: number
   /** Files restored from the workspace index without re-hashing. */
   reused?: number
+  /**
+   * Top-level directories that stayed out of the snapshot because of the size
+   * budget, a per-file limit or an unreadable file. Lets the UI say what the
+   * snapshot does not cover instead of only greying out the restore buttons.
+   */
+  omittedDirs?: SnapshotDirHint[]
+  /**
+   * What this snapshot covered. `code` restores source, docs and config only,
+   * so its restore never deletes files it never captured; absent means `all`,
+   * which is what every snapshot written before this field did.
+   */
+  scope?: CheckpointScope
   /**
    * True for the first snapshot of a session: the reference point for change
    * review and per-file revert. Pinned against retention and the size budget.
@@ -613,6 +678,40 @@ export interface SessionLink {
   context: string
   /** How many times the session mentions this URL. */
   count: number
+}
+
+/**
+ * Document families the «全局文档» page keeps: the file kinds you finish in an
+ * office application. Code, scripts and data files are deliberately absent.
+ */
+export type OfficeDocumentKind = 'word' | 'excel' | 'powerpoint' | 'pdf' | 'markdown'
+
+/** One office document a session produced, as the global library sees it. */
+export interface SessionDocument {
+  /** Workspace-relative path exactly as the tool recorded it. */
+  path: string
+  name: string
+  kind: OfficeDocumentKind
+  action: SessionArtifact['action']
+  tool: string
+}
+
+/** 「全部链接」按会话分组：一个会话一组，没有链接的会话不返回。 */
+export interface SessionLinkGroup {
+  sessionId: string
+  sessionTitle: string
+  workspacePath: string
+  sessionUpdatedAt: string
+  links: SessionLink[]
+}
+
+/** 「全部文档」按会话分组，形状与 {@link TodoGroup} 一致。 */
+export interface SessionDocumentGroup {
+  sessionId: string
+  sessionTitle: string
+  workspacePath: string
+  sessionUpdatedAt: string
+  documents: SessionDocument[]
 }
 
 /** Where a tool in the session catalog comes from. */
@@ -1781,6 +1880,8 @@ export interface SettingsView {
    * to snapshots only.
    */
   checkpointIgnore: string[]
+  /** How much of the workspace each snapshot captures. */
+  checkpointScope: CheckpointScope
   /** Show a desktop notification when a run finishes or needs approval. */
   notifyDesktop: boolean
   /** Run workspace `.pilot/hooks.json` commands. Off by default. */
@@ -1897,6 +1998,7 @@ export interface SettingsUpdate {
   checkpointShell?: boolean
   /** Patterns a snapshot skips; an empty array restores the built-in list only. */
   checkpointIgnore?: string[]
+  checkpointScope?: CheckpointScope
   notifyDesktop?: boolean
   hooksEnabled?: boolean
   mcpEnabled?: boolean
@@ -2165,6 +2267,25 @@ export interface FilePreview {
    * the sandboxed frame and the markdown body resolve relative assets.
    */
   baseUrl?: string
+}
+
+/** Office application that can turn a document into a PDF on this machine. */
+export type DocumentRenderEngine = 'wps' | 'office' | 'libreoffice'
+
+/**
+ * Result of the high-fidelity document render.
+ *
+ * `pdf` is present only when an office application really produced one; every
+ * other case carries a `reason`, which the renderer turns into one line next to
+ * the "open with the system app" button instead of a dead preview.
+ */
+export interface DocumentRender {
+  engine: DocumentRenderEngine | null
+  /** PDF bytes, transferred over IPC as a typed array (not a URL). */
+  pdf?: Uint8Array
+  /** True when the bytes came from the cache instead of a fresh conversion. */
+  cached?: boolean
+  reason?: 'unsupported' | 'missing' | 'no-engine' | 'failed' | 'large' | 'server'
 }
 
 export interface DocumentWindowState {
@@ -2696,6 +2817,21 @@ export interface PilotBridge {
   removeCompanionRoot(path: string): Promise<string[]>
 
   pickFolder(title?: string): Promise<string | null>
+  /**
+   * 把一个工作区导出成 `.zip` 包（会话、设置、文件、可选密钥）。
+   *
+   * `scope` 缺省时用 `DEFAULT_PACK_SCOPE`；`secrets` 依赖 `settings`。
+   * 用户取消保存对话框时返回 `{ path: null, manifest: null, secretCount: 0 }`。
+   */
+  exportWorkspacePack(
+    workspacePath: string,
+    scope?: Partial<WorkspacePackScope>,
+  ): Promise<WorkspacePackExportResult>
+  /**
+   * 导入一个 `.pilotpack.zip`：先选包，再选落地目录（`targetPath` 传了就不再问）。
+   * 密钥由主进程重新用 safeStorage 加密，包内明文不会留在磁盘上。
+   */
+  importWorkspacePack(targetPath?: string): Promise<WorkspacePackImportResult>
   openWorkspace(path: string): Promise<{ workspace: WorkspaceSummary; sessions: SessionSummary[] }>
   removeWorkspace(path: string): Promise<void>
   /** 给单个任务指定会话模型；空串清除，回到全局设置。 */
@@ -2734,6 +2870,13 @@ export interface PilotBridge {
   ): Promise<KnowledgePairsResult>
   /** External links this session mentions, newest first, from its transcript. */
   sessionLinks(sessionId: string): Promise<SessionLink[]>
+  /**
+   * 所有会话的链接汇总，左下角「全局链接」用一次调用取全量。
+   * 逐会话调用 `sessionLinks` 会在会话多时打上百次 IPC。
+   */
+  allSessionLinks(): Promise<SessionLinkGroup[]>
+  /** 所有会话产出的办公文档（Word / Excel / PowerPoint / PDF），同样一次取全量。 */
+  allSessionDocuments(): Promise<SessionDocumentGroup[]>
   /** Tools a run in this workspace could be offered, from every source. */
   toolsCatalog(sessionId: string): Promise<ToolCatalogEntry[]>
   /** 同一个工具箱，但按工作区汇总所有会话的调用次数（左下角「工具」用）。 */
@@ -2877,6 +3020,15 @@ export interface PilotBridge {
   /** 渲染进程未捕获异常转发给主进程写日志。 */
   reportRendererError(input: { summary: string; stack?: string; source?: string }): Promise<void>
   listCheckpoints(sessionId: string): Promise<Checkpoint[]>
+  /**
+   * 预览这个工作区的下一次快照会覆盖什么；只读，不写任何文件。
+   * 传入 `options` 时按还没保存的草稿计算（设置页把「切到仅源码会少存多少」摆出来），
+   * 省略则用已保存的快照设置。
+   */
+  previewCheckpoints(
+    workspacePath: string,
+    options?: { ignore?: readonly string[]; scope?: CheckpointScope },
+  ): Promise<CheckpointPreview>
   createCheckpoint(sessionId: string, label?: string): Promise<Checkpoint>
   restoreCheckpoint(
     sessionId: string,
@@ -3087,6 +3239,17 @@ export interface PilotBridge {
    * oversized scans). The path is jail-checked against the workspace first.
    */
   openFile(path: string, file: string): Promise<void>
+  /**
+   * Draw a Word / Excel / PowerPoint file the way the office application on
+   * this machine draws it: the main process converts it to PDF and returns the
+   * bytes, and the renderer shows those pages with the PDF pager. This is the
+   * high-fidelity path next to the built-in parsers, which recover text but
+   * lose pagination, column widths and slide layout.
+   *
+   * The bytes are returned over IPC instead of as a `pilot-media:` URL because
+   * the PDF lands in the app cache, outside the workspace that protocol serves.
+   */
+  renderFile(path: string, file: string): Promise<DocumentRender>
   /**
    * Open one workspace file in a standalone window, so reading a long report
    * never competes with the transcript (or pauses a running task).

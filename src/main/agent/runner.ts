@@ -1192,6 +1192,7 @@ export class AgentRunner {
         retention: this.store.settings().checkpointRetention,
         maxBytes: this.store.settings().checkpointMaxBytes,
         ignore: this.store.settings().checkpointIgnore,
+        scope: this.store.settings().checkpointScope,
       })
     } catch (error) {
       this.emit({

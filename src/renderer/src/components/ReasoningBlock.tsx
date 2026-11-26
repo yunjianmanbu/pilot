@@ -1,17 +1,24 @@
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { t } from '../i18n'
+import { XIcon } from '../icons'
+import { partGlyph } from './process-icons'
 import { ProcessTime } from './ProcessTime'
+import { useEscapeClose } from './useEscapeClose'
 
 /** Collapsed peek: the first line of the model's reasoning, cut short. */
 const PEEK_CHARS = 80
 
-/** While a block is live, stay glued to the newest line until the reader scrolls up. */
+/** While a dialog is live, stay glued to the newest line until the reader scrolls up. */
 const STICK_THRESHOLD_PX = 24
 
 /**
  * First non-empty line of a reasoning text, whitespace flattened, clipped.
- * The summary line must stay one line, so the newline is dropped here instead
- * of relying on CSS (which cannot shorten an arbitrary long first line well).
+ *
+ * This is the only thing a folded step shows, and it is deliberately the *first*
+ * line rather than the newest one: a title that tracked the tail re-flowed on
+ * every token, and a block whose title keeps changing height makes the whole
+ * transcript jump while the model thinks.
  */
 export function reasoningPeek(value: string, max = PEEK_CHARS): string {
   const first = value
@@ -23,78 +30,85 @@ export function reasoningPeek(value: string, max = PEEK_CHARS): string {
 }
 
 /**
- * Last non-empty line, flattened and clipped. A block that is still streaming
- * shows its newest line instead of its first one, so the folded title keeps
- * changing while the model thinks — the same signal the phone client gives by
- * appending the thinking inline.
- */
-export function reasoningTail(value: string, max = PEEK_CHARS): string {
-  const lines = value
-    .split('\n')
-    .map((line) => line.replace(/\s+/g, ' ').trim())
-    .filter((line) => line.length > 0)
-  const last = lines.at(-1) ?? ''
-  if (!last) return ''
-  return last.length <= max ? last : `${last.slice(0, max)}…`
-}
-
-/**
- * The one line that sits next to the title of a folded block.
+ * One folded step of thinking: a single row inside the execution box.
  *
- * Folded, it carries a line of the thinking so the steps stay tellable apart
- * without opening every one of them. Expanded it returns nothing: the text is
- * right underneath, and repeating its first line in the title reads as clutter
- * (and is the first thing the eye lands on while scanning the real content).
- */
-export function reasoningSummary(
-  value: string,
-  { live = false, open = false }: { live?: boolean; open?: boolean } = {},
-  max = PEEK_CHARS,
-): string {
-  if (open) return ''
-  return live ? reasoningTail(value, max) : reasoningPeek(value, max)
-}
-
-/**
- * A folded reasoning block.
- *
- * Folded is the default, streaming or not: the thinking is background, so it
- * never takes over the transcript by itself. `live` only changes what the one
- * folded line says — the newest line instead of the first one, so a long think
- * visibly moves forward — and adds a pulsing dot next to the title.
- *
- * Once opened, the block follows the newest text while `live`, so the reader
- * can watch the step write; a finished block opens at its top instead, which is
- * how it is read. Scrolling inside the block stops the following.
+ * The row never expands in place. Opening the full text into a dialog instead is
+ * what keeps the transcript still: an inline body grows and shrinks as thinking
+ * streams in and as the next step replaces it, which is exactly the jumping the
+ * reader complained about. The row itself is a button so the whole line is the
+ * target.
  */
 export function ReasoningBlock({
   text,
-  at,
   className,
   live = false,
-  onEngage,
+  onOpen,
 }: {
   text: string
-  /** Wall-clock moment of the step, shown as the first line when expanded. */
-  at?: string | undefined
   className?: string | undefined
   /** True while this step's thinking is still being written. */
   live?: boolean
-  /** The reader touched this block: the transcript must stop auto-scrolling. */
-  onEngage?: (() => void) | undefined
+  /** Open the full text; without it the row is a plain, unclickable line. */
+  onOpen?: (() => void) | undefined
 }) {
-  /**
-   * `null` means «the reader has not decided»: folded, like every block. A
-   * click pins their own choice so the next token does not re-fold or re-open
-   * what they are looking at.
-   */
-  const [manualOpen, setManualOpen] = useState<boolean | null>(null)
-  const open = manualOpen === true
+  const peek = reasoningPeek(text)
+  const body = (
+    <>
+      <span className="step-glyph glyph-think">{partGlyph('reasoning')}</span>
+      <span className="reasoning-label">{t("思考过程")}</span>
+      {live ? <i className="live-dot reasoning-live" /> : null}
+      {peek ? (
+        <span className="reasoning-peek" title={peek}>
+          {peek}
+        </span>
+      ) : null}
+      {onOpen ? <span className="reasoning-fold-hint">{t("详情")}</span> : null}
+    </>
+  )
+  if (!onOpen) {
+    return <div className={`reasoning-block${className ? ` ${className}` : ''}`}>{body}</div>
+  }
+  return (
+    <button
+      type="button"
+      className={`reasoning-block${className ? ` ${className}` : ''}`}
+      onClick={onOpen}
+      title={t("展开查看完整思考")}
+    >
+      {body}
+    </button>
+  )
+}
+
+/**
+ * The full thinking of one step, in a dialog.
+ *
+ * The dialog belongs to whoever opened it, not to the step: it stays until the
+ * reader closes it. That is the second half of the fix — the old inline body
+ * vanished the moment the step settled into the transcript, so the text the
+ * reader had just opened disappeared on its own.
+ *
+ * While the step is still being written the body follows the newest line; the
+ * reader scrolling up stops the following, exactly like the transcript does.
+ */
+export function ReasoningDialog({
+  text,
+  at,
+  live = false,
+  onClose,
+}: {
+  text: string
+  /** Wall-clock moment of the step, shown as the first line. */
+  at?: string | undefined
+  /** Still being written: keep following the newest line. */
+  live?: boolean
+  onClose: () => void
+}) {
+  useEscapeClose(onClose)
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const stickRef = useRef(true)
   /** True while a pin-to-bottom scroll we issued is still being reported. */
   const pinningRef = useRef(false)
-  const peek = reasoningSummary(text, { live, open })
 
   const pin = useCallback(() => {
     const node = bodyRef.current
@@ -105,20 +119,11 @@ export function ReasoningBlock({
     node.scrollTop = bottom
   }, [])
 
-  // The moment the block opens: still being written → the newest line, so the
-  // reader watches it arrive; already finished → the top, where reading starts.
-  useLayoutEffect(() => {
-    const node = bodyRef.current
-    if (!open || !node) return
-    if (stickRef.current) pin()
-    else node.scrollTop = 0
-  }, [open, pin])
-
   // Same commit that appends the new text, before the browser reports the
   // scroll its own anchoring caused.
   useLayoutEffect(() => {
-    if (open) pin()
-  }, [text, open, pin])
+    pin()
+  }, [text, pin])
 
   const handleScroll = () => {
     const node = bodyRef.current
@@ -140,41 +145,86 @@ export function ReasoningBlock({
     if ((event.deltaY ?? 0) < 0 || !atBottom) stickRef.current = false
   }
 
-  const toggle = (event: { preventDefault: () => void }) => {
-    // The details element is controlled: without this the browser flips `open`
-    // itself and React immediately writes the old value back.
-    event.preventDefault()
-    const next = !open
-    setManualOpen(next)
-    // Opening a live block keeps following the newest line; a finished block
-    // starts from its first line instead of jumping to the end.
-    if (next) stickRef.current = live
-    onEngage?.()
-  }
-
-  return (
-    <details className={`reasoning-block${className ? ` ${className}` : ''}`} open={open}>
-      <summary onClick={toggle}>
-        <span className="reasoning-label">{t("思考过程")}</span>
-        {live ? <i className="live-dot reasoning-live" /> : null}
-        {peek ? (
-          <span className="reasoning-peek" title={peek}>
-            {peek}
-          </span>
-        ) : null}
-        {/* 展开后标题行只剩标题：正文就在下面，重复首行只是噪音。 */}
-        {open ? <span className="reasoning-fold-hint">{t("收起")}</span> : null}
-      </summary>
+  const dialog = (
+    <div className="modal-backdrop reasoning-backdrop" onMouseDown={onClose}>
       <div
-        className="reasoning-content"
-        ref={bodyRef}
-        onScroll={handleScroll}
-        onWheel={releasePin}
-        onTouchMove={() => releasePin({})}
+        className="modal reasoning-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("思考过程")}
+        onMouseDown={(event) => event.stopPropagation()}
       >
-        <ProcessTime at={at} />
-        {text}
+        <div className="modal-head">
+          <div>
+            <h2>
+              <span className="step-modal-glyph glyph-think">
+                {partGlyph('reasoning')}
+              </span>
+              {t("思考过程")}
+              {live ? <i className="live-dot reasoning-live" /> : null}
+            </h2>
+            <p>{live ? t("正在思考，内容会继续追加。") : t("这段思考已经结束。")}</p>
+          </div>
+          <button type="button" className="modal-close" onClick={onClose} aria-label={t("关闭")}>
+            <XIcon width={14} height={14} />
+          </button>
+        </div>
+        <div
+          className="modal-body reasoning-content"
+          ref={bodyRef}
+          onScroll={handleScroll}
+          onWheel={releasePin}
+          onTouchMove={() => releasePin({})}
+        >
+          <ProcessTime at={at} />
+          {text}
+        </div>
       </div>
-    </details>
+    </div>
+  )
+  return createPortal(dialog, document.body)
+}
+
+/**
+ * A folded step plus the dialog it opens, for the places that own one thinking
+ * block and nothing else (a stored answer that carries its own reasoning).
+ *
+ * The execution box does not use this: it holds several steps at once and has to
+ * survive a step being folded away, so it keeps the open key itself.
+ */
+export function ReasoningSection({
+  text,
+  at,
+  className,
+  live = false,
+  onEngage,
+}: {
+  text: string
+  at?: string | undefined
+  className?: string | undefined
+  live?: boolean
+  onEngage?: (() => void) | undefined
+}) {
+  const [open, setOpen] = useState(false)
+  // A block that stops streaming keeps its dialog: only the reader closes it.
+  const [frozen, setFrozen] = useState('')
+  useEffect(() => {
+    if (open) setFrozen(text)
+  }, [open, text])
+  return (
+    <>
+      <ReasoningBlock
+        text={text}
+        className={className}
+        live={live}
+        onOpen={() => {
+          setOpen(true)
+          onEngage?.()
+        }}
+      />
+      {open ? (
+        <ReasoningDialog text={frozen || text} at={at} live={live} onClose={() => setOpen(false)} />
+      ) : null}
+    </>
   )
 }

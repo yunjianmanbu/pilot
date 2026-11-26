@@ -98,6 +98,7 @@ export function DocumentWindow({ workspace, path }: { workspace: string; path: s
           <FilePreviewBody
             key={preview.path}
             preview={preview}
+            workspacePath={workspace}
             onOpenExternal={() => {
               void window.pilot.openFile(workspace, path).catch(() => undefined)
             }}

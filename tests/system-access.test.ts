@@ -122,6 +122,7 @@ const settings: SettingsView = {
   checkpointMaxBytes: 250 * 1024 * 1024,
   checkpointShell: true,
   checkpointIgnore: [],
+  checkpointScope: 'all',
   notifyDesktop: true,
   notifyEmailEnabled: false,
   notifyEmailEvents: ['reflect.report'],
