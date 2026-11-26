@@ -25,6 +25,11 @@ import {
   renderFallbackCopy,
 } from '../src/renderer/src/components/DocumentPreview'
 import type { DocumentRender, FilePreview } from '../src/shared/types'
+import { setLocale } from '../src/renderer/src/i18n'
+
+// The fallback copy below is asserted in Chinese; the CI runner defaults to en-US,
+// so pin the effective locale before rendering instead of asserting whatever the host uses.
+setLocale('zh-CN')
 
 function preview(partial: Partial<FilePreview>): FilePreview {
   return {
