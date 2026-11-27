@@ -2375,6 +2375,185 @@ button.header-title:hover {
   transform: rotate(90deg);
 }
 
+/* ── 首启引导 ───────────────────────────────────────────────────────────── */
+
+/*
+ * 三步条贴在会话区顶部。宽度收在 680px 以内：它只是一张提示卡，不该在宽屏上
+ * 铺成一整行横幅把会话内容推下去。
+ *
+ * 卡片必须落在 `.messages-inner` 的内容流最前面（与会话正文同宽、同一套 gap），
+ * 所以用 auto 居中、不再自带顶部外边距。放在滚动容器外面会占掉会话区固定高度，
+ * 把欢迎页顶出一段滚动量，P 标记被卷到卡片下面重叠（实测 scrollTop 129.6 /
+ * 卡片 bottom 282 + 标记 top 204）。
+ */
+.onboarding {
+  width: min(680px, 100%);
+  margin: 0 auto;
+  padding: 13px 15px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  animation: fade-in 0.3s ease;
+}
+
+.onboarding-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.onboarding-title {
+  margin: 0;
+  font-size: calc(13px * var(--font-scale));
+  font-weight: 650;
+  color: var(--text);
+}
+
+.onboarding-skip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  font-size: calc(12px * var(--font-scale));
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.onboarding-skip:hover {
+  color: var(--text);
+}
+
+.onboarding-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel);
+  /* 未到的步骤压暗：让人一眼看出自己在第几步，而不是三块一样重的卡片。 */
+  opacity: 0.55;
+}
+
+.onboarding-step.is-active,
+.onboarding-step.is-done {
+  opacity: 1;
+}
+
+.onboarding-step.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.onboarding-step-icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--text-soft);
+}
+
+.onboarding-step.is-active .onboarding-step-icon {
+  color: var(--accent);
+}
+
+.onboarding-step.is-done .onboarding-step-icon {
+  color: var(--accent);
+}
+
+.onboarding-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.onboarding-step-text strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: calc(12.5px * var(--font-scale));
+  font-weight: 600;
+  color: var(--text);
+}
+
+.onboarding-step-index {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--panel-3);
+  font-size: calc(10px * var(--font-scale));
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.onboarding-step.is-active .onboarding-step-index {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.onboarding-step-text small {
+  font-size: calc(11.5px * var(--font-scale));
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+
+.onboarding-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 11px;
+}
+
+.onboarding-foot-hint {
+  font-size: calc(11.5px * var(--font-scale));
+  color: var(--text-soft);
+}
+
+/* 窄窗口下三步并排会把每个字挤成竖排，改成竖排列表。 */
+@media (max-width: 720px) {
+  .onboarding-steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 引导第 1 步会把用户带到「模型」页（密钥输入框在那里），引导卡随之离开屏幕：
+   这条浮标留在右下角，把人接回会话走第 2、3 步。定位跟 toast 一族一致。 */
+.onboarding-return {
+  position: fixed;
+  right: 22px;
+  bottom: 96px;
+  z-index: 210;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  box-shadow: 0 12px 30px -18px rgba(0, 0, 0, 0.9);
+  font-size: calc(12px * var(--font-scale));
+  color: var(--text-soft);
+  animation: fade-in 0.25s ease;
+}
+
 /* ── Welcome ───────────────────────────────────────────────────────────── */
 
 .welcome {
@@ -2416,57 +2595,134 @@ button.header-title:hover {
   line-height: 1.8;
 }
 
-.welcome-alert {
+/* 空态的三条只读示例：点一下就在只读档位跑，是空态的主体内容。 */
+
+.welcome-samples {
   width: 100%;
-  max-width: 600px;
+  max-width: 720px;
+  margin-bottom: 18px;
+}
+
+.welcome-samples-head {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 20px;
-  padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  border-radius: 12px;
-  background: var(--accent-faint);
-  color: var(--text-soft);
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+  padding: 0 2px;
   text-align: left;
 }
 
-.welcome-alert:hover {
-  background: var(--accent-soft);
+.welcome-samples-title {
+  font-size: calc(12px * var(--font-scale));
+  font-weight: 650;
+  color: var(--text-soft);
+  letter-spacing: 0.02em;
 }
 
-.welcome-alert-icon {
+.welcome-samples-hint {
+  font-size: calc(11px * var(--font-scale));
+  color: var(--faint);
+}
+
+/* 缺 Key 时这行就是唯一的配置入口（原来的橙色横幅已从空态移除）。 */
+.welcome-samples-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, var(--border));
+  border-radius: 999px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: calc(11px * var(--font-scale));
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.welcome-samples-key:hover {
+  border-color: color-mix(in srgb, var(--amber) 55%, var(--border));
+  background: color-mix(in srgb, var(--amber) 16%, var(--panel));
+}
+
+.sample-grid {
   display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  flex: none;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
 }
 
-.welcome-alert > span:nth-child(2) {
+.sample-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-width: 0;
+  gap: 4px;
+  padding: 12px 13px 11px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text-soft);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
 }
 
-.welcome-alert strong {
+.sample-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--accent-faint);
+  transform: translateY(-1px);
+}
+
+.sample-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.sample-card-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.sample-card-badge {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: calc(10px * var(--font-scale));
+  line-height: 1.6;
+}
+
+.sample-card strong {
   font-size: calc(12.5px * var(--font-scale));
   font-weight: 650;
   color: var(--text);
 }
 
-.welcome-alert small {
+.sample-card small {
   font-size: calc(11px * var(--font-scale));
   color: var(--muted);
+  line-height: 1.45;
 }
 
-.welcome-alert > svg {
+.sample-card-go {
+  position: absolute;
+  right: 11px;
+  bottom: 10px;
   color: var(--faint);
-  flex: none;
+  transform: rotate(-90deg);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.sample-card:hover .sample-card-go {
+  opacity: 1;
+  color: var(--accent);
 }
 
 .welcome-actions {
@@ -5432,6 +5688,131 @@ button.queue-content {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* ── 命令面板（Ctrl+K）───────────────────────────────────────────────────
+   复用 .modal 壳。两处与普通弹框不同：
+
+   1. 顶部对齐（12vh）。列表高度随搜索结果变化，居中的话每敲一个字整块都在跳；
+   2. 只有一行输入框 + 一列命令，没有标题栏与底部按钮，所以宽高都收窄。 */
+.modal-backdrop.palette-backdrop {
+  align-items: start;
+  padding-top: min(12vh, 110px);
+}
+
+.palette {
+  max-width: 620px;
+  max-height: min(70vh, 560px);
+}
+
+.palette-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--surface-border);
+  color: var(--muted);
+}
+
+.palette-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: calc(14px * var(--font-scale));
+  outline: none;
+}
+
+.palette-input::placeholder {
+  color: var(--muted);
+}
+
+.palette-esc {
+  flex: none;
+  color: var(--muted);
+  font-size: calc(11px * var(--font-scale));
+}
+
+.palette-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: calc(13px * var(--font-scale));
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 键盘光标与鼠标悬停都用 aria-selected 表达：两种操作看到的是同一个高亮。 */
+.palette-item[aria-selected='true'] {
+  background: var(--hover-strong);
+}
+
+.palette-item.is-disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.palette-item.is-disabled[aria-selected='true'] {
+  background: transparent;
+}
+
+.palette-icon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--muted);
+}
+
+.palette-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-group {
+  flex: none;
+  color: var(--muted);
+  font-size: calc(11px * var(--font-scale));
+}
+
+.palette-kbd {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--surface-border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: calc(11px * var(--font-scale));
+}
+
+.palette-empty {
+  margin: 0;
+  padding: 22px 12px;
+  color: var(--muted);
+  font-size: calc(12.5px * var(--font-scale));
+  text-align: center;
 }
 
 /* ── 系统资源详情 ────────────────────────────────────────────────────────
@@ -11013,6 +11394,10 @@ button.queue-content {
     grid-template-columns: 1fr;
   }
 
+  .sample-grid {
+    grid-template-columns: 1fr;
+  }
+
   .page-head {
     flex-direction: column;
   }
@@ -11049,13 +11434,91 @@ button.queue-content {
   }
 }
 
+/* ── 无障碍：读屏专用文本与动效降级 ─────────────────────────────────────── */
+
+/*
+ * 视觉隐藏，但仍留在可访问性树里。
+ *
+ * `display: none` 与 `visibility: hidden` 会让读屏彻底读不到，所以 live region
+ * 一律用这套 clip 写法。`position: absolute` 是必须的：播报区一旦进入文档流，
+ * `.messages-scroll` 的 scrollHeight 就把它算进去，`followLatest` 的「是否已在
+ * 底部」判断会跟着漂。
+ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/*
+ * 系统开启「减少动效」后的降级，分三层，别只做第一层：
+ *
+ * 1. 全量压掉过渡与动画时长——位移、缩放、淡入都不再播放；
+ * 2. 反转处理几处「靠动画本身表达信息」的元素：全量压缩会把它们的动画瞬间
+ *    跑完并停在最后一帧（旋转环停在 360°、三个点停在某个偏移），看起来像
+ *    坏掉。它们都还有颜色、缺口或文字在表达同一件事，改成静态形态即可读懂；
+ * 3. 滚动不滑。`scroll-behavior` 与 JS 的 `scrollTo({ behavior: 'smooth' })`
+ *    都不受上面 animation / transition 规则约束，CSS 侧在这里关掉，JS 侧
+ *    统一走 a11y/reduced-motion.ts（`scrollBehaviorNow()`）。
+ */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+    transition-delay: 0s !important;
+  }
+
+  html {
+    scroll-behavior: auto;
+  }
+
+  /*
+   * 这份清单是源码里全部 `animation: … infinite` 的宿主（共 12 处，
+   * `.spinner` 的 .small / .tiny 变体共用同一个类名已覆盖）。`tests/a11y-styles.test.ts`
+   * 会逐条比对：新增一个循环动画而忘了登记，那条测试直接失败。
+   */
+  .spinner,
+  .live-dot,
+  .run-dot,
+  .status-running .status-dot,
+  .status-waiting .status-dot,
+  .session-plan-dot.is-active,
+  .stream-caret,
+  .typing-dots i,
+  .approval-pulse,
+  .is-spinning,
+  .doc-spinner,
+  .chat-stage.is-switching::after {
+    animation: none !important;
+  }
+
+  /* 三个点分开站在不同亮度上，比全亮成一条更容易看出「正在输出」。 */
+  .typing-dots i {
+    opacity: 0.5;
+  }
+
+  .typing-dots i:nth-child(2) {
+    opacity: 0.75;
+  }
+
+  /* 切换进度条失去扫光效果后会什么都不显：改成右侧一段静态短条，仍提示正在切。 */
+  .chat-stage.is-switching::after {
+    left: auto;
+    right: 0;
+    width: 32%;
+    opacity: 0.5;
+    transform: none;
   }
 }
 
@@ -15432,7 +15895,6 @@ button.queue-content {
 .topbar-update:hover,
 .topbar-update.downloading,
 .topbar-update.ready,
-.welcome-alert,
 .run-error-card,
 .approval-card,
 .review-card,
@@ -16529,6 +16991,11 @@ button.queue-content {
 .self-check-stamp {
   color: var(--faint);
   font-size: calc(11px * var(--font-scale));
+}
+
+/* 导出成功后的回执：和统计戳同一行，但用成功色区分「这是刚刚发生的动作」。 */
+.self-check-export-note {
+  color: var(--ok);
 }
 
 .self-check-section {

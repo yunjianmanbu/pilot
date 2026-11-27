@@ -229,12 +229,19 @@ export function registerSettingsIpc(ctx: IpcContext): void {
       // 地址就能把主 key 发出去。
       const apiKey =
         input?.apiKey?.trim() || target?.apiKey || (sameAsPrimary ? ctx.store.getApiKey() : '') || ''
-      return discoverModels({
+      const catalog = await discoverModels({
         baseUrl,
         apiKey,
         current: input?.current ?? '',
         refresh: input?.refresh === true,
       })
+      // 说明文案是主进程拼的（带 host / 状态码），英文界面里会变成夹在英文界面中的中文；
+      // 在这里按界面语言翻一遍，未收录的文案原样返回。
+      if (catalog.note) {
+        const note = localizeMain(catalog.note, ctx.store.uiLocale())
+        if (note !== catalog.note) return { ...catalog, note }
+      }
+      return catalog
     },
   )
 

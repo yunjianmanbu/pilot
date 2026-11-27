@@ -9,6 +9,8 @@ import { openLink } from '../preview'
 import { prepareSelfSource } from '../self-source'
 import { resolve } from 'node:path'
 import { resolveExisting } from '../workspace'
+import { exportDiagnosticsBundle } from './diagnostics-export'
+import type { DiagnosticsExportResult } from '../../shared/diagnostics-bundle'
 import type { ContributionEvidence, PersonalVersionInput } from '../../shared/types'
 
 export function registerPersonalIpc(ctx: IpcContext): void {
@@ -285,6 +287,25 @@ export function registerPersonalIpc(ctx: IpcContext): void {
 
 
   ctx.handle('pilot:self-check-run', () => ctx.collectSelfCheck())
+
+  // 导出诊断包：只写本地 zip，不调用任何网络接口。服务器模式下系统保存对话框不可用，
+  // 由 electron-shim 抛出，这里转成 ok:false 让界面显示原因，而不是崩在 IPC 层。
+  ctx.handle('pilot:diagnostics-export', async (workspacePath?: string) => {
+    try {
+      return await exportDiagnosticsBundle(ctx, workspacePath)
+    } catch (error) {
+      return {
+        ok: false,
+        cancelled: false,
+        path: null,
+        files: 0,
+        logLines: 0,
+        bytes: 0,
+        blocked: [],
+        error: error instanceof Error ? error.message : String(error),
+      } satisfies DiagnosticsExportResult
+    }
+  })
 
   ctx.handle('pilot:open-link', async (url: string, external?: boolean) => {
     await openLink(url, { external, activeRoot: () => ctx.store.activeWorkspace() })

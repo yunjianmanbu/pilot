@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CompanionPairing, CompanionStatus } from '../../../shared/types'
 import { RELAY_DOWNLOADS } from '../../../shared/relay'
 import { copyText } from '../clipboard'
+import { scrollBehaviorNow } from '../a11y/reduced-motion'
 import { useEscapeClose } from './useEscapeClose'
 import {
   CopyIcon,
@@ -137,10 +138,9 @@ export function CompanionDialog({ open, onClose, onError }: CompanionDialogProps
   useEffect(() => {
     if (!pairing || !pairingRef.current) return
     const frame = window.requestAnimationFrame(() => {
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
       pairingRef.current?.scrollIntoView({
         block: 'nearest',
-        behavior: reduced ? 'auto' : 'smooth',
+        behavior: scrollBehaviorNow(),
       })
     })
     return () => window.cancelAnimationFrame(frame)

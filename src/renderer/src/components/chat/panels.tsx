@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import type {
   QueuedTask,
   QuickCommand,
@@ -12,16 +13,18 @@ import type { FailureAction } from '../../../../shared/run-failure'
 import { classifyRunFailure, failureAction } from '../../../../shared/run-failure'
 import {
   BookmarkIcon,
+  BookOpenIcon,
   CheckIcon,
   ChevronIcon,
   ClockIcon,
   FolderIcon,
-  InfoIcon,
+  LightbulbIcon,
   ListCheckIcon,
   PauseIcon,
   PilotMark,
   PlayIcon,
   PlusIcon,
+  SearchIcon,
   SendIcon,
   SparkIcon,
   XIcon,
@@ -31,6 +34,17 @@ import { QuickCommandsDialog } from '../QuickCommandsDialog'
 import { TodoPrioritySelect } from '../TodoPrioritySelect'
 import { runElapsedLabel } from '../../ui'
 import { QUICK_PROMPTS } from './composer-state'
+import { READONLY_SAMPLES, type ReadonlySampleId } from '../../../../shared/readonly-samples'
+
+/**
+ * 三个只读示例的图标。文案不放在映射表里：i18n 覆盖率测试只认渲染层
+ * `t('字面量')` 的写法，用变量传进来的 key 会被当成「没人用」。
+ */
+const SAMPLE_ICON: Record<ReadonlySampleId, ReactNode> = {
+  overview: <SearchIcon width={15} height={15} />,
+  walkthrough: <BookOpenIcon width={15} height={15} />,
+  improve: <LightbulbIcon width={15} height={15} />,
+}
 
 export function Welcome({
   workspace,
@@ -41,6 +55,7 @@ export function Welcome({
   onPickWorkspace,
   onOpenSettings,
   onQuickStart,
+  onRunSample,
 }: {
   workspace: WorkspaceSummary | null
   hasKey: boolean
@@ -50,6 +65,8 @@ export function Welcome({
   onPickWorkspace: () => void
   onOpenSettings: () => void
   onQuickStart: (text: string) => void
+  /** 空态的只读示例：点一下就跑到只读档位，不碰工作区。 */
+  onRunSample: (prompt: string) => void
 }) {
   const [manageOpen, setManageOpen] = useState(false)
   const prompts: QuickCommand[] =
@@ -66,17 +83,64 @@ export function Welcome({
           : t("Pilot 是一个本地运行的自主智能体。授权一个文件夹，它就能理解代码、执行命令、修改文件，并把每次经验留在这个工作区。")}
       </p>
 
-      {!hasKey ? (
-        <button type="button" className="welcome-alert" onClick={onOpenSettings}>
-          <span className="welcome-alert-icon">
-            <InfoIcon width={16} height={16} />
-          </span>
-          <span>
-            <strong>{t("还差一个 API Key")}</strong>
-            <small>{t("本地加密保存，不注册、不登录，配置后即可开始。")}</small>
-          </span>
-          <ChevronIcon width={16} height={16} />
-        </button>
+      {/*
+        空态主体是三条只读示例，不再是单独一句「还差一个 API Key」。
+        缺 Key 这件事改写进示例区的说明行：用户看到的是「点一下要发生什么」，
+        而不是一条必须先处理的错误提示。
+      */}
+      {workspace ? (
+        <div className="welcome-samples">
+          <div className="welcome-samples-head">
+            <span className="welcome-samples-title">{t("只读示例")}</span>
+            <span className="welcome-samples-hint">
+              {hasKey ? (
+                t("点一下就开始：只读档位运行，不改动任何文件")
+              ) : (
+                <button
+                  type="button"
+                  className="welcome-samples-key"
+                  onClick={onOpenSettings}
+                >
+                  {t("配置 API Key 后即可运行")}
+                  <ChevronIcon width={11} height={11} />
+                </button>
+              )}
+            </span>
+          </div>
+          <div className="sample-grid">
+            {READONLY_SAMPLES.map((sample) => {
+              return (
+                <button
+                  type="button"
+                  className="sample-card"
+                  key={sample.id}
+                  title={sample.prompt}
+                  onClick={() => onRunSample(sample.prompt)}
+                >
+                  <span className="sample-card-top">
+                    <span className="sample-card-icon">{SAMPLE_ICON[sample.id]}</span>
+                    <span className="sample-card-badge">{t("只读")}</span>
+                  </span>
+                  <strong>
+                    {sample.id === 'overview'
+                      ? t("先看清这个项目")
+                      : sample.id === 'walkthrough'
+                        ? t("走读一个核心文件")
+                        : t("找出三处值得改进的地方")}
+                  </strong>
+                  <small>
+                    {sample.id === 'overview'
+                      ? t("列出目录与说明，讲清这是什么项目、怎么启动")
+                      : sample.id === 'walkthrough'
+                        ? t("讲清它做什么、被谁调用、改动时要注意什么")
+                        : t("只读点评，按影响大小排序")}
+                  </small>
+                  <ChevronIcon width={14} height={14} className="sample-card-go" />
+                </button>
+              )
+            })}
+          </div>
+        </div>
       ) : null}
 
       {!workspace ? (
@@ -472,6 +536,7 @@ export function ContinueBar({
 export function QueuePanel({
   queue,
   running,
+  paused,
   onInsert,
   onRemove,
   onUpdate,
@@ -479,6 +544,8 @@ export function QueuePanel({
 }: {
   queue: QueuedTask[]
   running: boolean
+  /** 会话停在「等用户继续」的状态：队列不会自动开始。 */
+  paused: boolean
   onInsert: (taskId: string) => void
   onRemove: (taskId: string) => void
   onUpdate: (taskId: string, content: string) => Promise<void>
@@ -511,7 +578,11 @@ export function QueuePanel({
         <span className="queue-title">{t("排队中的任务")}</span>
         <span className="queue-count">{queue.length}</span>
         <span className="queue-hint">
-          {running ? t("当前任务结束后自动开始") : t("即将开始")}
+          {running
+            ? t("当前任务结束后自动开始")
+            : paused
+              ? t("已暂停：点「继续」后按序开始")
+              : t("未开始：发一条消息或点「立即执行」")}
         </span>
         <ChevronIcon width={12} height={12} className="queue-chevron" />
       </summary>
@@ -552,8 +623,18 @@ export function QueuePanel({
                 onClick={() => onInsert(task.id)}
                 title={t("插入当前任务，在下一步生效")}
               >
-                {t("插入")}</button>
-            ) : null}
+                {t("插入")}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="queue-action"
+                onClick={() => onInsert(task.id)}
+                title={t("立即开始这条排队任务")}
+              >
+                {t("立即执行")}
+              </button>
+            )}
             <button
               type="button"
               className="queue-action"

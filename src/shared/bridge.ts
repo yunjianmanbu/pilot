@@ -307,6 +307,8 @@ export function createBridge(rpc: BridgeRpc): PilotBridge {
     reportRendererError: (input: { summary: string; stack?: string; source?: string }) =>
       invoke('pilot:renderer-error', input),
     selfCheck: () => invoke('pilot:self-check-run'),
+    // 诊断包：主进程收集并脱敏后写 zip，渲染层只负责展示结果。
+    diagnosticsExport: (workspacePath?: string) => invoke('pilot:diagnostics-export', workspacePath),
     qualityEvaluate: (path: string) => invoke('pilot:quality-evaluate', path),
     qualityDecide: (path: string, candidateId: string, decision: 'approve' | 'reject') =>
       invoke('pilot:quality-decide', path, candidateId, decision),

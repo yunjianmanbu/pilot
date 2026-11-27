@@ -29,7 +29,7 @@ function baseKindLabel(kind: SourceBaseKind): string {
 }
 
 /**
- * The four public repositories this product is split into. The panel links out
+ * The three public repositories this product is split into. The panel links out
  * to them so the checkout behind "personal source" is one click away; nothing
  * here is fetched, and the official git address stays empty until the user
  * decides to fill it in.
@@ -41,7 +41,6 @@ const OFFICIAL_REPOS: Array<{ name: string; label: string; hint: string }> = [
     hint: t('主仓库：桌面端、中继与官网都在这里'),
   },
   { name: 'yunjianmanbu/pilot-link', label: t('移动控制端'), hint: t('手机控制电脑的 uni-app 端') },
-  { name: 'yunjianmanbu/pilot-client', label: t('手机被控端'), hint: t('电脑控制手机的反控端') },
   {
     name: 'yunjianmanbu/pilot-connector',
     label: t('中继器'),

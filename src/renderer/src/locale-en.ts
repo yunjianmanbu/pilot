@@ -284,7 +284,8 @@ export const en: Record<string, string> = {
   "加载中…": "Loading…",
   "加载更早消息": "Load earlier messages",
   "单次输出上限": "Max output tokens",
-  "即将开始": "Starting soon",
+  "立即执行": "Run now",
+  "立即开始这条排队任务": "Start this queued task now",
   "即将自动拒绝": "Auto-rejecting soon",
   "历史版本 ·": "History ·",
   "参数": "Parameters",
@@ -503,7 +504,9 @@ export const en: Record<string, string> = {
   "已拒绝": "Denied",
   "已是最新": "Up to date",
   "已暂停": "Paused",
+  "已暂停：点「继续」后按序开始": "Paused: runs in order after you press Continue",
   "已暂存改动": "Staged changes",
+  "未开始：发一条消息或点「立即执行」": "Not started: send a message or press Run now",
   "已沉淀的草稿": "Saved drafts",
   "已移入回收目录": "Moved to the recycle folder",
   "已记录正反馈。": "Positive feedback recorded.",
@@ -729,8 +732,6 @@ export const en: Record<string, string> = {
   "未配置中继地址；手机与电脑只能在同一局域网内连接。手机端要求 wss://。":
     "No relay URL; phone and desktop can only connect over the same LAN. The phone requires wss://.",
   "本地优先 · 自我进化": "Local-first · self-evolving",
-  "本地加密保存，不注册、不登录，配置后即可开始。":
-    "Stored locally and encrypted. No sign-up or login; configure and start.",
   "本地文件": "Local files",
   "本工作区的新运行会使用这个版本的提示词与策略。":
     "New runs in this workspace use this version's prompt and strategy.",
@@ -1105,7 +1106,36 @@ export const en: Record<string, string> = {
   "运行项目测试，定位并修复所有失败项":
     "Run the project tests, find and fix every failure",
   "返回": "Back",
-  "还差一个 API Key": "One API key needed",
+  "三步开始使用 Pilot": "Get started in three steps",
+  "跳过引导": "Skip tour",
+  "配置 API Key": "Set an API key",
+  "模型凭据本地加密保存，不注册、不登录。":
+    "The key is encrypted on this computer. No sign-up, no login.",
+  "选择工作区": "Pick a workspace",
+  "Pilot 只在这个文件夹里读写文件、执行命令。":
+    "Pilot only reads, writes and runs commands inside this folder.",
+  "跑一个只读示例": "Run a read-only sample",
+  "只读示例": "Read-only samples",
+  "点一下就开始：只读档位运行，不改动任何文件":
+    "Click one to start: it runs in read-only mode and changes no files",
+  "配置 API Key 后即可运行": "Configure an API key to run it",
+  "先看清这个项目": "See what this project is",
+  "列出目录与说明，讲清这是什么项目、怎么启动":
+    "Lists the tree and docs, then explains what it is and how to start it",
+  "走读一个核心文件": "Walk through one core file",
+  "讲清它做什么、被谁调用、改动时要注意什么":
+    "Explains what it does, who calls it and what to watch out for",
+  "找出三处值得改进的地方": "Find three things worth improving",
+  "只读点评，按影响大小排序": "Read-only critique, ordered by impact",
+  "在只读档位下读一遍工作区，不写入、不执行命令。":
+    "Pilot reads the workspace in read-only mode: no writes, no commands.",
+  "去配置 API Key": "Set an API key",
+  "跑一个只读示例任务": "Run a read-only sample task",
+  "正在创建示例会话…": "Creating the sample session…",
+  "示例会话处在只读档位，可以之后在会话栏改回常用模式。":
+    "The sample session stays in read-only mode; you can switch it back from the session bar.",
+  "首启引导还没走完": "Setup isn't finished yet",
+  "回到引导": "Back to setup",
   "还没有会话。点击「新建任务」开始。": "No sessions yet. Click “New task” to start.",
   "还没有其他项目。先在侧栏打开另一个工作区，再回来添加参照。":
     "No other projects yet. Open another workspace in the sidebar, then come back to add references.",
@@ -1168,6 +1198,7 @@ export const en: Record<string, string> = {
   "阅读 README 和核心代码，指出三个最值得改进的地方":
     "Read the README and core code, and point out the three most worthwhile improvements",
   "需要你的确认": "Needs your confirmation",
+  "需要确认：{v1}（{v2}）": "Needs confirmation: {v1} ({v2})",
   "需要先配置 API Key": "Set an API key first",
   "需要处理": "Needs attention",
   "项目": "Project",
@@ -2126,6 +2157,11 @@ export const en: Record<string, string> = {
   "重新内视": "Run again",
   "复制全文": "Copy report",
   "正在取样…": "Sampling…",
+  "导出诊断包": "Export diagnostics bundle",
+  "收内视报告、最近日志与环境快照，路径已打码，可自行发给他人排查":
+    "Collects the introspection report, recent logs and an environment snapshot. Paths are redacted, so you can pass the file on for help.",
+  "已导出 {v1} 个文件 · {v2} 条日志 · {v3}":
+    "Exported {v1} files · {v2} log lines · {v3}",
   "正常": "Normal",
   "注意": "Watch",
   "异常": "Broken",
@@ -3033,4 +3069,16 @@ export const en: Record<string, string> = {
     "Links come from session text; a URL mentioned twice in one session is listed once.",
   "文档来自会话里成功的 write/edit 调用，按扩展名收录；代码、脚本与数据文件不在其中。":
     "Documents come from successful write/edit calls in sessions and are collected by extension; code, scripts and data files are excluded.",
+  "命令面板": "Command palette",
+  "搜索命令：新建任务、设置、切换视图…":
+    "Search commands: new task, settings, switch view…",
+  "Esc 关闭": "Esc to close",
+  "没有匹配的命令": "No matching commands",
+  "操作": "Actions",
+  "视图": "Views",
+  "添加工作区": "Add workspace",
+  "管理工作区": "Manage workspaces",
+  "切换主题": "Toggle theme",
+  "导出工作区包": "Export workspace pack",
+  "导入工作区包": "Import workspace pack",
 }

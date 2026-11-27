@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from 'react'
 import type {
   ApprovalMode,
@@ -27,7 +28,9 @@ import { artifactsFromCalls, collectArtifactsByRun } from '../../../shared/artif
 import { ChevronIcon, InfoIcon, PilotMark } from '../icons'
 import { buildTranscript, liveAnswerText, liveProcess, processParts, withPendingProcesses, type LiveRun } from '../ui'
 import { nextFollow } from '../scroll-follow'
+import { motionScrollBehavior, prefersReducedMotion } from '../a11y/reduced-motion'
 import { Markdown } from './Markdown'
+import { StreamAnnouncer } from './StreamAnnouncer'
 import { FileChangeBar } from './FileChangeBar'
 import type { TranscriptUsage } from '../tokens'
 import { ProcessBox } from './ProcessBox'
@@ -49,6 +52,13 @@ export interface ChatViewProps {
   approvals: ApprovalRequest[]
   runError: string | undefined
   hasKey: boolean
+  /**
+   * 首启引导卡，由 App 渲染好传进来（这里只认「内容流最前面放一块东西」）。
+   * 必须落在 `.messages-inner` 里面而不是 `.chat-stage` 里：放在 stage 里会占掉
+   * 会话区固定高度，把 `.messages-scroll` 顶出一段滚动量，欢迎页的 P 标记被卷到
+   * 卡片下面重叠（实测 scrollTop 129.6 / 卡片 bottom 282 + 标记 top 204）。
+   */
+  onboarding?: ReactNode
   running: boolean
   hasEarlier: boolean
   loadingEarlier: boolean
@@ -84,6 +94,8 @@ export interface ChatViewProps {
   onFeedback: (runId: string, rating: 'up' | 'down') => void
   onReflect: (runId: string) => Promise<number>
   onQuickStart: (text: string) => void
+  /** 空态的只读示例：点一下就在只读档位跑起来。 */
+  onRunSample: (text: string) => void
   onPickWorkspace: () => void
   onOpenSettings: () => void
   onAddTodo: (text: string, priority?: TodoPriority) => Promise<void>
@@ -125,6 +137,7 @@ export function ChatView({
   approvals,
   runError,
   hasKey,
+  onboarding,
   running,
   hasEarlier,
   loadingEarlier,
@@ -153,6 +166,7 @@ export function ChatView({
   onFeedback,
   onReflect,
   onQuickStart,
+  onRunSample,
   onPickWorkspace,
   onOpenSettings,
   onAddTodo,
@@ -186,6 +200,14 @@ export function ChatView({
   const lastTopRef = useRef(0)
   /** 上一次 scroll 的 scrollHeight，用来分辨「内容变矮」与用户上滚。 */
   const lastHeightRef = useRef(0)
+  /**
+   * 空会话（还没任何消息）：这一屏是欢迎页 + 可选的引导卡，应该从顶部读起。
+   * 跟随最新对空会话本来没有意义，但首启引导卡把内容顶到一屏以上之后，不动
+   * 手就会一挂载就滚到底（实测 scrollTop 132.8 = 正好到底），卡片被卷出视口
+   * 顶部（top -13）。发第一条消息后 messages.length > 0，跟随自行恢复。
+   */
+  const emptyTranscriptRef = useRef(true)
+  emptyTranscriptRef.current = !session || session.messages.length === 0
   const [showJump, setShowJump] = useState(false)
   // 正文里滑动选中后弹出的「添加待办」菜单；null = 没有选中。
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(null)
@@ -300,7 +322,10 @@ export function ChatView({
     const element = scrollRef.current
     if (!element) return
     lastHeightRef.current = element.scrollHeight
-    if (smooth) {
+    // 「减少动效」下不滑：那 800ms 的位移对前庭敏感的用户是负担，顺带也让
+    // 「自己滚出来的事件」窗口缩短。样式文件管不到 JS 的 behavior，只能在这里降级。
+    const glide = smooth && !prefersReducedMotion()
+    if (glide) {
       pinUntilRef.current = performance.now() + 800
     } else {
       const bottom = element.scrollHeight - element.clientHeight
@@ -312,13 +337,15 @@ export function ChatView({
     }
     element.scrollTo({
       top: element.scrollHeight,
-      behavior: smooth ? 'smooth' : 'auto',
+      behavior: glide ? 'smooth' : 'auto',
     })
     lastTopRef.current = element.scrollTop
   }, [])
 
   const followLatest = useCallback(() => {
     if (!stickRef.current || followFrameRef.current !== null) return
+    // 空会话停在顶部：见 emptyTranscriptRef 的说明。
+    if (emptyTranscriptRef.current) return
     followFrameRef.current = requestAnimationFrame(() => {
       followFrameRef.current = null
       // 这一帧里用户已经滚上去了，就什么都不要做。
@@ -390,9 +417,18 @@ export function ChatView({
       lastTopRef.current = scrollRef.current?.scrollTop ?? 0
       lastHeightRef.current = scrollRef.current?.scrollHeight ?? 0
       setShowJump(false)
-      followLatest()
+      // 空会话上面顶着首启引导卡：这一屏是让人从头读的，滚到底会把卡片和
+      // 欢迎页的标题一起推到屏幕外（实测滚到底 = 裁掉 150px）。留在顶部。
+      const welcomeOnly = !session || session.messages.length === 0
+      const element = scrollRef.current
+      if (onboarding && welcomeOnly && element) {
+        element.scrollTo({ top: 0, behavior: 'auto' })
+        lastTopRef.current = 0
+      } else {
+        followLatest()
+      }
     }
-  }, [session?.id, followLatest])
+  }, [session, onboarding, followLatest])
 
   useEffect(() => {
     if (!focusMessageId) return
@@ -401,7 +437,10 @@ export function ChatView({
     )
     if (!element) return
     stopFollowing()
-    element.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    element.scrollIntoView({
+      block: 'center',
+      behavior: motionScrollBehavior(prefersReducedMotion()),
+    })
   }, [focusMessageId, session?.messages.length, stopFollowing])
 
   useEffect(() => {
@@ -590,6 +629,12 @@ export function ChatView({
 
   return (
     <div className="chat-view">
+      {/* 读屏的播报通道：与屏幕上的流式正文同源，但按句节流，不逐字重播。 */}
+      <StreamAnnouncer
+        text={answerText}
+        active={Boolean(live && live.status === 'running')}
+        resetKey={live?.runId ?? session?.id ?? ''}
+      />
       <div
         className="messages-scroll"
         ref={scrollRef}
@@ -597,6 +642,8 @@ export function ChatView({
         onContextMenu={onContextMenu}
       >
         <div className="messages-inner">
+          {onboarding}
+
           {hasEarlier && !showWelcome ? (
             <button
               type="button"
@@ -623,6 +670,7 @@ export function ChatView({
               onPickWorkspace={onPickWorkspace}
               onOpenSettings={onOpenSettings}
               onQuickStart={onQuickStart}
+              onRunSample={onRunSample}
             />
           ) : null}
 
@@ -686,7 +734,7 @@ export function ChatView({
           ) : null}
 
           {live?.error && !process ? (
-            <div className="run-error-card">
+            <div className="run-error-card" role="alert">
               <InfoIcon width={15} height={15} />
               <div>
                 <strong>{t("运行失败")}</strong>
@@ -738,7 +786,7 @@ export function ChatView({
           ) : null}
 
           {runError && !live?.error ? (
-            <div className="run-error-card">
+            <div className="run-error-card" role="alert">
               <InfoIcon width={15} height={15} />
               <div>
                 <strong>{t("运行失败")}</strong>
@@ -799,6 +847,7 @@ export function ChatView({
         <QueuePanel
           queue={session?.queue ?? []}
           running={running}
+          paused={session?.paused === true}
           onInsert={onInsertQueue}
           onRemove={onRemoveQueue}
           onUpdate={onUpdateQueue}
@@ -810,6 +859,7 @@ export function ChatView({
           running={running}
           planSettled={planSettled}
           hasKey={hasKey}
+          hideKeyWarning={showWelcome}
           contextUsage={contextUsage}
           projectInstructions={projectInstructions}
           composerSeed={composerSeed}

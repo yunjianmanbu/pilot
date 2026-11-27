@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import type {
   ApprovalMode,
   ApprovalRequest,
@@ -28,10 +29,12 @@ import type {
 import { modelOptionLabel, modelResourceName, normalizeModelTag } from '../../shared/model-label'
 import { bellCount } from '../../shared/quality'
 import type { HostKind } from '../../shared/capabilities'
+import { matchAppShortcut } from './app-shortcuts'
 import { copyText } from './clipboard'
 import { ChangeReviewPanel } from './components/ChangeReviewPanel'
 import { ChatView } from './components/ChatView'
 import { CheckpointDialog } from './components/CheckpointDialog'
+import { CommandPalette, type PaletteCommand } from './components/CommandPalette'
 import { CompanionDialog } from './components/CompanionDialog'
 import { PairRequestDialog } from './components/PairRequestDialog'
 import { evolutionWorkspaceTabs } from './components/EvolutionWorkspace'
@@ -58,6 +61,16 @@ import { SelectMenu } from './components/SelectMenu'
 import type { ResourceTab } from './session-resources'
 import { FeedbackDialog } from './components/FeedbackDialog'
 import { SettingsDialog, type SettingsFocus } from './components/SettingsDialog'
+import { OnboardingGuide } from './components/OnboardingGuide'
+import {
+  ONBOARDING_SAMPLE_APPROVAL_MODE,
+  ONBOARDING_SAMPLE_TASK,
+  onboardingStep,
+  onboardingVisible,
+  readOnboardingSkipped,
+  writeOnboardingSkipped,
+} from '../../shared/onboarding'
+import { READONLY_SAMPLE_APPROVAL_MODE } from '../../shared/readonly-samples'
 import { Sidebar } from './components/Sidebar'
 import { applyTrailEvent, type RunTrail } from './run-trail'
 import { sessionSwapView } from './session-swap'
@@ -78,9 +91,19 @@ import {
   DownloadIcon,
   FileIcon,
   FilesIcon,
+  BookmarkIcon,
+  BookOpenIcon,
+  BrainIcon,
+  ChatIcon,
+  FeedbackIcon,
   FolderIcon,
   HistoryIcon,
+  LinkIcon,
+  PlusIcon,
+  PlugIcon,
   SparkIcon,
+  TodoIcon,
+  WrenchIcon,
   InfoIcon,
   LayersIcon,
   MoonIcon,
@@ -409,6 +432,20 @@ export function App() {
    */
   const [librarySessionId, setLibrarySessionId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  /** Ctrl+K 命令面板。打开时它自己接管键盘，Esc 由 useEscapeClose 的栈负责。 */
+  const [commandOpen, setCommandOpen] = useState(false)
+  /**
+   * 首启引导的「不再提示」标记。初值直接读本地存储，所以配好 Key 之前就跳过的
+   * 机器，下次启动不会再弹一次。
+   */
+  const [onboardingSkipped, setOnboardingSkipped] = useState(() => readOnboardingSkipped())
+  /**
+   * 本窗口第一次拿到设置时的 `hasKey` 快照。引导是否出现只认这个值：
+   * 用户在第一步配好 Key 之后它仍然是 false，第 2、3 步才留得住。
+   */
+  const onboardingKeyAtStartRef = useRef<boolean | null>(null)
+  const [onboardingKeyAtStart, setOnboardingKeyAtStart] = useState<boolean | null>(null)
+  const [onboardingRunning, setOnboardingRunning] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [settingsFocus, setSettingsFocus] = useState<SettingsFocus>(null)
   const [updateOpen, setUpdateOpen] = useState(false)
@@ -923,6 +960,11 @@ export function App() {
         return
       }
       setSettings(data.settings)
+      if (onboardingKeyAtStartRef.current === null) {
+        // 只记第一次：之后切工作区、重跑 bootstrap 都不该重置这个快照。
+        onboardingKeyAtStartRef.current = data.settings.hasKey
+        setOnboardingKeyAtStart(data.settings.hasKey)
+      }
       setWorkspaces(data.workspaces)
       setSessions(data.sessions)
       setActiveWorkspace(data.activeWorkspace)
@@ -1749,6 +1791,135 @@ export function App() {
     },
     [sendMessage, settings?.hasKey],
   )
+
+  /**
+   * 空态的只读示例：点一下就开跑。
+   *
+   * 与「常用指令」的区别只在档位：示例跑在 `manual`（只读自动）上，读文件自动
+   * 放行、写入与命令先要审批，再加上任务文本自己写了「不要修改任何文件」，
+   * 所以点示例不会在工作区留下改动。
+   *
+   * 复用当前的空会话而不是新建：空态点三次不该在侧边栏堆出三个会话。
+   * 改档位会 toast 告知一次，会话栏里随时能改回常用档，不会被默默锁住。
+   */
+  const runReadonlySample = useCallback(
+    async (prompt: string) => {
+      if (!settings?.hasKey) {
+        openSettings()
+        return
+      }
+      const workspacePath = activeWorkspaceRef.current
+      if (!workspacePath) {
+        setWorkspaceDialogOpen(true)
+        return
+      }
+      try {
+        // 空态点示例时顺手建一个空会话已无必要：sendMessage 会自己建，
+        // 但那里建出来的会话用全局默认档位，所以这里先把会话拿到手再设档位。
+        let sessionId = activeSessionRef.current
+        if (!sessionId) {
+          const created = await window.pilot.createSession(workspacePath)
+          sessionId = created.id
+          activeSessionRef.current = created.id
+          setActiveSessionId(created.id)
+          setSession(created)
+          setSessionHasMoreBoth(false)
+          setPendingProcesses([])
+          setSessions((previous) => [
+            summaryOf(created),
+            ...previous.filter((entry) => entry.id !== created.id),
+          ])
+          void refreshSessions(workspacePath)
+        }
+        const updated = await window.pilot.updateSession(sessionId, {
+          approvalMode: READONLY_SAMPLE_APPROVAL_MODE,
+        })
+        setSessions((previous) =>
+          previous.map((entry) => (entry.id === sessionId ? updated : entry)),
+        )
+        setSession((previous) =>
+          previous && previous.id === sessionId
+            ? { ...previous, approvalMode: updated.approvalMode }
+            : previous,
+        )
+        pushToast(t("示例会话处在只读档位，可以之后在会话栏改回常用模式。"), 'info')
+      } catch (error) {
+        pushToast(errorMessage(error), 'error')
+        return
+      }
+      void sendMessage(prompt, 'queue')
+    },
+    [openSettings, pushToast, refreshSessions, sendMessage, settings?.hasKey],
+  )
+
+  /** 引导结束（跳过了，或第三步已经发出去）：本窗口立即隐藏，并记住不再提示。 */
+  const finishOnboarding = useCallback(() => {
+    writeOnboardingSkipped(true)
+    setOnboardingSkipped(true)
+  }, [])
+
+  /**
+   * 第三步：建一个只读示例会话。
+   *
+   * 会话级「只读自动」是这件事的关键：`manual` 档位下读文件自动放行，写入与命令
+   * 一律先要审批，权限层 evaluatePermission 再兜一次拒绝（runner.ts:1433-1437），
+   * 所以示例任务只可能读文件，不会在工作区里留下任何改动。模式记在会话上，用户
+   * 在会话栏里随时能改回常用档位。
+   *
+   * 这里不能沿用旧值 `plan`：store-schema.ts:549-562 的 normalizeApprovalMode 会把
+   * plan/dontAsk 折叠成 manual、acceptEdits 折叠成 auto，写进去的值和落盘的值不一致。
+   * 因此直接写 `manual`，并以 updateSession 的返回值为准，不在本地另造一个档位。
+   */
+  const runOnboardingSample = useCallback(async () => {
+    if (!settings?.hasKey) {
+      // 与第一步同一个落点：密钥输入框在「模型」页。
+      setSettingsOpen(false)
+      setView('models')
+      return
+    }
+    const workspacePath = activeWorkspaceRef.current
+    if (!workspacePath) {
+      setWorkspaceDialogOpen(true)
+      return
+    }
+    setOnboardingRunning(true)
+    try {
+      const created = await window.pilot.createSession(workspacePath)
+      // updateSession 回的是 SessionSummary（主进程已把档位归一化过），所以只取它的
+      // approvalMode 叠到刚建好的完整会话上：本地状态与落盘值必须一致。
+      const saved: SessionSummary = await window.pilot.updateSession(created.id, {
+        approvalMode: ONBOARDING_SAMPLE_APPROVAL_MODE,
+      })
+      const sampleSession: Session = { ...created, approvalMode: saved.approvalMode }
+      activeSessionRef.current = sampleSession.id
+      setActiveSessionId(sampleSession.id)
+      setSession(sampleSession)
+      setSessionHasMoreBoth(false)
+      setSessions((previous) => [
+        summaryOf(sampleSession),
+        ...previous.filter((entry) => entry.id !== sampleSession.id),
+      ])
+      setView('chat')
+      if (await sendMessage(ONBOARDING_SAMPLE_TASK, 'queue')) {
+        pushToast(t("示例会话处在只读档位，可以之后在会话栏改回常用模式。"), 'info')
+        finishOnboarding()
+      }
+    } catch (error) {
+      pushToast(errorMessage(error), 'error')
+    } finally {
+      setOnboardingRunning(false)
+    }
+  }, [finishOnboarding, pushToast, sendMessage, settings?.hasKey])
+
+  const showOnboarding = onboardingVisible({
+    booted,
+    keyAtStart: onboardingKeyAtStart,
+    skipped: onboardingSkipped,
+  })
+  const onboardingStepNow = onboardingStep({
+    hasKey: settings?.hasKey ?? false,
+    hasWorkspace: Boolean(activeWorkspace),
+  })
 
 
   /**
@@ -2954,15 +3125,30 @@ export function App() {
     [pushToast],
   )
 
+  /**
+   * 应用级快捷键。渲染层监听的收益是「任何页面、任何弹框开着都生效」，
+   * 代价是窗口失焦后无效。故意不往 Electron 的 globalShortcut 上注册：
+   * Ctrl+N / Ctrl+K / Ctrl+, 在浏览器、编辑器里都是别人的常用键，系统级抢占
+   * 会让用户在自己的别的软件里按 Ctrl+K 弹出 Pilot。
+   *
+   * 托盘菜单（window-tray.ts）也不加 accelerator：菜单项与这里各触发一次，
+   * 一次按键会新建两个任务。
+   */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const modifier = event.metaKey || event.ctrlKey
-      if (!modifier) return
-      if (event.key.toLowerCase() === 'n') {
-        event.preventDefault()
+      // 判定规则（含 Alt / 长按 / 输入法组合这些否定条件）在 app-shortcuts.ts 里，有单测。
+      const shortcut = matchAppShortcut(event)
+      if (!shortcut) return
+      event.preventDefault()
+      if (shortcut === 'new-session') {
+        setCommandOpen(false)
         void newSession()
-      } else if (event.key === ',') {
-        event.preventDefault()
+      } else if (shortcut === 'command-palette') {
+        setCommandOpen((value) => !value)
+      } else {
+        // 面板开着时先收面板：否则设置页和面板两层遮罩叠在一起，
+        // 关设置还得再按一次 Esc 才能回到会话。与 Ctrl+N 的收法保持一致。
+        setCommandOpen(false)
         setUpdateOpen(false)
         setSettingsOpen((value) => !value)
       }
@@ -2975,6 +3161,179 @@ export function App() {
     () => workspaces.find((entry) => entry.path === activeWorkspace) ?? null,
     [activeWorkspace, workspaces],
   )
+
+  /**
+   * Ctrl+K 面板的条目。顺序即默认顺序：最常用的几个操作在前，视图切换在后。
+   *
+   * 每条都指向这里已有的一个动作，面板本身不新造行为——两边各写一套的话，
+   * 快捷键能用而侧栏不能用（或者反过来）就成了新的不一致来源。
+   */
+  const paletteCommands = useMemo<PaletteCommand[]>(() => {
+    const act = t("操作")
+    const look = t("视图")
+    const viewCommand = (
+      id: string,
+      title: string,
+      view: MainView,
+      icon: ReactNode,
+      keywords: string[],
+    ): PaletteCommand => ({
+      id,
+      title,
+      group: look,
+      keywords,
+      icon,
+      run: () => setView(view),
+    })
+    return [
+      {
+        id: 'new-session',
+        title: t("新建任务"),
+        group: act,
+        keywords: ['new', 'task', 'session', 'chat'],
+        icon: <PlusIcon width={16} height={16} />,
+        shortcut: 'Ctrl+N',
+        run: () => void newSession(),
+      },
+      {
+        id: 'open-settings',
+        title: t("打开设置"),
+        group: act,
+        keywords: ['settings', 'preferences', 'config'],
+        icon: <SettingsIcon width={16} height={16} />,
+        shortcut: 'Ctrl+,',
+        run: () => openSettings(),
+      },
+      {
+        id: 'add-workspace',
+        title: t("添加工作区"),
+        group: act,
+        keywords: ['workspace', 'folder', 'open', 'add'],
+        icon: <FolderIcon width={16} height={16} />,
+        run: () => void pickWorkspace(),
+      },
+      {
+        id: 'manage-workspaces',
+        title: t("管理工作区"),
+        group: act,
+        keywords: ['workspace', 'list', 'manage'],
+        icon: <LayersIcon width={16} height={16} />,
+        run: () => setWorkspaceDialogOpen(true),
+      },
+      {
+        id: 'phone-connect',
+        title: t("手机连接"),
+        group: act,
+        keywords: ['phone', 'pair', 'companion'],
+        icon: <PhoneIcon width={16} height={16} />,
+        run: () => setCompanionOpen(true),
+      },
+      {
+        id: 'toggle-theme',
+        title: t("切换主题"),
+        group: act,
+        keywords: ['theme', 'dark', 'light', 'appearance'],
+        icon: <MoonIcon width={16} height={16} />,
+        run: () => void toggleTheme(),
+      },
+      {
+        id: 'check-updates',
+        title: t("检查更新"),
+        group: act,
+        keywords: ['update', 'upgrade', 'version'],
+        icon: <UpdateIcon width={16} height={16} />,
+        run: () => openUpdates(),
+      },
+      {
+        id: 'feedback',
+        title: t("问题反馈"),
+        group: act,
+        keywords: ['feedback', 'bug', 'issue'],
+        icon: <FeedbackIcon width={16} height={16} />,
+        run: () => setFeedbackOpen(true),
+      },
+      {
+        id: 'export-pack',
+        title: t("导出工作区包"),
+        group: act,
+        keywords: ['pack', 'export', 'zip', 'workspace'],
+        icon: <DownloadIcon width={16} height={16} />,
+        disabled: !workspace,
+        run: () => {
+          if (workspace) openPackExport(workspace)
+        },
+      },
+      {
+        id: 'import-pack',
+        title: t("导入工作区包"),
+        group: act,
+        keywords: ['pack', 'import', 'zip', 'workspace'],
+        icon: <DownloadIcon width={16} height={16} />,
+        run: () => openPackImport(),
+      },
+      viewCommand('view-chat', t("会话"), 'chat', <ChatIcon width={16} height={16} />, [
+        'chat',
+        'session',
+        'conversation',
+      ]),
+      viewCommand('view-todos', t("待办"), 'todos', <TodoIcon width={16} height={16} />, [
+        'todo',
+        'task',
+      ]),
+      viewCommand('view-knowledge', t("知识"), 'knowledge', <BookOpenIcon width={16} height={16} />, [
+        'knowledge',
+        'search',
+        'library',
+      ]),
+      viewCommand('view-links', t("链接"), 'links', <LinkIcon width={16} height={16} />, [
+        'link',
+        'url',
+      ]),
+      viewCommand('view-documents', t("文档"), 'documents', <FilesIcon width={16} height={16} />, [
+        'document',
+        'office',
+        'file',
+      ]),
+      viewCommand('view-memory', t("记忆"), 'memory', <BookmarkIcon width={16} height={16} />, [
+        'memory',
+        'note',
+      ]),
+      viewCommand('view-tools', t("工具"), 'tools', <WrenchIcon width={16} height={16} />, [
+        'tool',
+        'skill',
+      ]),
+      viewCommand('view-scheduled', t("定时"), 'scheduled', <ClockIcon width={16} height={16} />, [
+        'schedule',
+        'timer',
+        'cron',
+      ]),
+      viewCommand('view-plugins', t("插件"), 'plugins', <PlugIcon width={16} height={16} />, [
+        'plugin',
+        'market',
+      ]),
+      viewCommand('view-models', t("模型"), 'models', <BrainIcon width={16} height={16} />, [
+        'model',
+        'endpoint',
+        'cost',
+      ]),
+      viewCommand(
+        'view-preferences',
+        t("偏好"),
+        'preferences',
+        <SettingsIcon width={16} height={16} />,
+        ['preferences', 'appearance', 'language', 'locale'],
+      ),
+    ]
+  }, [
+    newSession,
+    openPackExport,
+    openPackImport,
+    openSettings,
+    openUpdates,
+    pickWorkspace,
+    toggleTheme,
+    workspace,
+  ])
 
   // 任务级模型：只在任务会话里选。空值表示跟随全局会话模型。
   // 触发器只放名称（顶栏很窄），模型名和标签只在展开的列表里出现。
@@ -3427,6 +3786,23 @@ export function App() {
                 approvals={activeApprovals}
                 runError={activeRunError}
                 hasKey={settings?.hasKey ?? false}
+                onboarding={
+                  showOnboarding ? (
+                    <OnboardingGuide
+                      step={onboardingStepNow}
+                      running={onboardingRunning}
+                      // 密钥输入框在「模型」页（ModelPanel），不在设置弹框的运行参数里：
+                      // 先指到设置弹框会让用户落在没有密钥输入框的页上。
+                      onConfigureKey={() => {
+                        setSettingsOpen(false)
+                        setView('models')
+                      }}
+                      onPickWorkspace={() => void pickWorkspace()}
+                      onRunSample={() => void runOnboardingSample()}
+                      onSkip={finishOnboarding}
+                    />
+                  ) : undefined
+                }
                 running={running}
                 hasEarlier={sessionHasMore}
                 loadingEarlier={loadingEarlier}
@@ -3457,6 +3833,7 @@ export function App() {
                 onFeedback={setFeedback}
                 onReflect={reflectRun}
                 onQuickStart={quickStart}
+                onRunSample={runReadonlySample}
                 onPickWorkspace={() => void pickWorkspace()}
                 onOpenSettings={openSettings}
                 onAddTodo={addTodo}
@@ -3550,6 +3927,17 @@ export function App() {
           ) : null}
         </main>
       </div>
+
+      {/* 第一步的落点不在会话里（密钥输入框在「模型」页），引导卡会随 ChatView
+          一起不渲染。这条浮标把引导接回会话，否则用户配完 Key 就看不到第 2、3 步。 */}
+      {showOnboarding && view !== 'chat' ? (
+        <div className="onboarding-return" role="status">
+          <span>{t("首启引导还没走完")}</span>
+          <button type="button" className="button small" onClick={() => setView('chat')}>
+            {t("回到引导")}
+          </button>
+        </div>
+      ) : null}
 
       {resourcesTab ? (
         <SessionResourcesPanel
@@ -3810,6 +4198,13 @@ export function App() {
           onError={showError}
         />
       ) : null}
+
+      {/* 放在所有弹框之后：Ctrl+K 是用户主动叫出来的，应该压在最上层。 */}
+      <CommandPalette
+        open={commandOpen}
+        commands={paletteCommands}
+        onClose={() => setCommandOpen(false)}
+      />
 
       <ToastStack
         toasts={toasts}

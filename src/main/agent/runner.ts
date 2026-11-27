@@ -70,6 +70,7 @@ import { commandLine } from './permissions'
 import { settlePlan, shouldResetPlan } from './plan'
 import { createScheduleTaskBridge } from './schedule-bridge'
 import { moveQueuedTask, sameQueueOrder, type QueueMoveDirection } from './queue-order'
+import { shouldPromoteQueue, insertMustQueue } from './queue-policy'
 import { buildSystemPrompt, wantsSelfUpdate } from './prompt'
 import { looksLikeCorrection, selectMemories } from './memory'
 import {
@@ -133,6 +134,8 @@ interface ActiveRun {
   instruction: string
   checkpointMessageCount: number
   paused: boolean
+  /** 用户点了「停止」：与 paused 一起拦住队列推进，但没有可续跑的暂停态。 */
+  stoppedByUser: boolean
   controller: AbortController
   pendingSteering: PendingSteer[]
   pendingApprovals: Set<string>
@@ -672,6 +675,22 @@ export class AgentRunner {
       if (images.length > 0 || references.length > 0) {
         throw new Error('任务执行中无法附带图片或参照项目，请等当前任务结束后再发送')
       }
+      const live = this.active.get(sessionId)
+      // 这一轮已经被用户暂停/停止了，只剩收尾：插进去的消息会跟着旧 run 一起
+      // 消失，用户看到的是「发了却没执行」。降级成排队任务，等这一轮收尾后按序跑。
+      if (delivery === 'insert' && insertMustQueue(live)) {
+        const task = { id: randomUUID(), content: text, createdAt: now() }
+        const queue = [...session.queue, task].slice(-20)
+        await this.store.setQueue(sessionId, queue)
+        this.emit({ type: 'queue.changed', sessionId, queue })
+        this.emit({ type: 'session.changed', sessionId })
+        this.emit({
+          type: 'notice',
+          level: 'info',
+          message: '这一轮已暂停/停止，消息改为排队，等这一轮收尾后按序开始。',
+        })
+        return { queued: true }
+      }
       if (delivery === 'insert') {
         await this.insertIntoRun(sessionId, text)
         return { queued: false }
@@ -685,6 +704,11 @@ export class AgentRunner {
     }
 
     this.ensureReady(sessionId)
+    if (session.paused) {
+      // 用户在有待续跑的任务时直接发了新消息：他要做的是新指令，先清掉暂停态，
+      // 否则旧任务的「继续」按钮会留在界面上，点下去只会收到「任务还在运行」。
+      await this.store.setPaused(sessionId, null)
+    }
     // Attachments can carry the whole message: files and images on their own
     // still need an instruction the model can act on.
     const instruction =
@@ -712,12 +736,22 @@ export class AgentRunner {
     this.autoContinueAttempts.delete(sessionId)
     const ctx = this.active.get(sessionId)
     if (!ctx) return
+    // 停止是用户把这一轮按住：收尾时不推进队列，等的入口在队列面板上。
+    ctx.stoppedByUser = true
     ctx.controller.abort()
     for (const callId of [...ctx.pendingApprovals]) {
       this.settleApproval(callId, {
         approved: false,
         reason: 'Run cancelled',
         decidedBy: 'interrupted',
+      })
+    }
+    const queued = this.store.session(sessionId)?.queue.length ?? 0
+    if (queued > 0) {
+      this.emit({
+        type: 'notice',
+        level: 'info',
+        message: `任务已停止；排队中的 ${queued} 条任务不会自动开始，点队列里的“执行”或发一条新消息后再按序运行。`,
       })
     }
   }
@@ -741,10 +775,14 @@ export class AgentRunner {
       this.settleApproval(callId, { approved: false, reason: 'Run paused', decidedBy: 'interrupted' })
     }
     this.emit({ type: 'session.changed', sessionId })
+    const queued = this.store.session(sessionId)?.queue.length ?? 0
     this.emit({
       type: 'notice',
       level: 'info',
-      message: '任务已暂停，可在输入框或会话列表点击“继续”从中断处接着做。',
+      message:
+        queued > 0
+          ? `任务已暂停，排队中的 ${queued} 条任务会等你点“继续”后按序开始；也可以在队列里手动执行某一条。`
+          : '任务已暂停，可在输入框或会话列表点击“继续”从中断处接着做。',
     })
   }
 
@@ -756,10 +794,16 @@ export class AgentRunner {
   }
 
   private async resumeSession(sessionId: string): Promise<{ queued: boolean }> {
+    // 暂停后这一轮还在收尾（写盘、审计、快照）。以前这里直接抛“任务还在
+    // 运行”，用户看到的是自己刚点过暂停却续不上；收尾通常几百毫秒内结束。
+    if (this.active.has(sessionId)) {
+      if (this.active.get(sessionId)?.paused !== true) throw new Error('The task is still running')
+      await this.waitForIdle(sessionId, 15_000)
+      if (this.active.has(sessionId)) throw new Error('The task is still running')
+    }
     const session = this.store.session(sessionId)
     if (!session) throw new Error('Session not found')
     if (!session.workspacePath) throw new Error('Session has no workspace')
-    if (this.active.has(sessionId)) throw new Error('The task is still running')
     if (!session.paused && !session.canContinue) {
       throw new Error('当前任务没有需要继续的中断')
     }
@@ -779,6 +823,14 @@ export class AgentRunner {
       throw error
     }
     return { queued: false }
+  }
+
+  /** 等一轮 run 收尾完成（active 被清掉），给暂停后续跑用。 */
+  private async waitForIdle(sessionId: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (this.active.has(sessionId) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
   }
 
   /**
@@ -1120,11 +1172,32 @@ export class AgentRunner {
     await this.store.setQueue(sessionId, queue)
     this.emit({ type: 'queue.changed', sessionId, queue })
     if (this.active.has(sessionId)) {
+      const live = this.active.get(sessionId)
+      // 已暂停/已停止的那一轮只是还在收尾，插入到这个 run 里会随着旧 run 一起
+      // 消失；等它收尾完毕再当作新任务跑。
+      if (live?.paused === true || live?.stoppedByUser === true) {
+        await this.waitForIdle(sessionId, 15_000)
+        if (this.active.has(sessionId)) {
+          // 还没收完：把任务放回队首，不能让它消失在旧 run 里。
+          const restored = await this.store.session(sessionId)
+          if (restored) {
+            const back = [task, ...restored.queue]
+            await this.store.setQueue(sessionId, back)
+            this.emit({ type: 'queue.changed', sessionId, queue: back })
+          }
+          throw new Error('上一轮还在收尾，稍后再执行这条排队任务')
+        }
+      }
+    }
+    if (this.active.has(sessionId)) {
       await this.insertIntoRun(sessionId, task.content)
     } else {
       this.ensureReady(sessionId)
       const fresh = await this.store.session(sessionId)
       if (!fresh) throw new Error('Session not found')
+      // 手动执行一条排队任务 = 用这个消息替代暂停中的继续，清掉暂停态以免两条
+      // “下一步做什么”同时挂在同一个会话上。
+      if (fresh.paused) await this.store.setPaused(sessionId, null)
       const ctx = this.newContext(fresh, fresh.approvalMode, task.content)
       this.active.set(sessionId, ctx)
       const stored = storedUser(task.content, ctx.runId)
@@ -1138,6 +1211,11 @@ export class AgentRunner {
     const ctx = this.active.get(sessionId)
     if (!ctx) {
       throw new Error('The current task has already finished; send the message instead.')
+    }
+    // 已暂停/已停止的 run 只剩收尾，什么都插不进去了：消息会随着旧 run 一起
+    // 消失，用户却看到它已经写进对话。这里直接拒，让调用方改走排队。
+    if (insertMustQueue(ctx)) {
+      throw new Error('这一轮已暂停/停止，消息需要排队，等这一轮收尾后按序开始')
     }
     const stored = storedUser(text, ctx.runId)
     await this.store.addMessage(sessionId, stored)
@@ -1169,6 +1247,7 @@ export class AgentRunner {
       instruction: instruction.slice(0, 4_000),
       checkpointMessageCount: session.messages.length,
       paused: false,
+      stoppedByUser: false,
       controller: new AbortController(),
       pendingSteering: [],
       pendingApprovals: new Set(),
@@ -2317,9 +2396,12 @@ export class AgentRunner {
       })
       this.store.setRunning(sessionId, false)
       this.store.setRunInfo(sessionId, null)
+      // 暂停请求可能落在收尾窗口里（模型刚答完、还没写盘）：这时 finalStatus
+      // 会是 completed，但用户确实按了暂停。暂停态必须保留，否则「继续」入口
+      // 直接消失，而队列会被当成“任务已结束”推上来。
       await this.store.setPaused(
         sessionId,
-        finalStatus === 'paused' ? ctx.instruction || prompt : null,
+        finalStatus === 'paused' || ctx.paused ? ctx.instruction || prompt : null,
       )
       this.active.delete(sessionId)
       this.closeDeltas(ctx)
@@ -2479,7 +2561,16 @@ export class AgentRunner {
           instruction: stopDirective,
         })
       const continued = autoScheduled || stopScheduled
-      if (finalStatus !== 'paused' && !continued) {
+      // 暂停/停止由用户发起时队列必须原地等（见 queue-policy）：否则暂停后点
+      // 「继续」的那一刻，队列里的任务已经占住了 run。
+      if (
+        shouldPromoteQueue({
+          finalStatus,
+          continued,
+          pausedByUser: ctx.paused,
+          stoppedByUser: ctx.stoppedByUser,
+        })
+      ) {
         // 推进队列属于收尾的副线：读不到队列只该记一条日志，不能让本轮收尾炸掉。
         void this.promoteNext(sessionId).catch((error) => {
           this.emit({
@@ -2571,7 +2662,14 @@ export class AgentRunner {
           message: `模型侧错误，重试不会改变结果，已停止自动继续：${message.slice(0, 200)} ${FAILURE_ACTION_TEXT[failureAction(message) ?? 'config']}`,
         })
       }
-      if (!ctx.paused && !autoScheduled) {
+      if (
+        shouldPromoteQueue({
+          finalStatus: 'failed',
+          continued: autoScheduled,
+          pausedByUser: ctx.paused,
+          stoppedByUser: ctx.stoppedByUser,
+        })
+      ) {
         void this.promoteNext(sessionId).catch((error) => {
           this.emit({
             type: 'notice',
@@ -2971,6 +3069,9 @@ export class AgentRunner {
     if (this.active.has(sessionId)) return
     const session = this.store.session(sessionId)
     if (!session || session.queue.length === 0) return
+    // 会话停在「等用户继续」的状态时队列不自动开始。这是用户按暂停/停止后的
+    // 显式意图，任何收尾竞态都不该越过它；入口在队列面板的「执行」按钮上。
+    if (session.paused) return
     if (!this.store.getApiKey()) {
       this.emit({
         type: 'notice',

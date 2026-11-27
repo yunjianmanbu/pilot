@@ -99,6 +99,12 @@ const en: Record<string, string> = {
     'The installer size in the update manifest is out of range.',
   '更新清单的 SHA-256 校验值无效。':
     'The update manifest has an invalid SHA-256 checksum.',
+  '先填写接口地址，再从下拉里选模型。':
+    'Enter the endpoint URL first, then pick a model from the list.',
+  '没有可用密钥，先显示上次拉到的列表。':
+    'No usable key yet, so this is the list fetched last time.',
+  '填入 API Key 后可以一键获取该厂商的最新模型名。':
+    "Add an API key to fetch this provider's current model names in one click.",
 }
 
 const bashInUse = /^使用 Git Bash：(.+)$/
@@ -118,6 +124,17 @@ const reviewSessionMissing = /^复盘范围内的会话不存在：(.+)$/
 const manualSnapshot = /^手动快照 (.+)$/
 const maxPhoneRoots = /^最多授权 (\d+) 个目录$/
 const workspaceLimit = /^工作区数量已达上限（(\d+)）$/
+// 模型目录的说明由主进程拼出（带 host、状态码与错误原因），所以按形状翻译。
+const catalogUnreachableCached = /^连不上 (.+)（(.+)），显示上次拉到的列表。$/
+const catalogUnreachableFresh = /^连不上 (.+)（(.+)），先用手填或内置清单。$/
+const catalogKeyRejected = /^(.+) 拒绝了这把密钥（(\d+)），先确认 Key 与地址属于同一厂商。$/
+const catalogNoEndpointStatus = /^(.+) 这个地址不提供模型列表接口，请手动填写模型名。$/
+const catalogRateLimited = /^(.+) 触发了限流（(\d+)），稍后点刷新重试。$/
+const catalogBadStatus = /^(.+) 返回 (\d+)，暂时拿不到模型列表。$/
+const catalogEmptyList = /^(.+) 返回了空的模型列表，先手动填写模型名。$/
+const catalogNoEndpointCached = /^(.+) 没有模型列表接口，显示上次拉到的列表；也可以直接手填模型名。$/
+const catalogNoEndpointFresh = /^(.+) 没有模型列表接口，请手动填写模型名。$/
+
 const untrustedUpdateHost = /^不允许从 (.+) 下载更新。$/
 const manifestMissing = /^更新清单缺少(.+)。$/
 const manifestBadFormat = /^更新清单的(.+)格式不正确。$/
@@ -197,6 +214,26 @@ export function localizeMain(source: string, locale: AppLocale): string {
   if (match) return `At most ${match[1]} folders can be authorized`
   match = source.match(workspaceLimit)
   if (match) return `Workspace limit reached (${match[1]})`
+  match = source.match(catalogUnreachableCached)
+  if (match) return `Cannot reach ${match[1]} (${match[2]}); showing the list fetched last time.`
+  match = source.match(catalogUnreachableFresh)
+  if (match) return `Cannot reach ${match[1]} (${match[2]}); type a model name or use the built-in list.`
+  match = source.match(catalogKeyRejected)
+  if (match)
+    return `${match[1]} rejected this key (${match[2]}); check that the key and the URL belong to the same provider.`
+  match = source.match(catalogNoEndpointStatus)
+  if (match) return `${match[1]} does not expose a model list at this URL; type the model name.`
+  match = source.match(catalogRateLimited)
+  if (match) return `${match[1]} is rate limiting (${match[2]}); refresh again later.`
+  match = source.match(catalogBadStatus)
+  if (match) return `${match[1]} returned ${match[2]}, so the model list is not available right now.`
+  match = source.match(catalogEmptyList)
+  if (match) return `${match[1]} returned an empty model list; type the model name.`
+  match = source.match(catalogNoEndpointCached)
+  if (match)
+    return `${match[1]} has no model list endpoint; showing the list fetched last time, and typing a name still works.`
+  match = source.match(catalogNoEndpointFresh)
+  if (match) return `${match[1]} has no model list endpoint; type the model name.`
   match = source.match(untrustedUpdateHost)
   if (match) return `Updates cannot be downloaded from ${match[1]}.`
   match = source.match(manifestMissing)

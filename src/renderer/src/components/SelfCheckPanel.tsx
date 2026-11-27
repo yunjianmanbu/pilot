@@ -11,7 +11,9 @@ import {
   type SelfCheckStatus,
 } from '../../../shared/self-check'
 import { copyText } from '../clipboard'
-import { ListCheckIcon, RefreshIcon } from '../icons'
+import { DownloadIcon, ListCheckIcon, RefreshIcon } from '../icons'
+import { formatBytes } from '../../../shared/system-info'
+import { diagnosticsExportOutcome } from '../../../shared/diagnostics-bundle'
 import { t } from '../i18n'
 
 /**
@@ -90,9 +92,27 @@ function ItemCard({ item }: { item: SelfCheckItem }) {
   )
 }
 
+/**
+ * 导出成功后的回执。
+ *
+ * 单独抽成组件是有原因的：这个状态原来只在 `useState` 里设值、没人渲染，
+ * 结果就是「点了按钮、包已落盘、界面却没有一个字」——用户只会再点一次。
+ * 拆出来后测试能直接断言它真的产出可见文本，面板只负责条件挂载。
+ */
+export function SelfCheckExportReceipt({ text }: { text: string | null }) {
+  if (!text) return null
+  return (
+    <span className="self-check-stamp self-check-export-note" role="status">
+      {text}
+    </span>
+  )
+}
+
 export function SelfCheckPanel({ onError }: SelfCheckPanelProps) {
   const [report, setReport] = useState<SelfCheckReport | null>(null)
   const [busy, setBusy] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportResult, setExportResult] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -105,6 +125,8 @@ export function SelfCheckPanel({ onError }: SelfCheckPanelProps) {
 
   const run = useCallback(async () => {
     setBusy(true)
+    // 重新内视就是新一轮取样，上一次的导出回执不再对应这份报告，一并清掉。
+    setExportResult(null)
     try {
       const safe = sanitizeSelfCheckReport(await window.pilot.selfCheck())
       if (!safe) throw new Error('内视结果格式不对')
@@ -133,6 +155,33 @@ export function SelfCheckPanel({ onError }: SelfCheckPanelProps) {
     if (copiedTimer.current) clearTimeout(copiedTimer.current)
     copiedTimer.current = setTimeout(() => setCopied(false), 1600)
   }, [onError, report])
+
+  // 导出诊断包：主进程收数据、脱敏、写盘，这里只展示结果。
+  // 取消静默（用户自己点的），失败才报错，且不把已选路径写回界面。
+  const exportBundle = useCallback(async () => {
+    setExporting(true)
+    setExportResult(null)
+    try {
+      // 判定放 shared 的纯函数里：取消必须静默，失败必须报错，两条都由测试固定。
+      const outcome = diagnosticsExportOutcome(await window.pilot.diagnosticsExport())
+      if (outcome.kind === 'silent') return
+      if (outcome.kind === 'error') {
+        onError(outcome.message)
+        return
+      }
+      setExportResult(
+        t('已导出 {v1} 个文件 · {v2} 条日志 · {v3}', {
+          v1: outcome.files,
+          v2: outcome.logLines,
+          v3: formatBytes(outcome.bytes),
+        }),
+      )
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setExporting(false)
+    }
+  }, [onError])
 
   return (
     <div className="page panel-page self-check-page">
@@ -172,6 +221,17 @@ export function SelfCheckPanel({ onError }: SelfCheckPanelProps) {
         >
           {copied ? t('已复制') : t('复制全文')}
         </button>
+        <button
+          type="button"
+          className="button ghost small"
+          onClick={() => void exportBundle()}
+          disabled={exporting}
+          title={t('收内视报告、最近日志与环境快照，路径已打码，可自行发给他人排查')}
+        >
+          <DownloadIcon width={13} height={13} />
+          {exporting ? t('正在打包…') : t('导出诊断包')}
+        </button>
+        <SelfCheckExportReceipt text={exportResult} />
         {report ? (
           <span className="self-check-stamp">
             {overall ? statusText(overall) : ''} · v{report.version} ·{' '}

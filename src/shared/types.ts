@@ -2737,6 +2737,11 @@ export interface PilotBridge {
    * 存储、任务、反馈、更新）。不接收工作区路径。
    */
   selfCheck(): Promise<import('./self-check').SelfCheckReport>
+  /**
+   * 导出诊断包：内视报告 + 最近日志 + 环境快照，脱敏后压成 zip 写到用户选的位置。
+   * 它不会上传任何内容：发不发、发给谁由用户决定。
+   */
+  diagnosticsExport(workspacePath?: string): Promise<import('./diagnostics-bundle').DiagnosticsExportResult>
   updateSettings(input: SettingsUpdate): Promise<SettingsView>
   testConnection(input?: {
     apiKey?: string

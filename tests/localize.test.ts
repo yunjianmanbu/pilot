@@ -16,6 +16,30 @@ describe('localizeMain', () => {
     expect(localizeMain('沙箱未启用。', 'en')).toBe('Sandbox disabled.')
   })
 
+  it('translates model catalog notes that carry a host or a status code', () => {
+    expect(localizeMain('填入 API Key 后可以一键获取该厂商的最新模型名。', 'en')).toBe(
+      "Add an API key to fetch this provider's current model names in one click.",
+    )
+    expect(localizeMain('没有可用密钥，先显示上次拉到的列表。', 'en')).toBe(
+      'No usable key yet, so this is the list fetched last time.',
+    )
+    expect(localizeMain('先填写接口地址，再从下拉里选模型。', 'zh-CN')).toBe('先填写接口地址，再从下拉里选模型。')
+    expect(localizeMain('连不上 api.deepseek.com（ECONNRESET），显示上次拉到的列表。', 'en')).toBe(
+      'Cannot reach api.deepseek.com (ECONNRESET); showing the list fetched last time.',
+    )
+    expect(localizeMain('api.openai.com 拒绝了这把密钥（401），先确认 Key 与地址属于同一厂商。', 'en')).toBe(
+      'api.openai.com rejected this key (401); check that the key and the URL belong to the same provider.',
+    )
+    expect(localizeMain('api.openai.com 返回了空的模型列表，先手动填写模型名。', 'en')).toBe(
+      'api.openai.com returned an empty model list; type the model name.',
+    )
+    expect(
+      localizeMain('relay.example 没有模型列表接口，显示上次拉到的列表；也可以直接手填模型名。', 'en'),
+    ).toBe(
+      'relay.example has no model list endpoint; showing the list fetched last time, and typing a name still works.',
+    )
+  })
+
   it('translates generated shell details', () => {
     expect(localizeMain('使用 Git Bash：C:\\Program Files\\Git\\bin\\bash.exe', 'en')).toBe(
       'Using Git Bash: C:\\Program Files\\Git\\bin\\bash.exe',

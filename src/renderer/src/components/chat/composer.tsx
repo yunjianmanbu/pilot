@@ -62,6 +62,7 @@ export function Composer({
   running,
   planSettled,
   hasKey,
+  hideKeyWarning = false,
   contextUsage,
   projectInstructions,
   composerSeed,
@@ -88,6 +89,14 @@ export function Composer({
   running: boolean
   planSettled: boolean
   hasKey: boolean
+  /**
+   * 隐藏「尚未配置 API Key」横幅。
+   *
+   * 空态由三条只读示例承担引导，示例区那行说明已经写了「配置 API Key 后即可运行」，
+   * 再叠一条橙色横幅等于同一件事说两遍，还会把示例往下挤。有消息时才需要横幅提醒
+   * 「你正卡在没 Key 上」。
+   */
+  hideKeyWarning?: boolean
   /** Estimated prompt footprint shown above the composer; null hides the readout. */
   contextUsage: TranscriptUsage | null
   projectInstructions: ProjectInstructionFile[]
@@ -424,7 +433,7 @@ export function Composer({
           <span>{t("松开即可附件：图片随消息发送，其它文件上传到工作区")}</span>
         </div>
       ) : null}
-      {!hasKey ? (
+      {!hasKey && !hideKeyWarning ? (
         <button type="button" className="composer-warning" onClick={onOpenSettings}>
           <InfoIcon width={14} height={14} />
           {t("尚未配置 API Key，点击设置后即可开始。")}</button>
